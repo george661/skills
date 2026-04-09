@@ -1,0 +1,2179 @@
+#!/bin/bash
+#
+# Project Agents - Developer Setup Script
+# Installs and configures Claude Code environment with MCP servers
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ CRITICAL ARCHITECTURE - READ THIS FIRST                                 │
+# │                                                                         │
+# │ All hooks, commands, and skills are installed to ~/.claude/             │
+# │ (the user's home directory), NOT to individual repository folders.      │
+# │                                                                         │
+# │ Individual repos like api, spa, auth do NOT get .claude/       │
+# │ folders. Claude Code's hook system is designed to use a single          │
+# │ global ~/.claude/ directory that applies to ALL sessions.               │
+# │                                                                         │
+# │ Install locations:                                                      │
+# │   ~/.claude/hooks/     ← Hook scripts (Python, shell)                   │
+# │   ~/.claude/commands/  ← Workflow commands (markdown)                   │
+# │   ~/.claude/skills/    ← REST skills and utilities                      │
+# │   ~/.claude/settings.json ← Hook configurations, MCP servers            │
+# │                                                                         │
+# │ Source of truth: base-agents/.claude/                                   │
+# │ Tenant overrides: project-agents/.claude/ (merged on top of base)            │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# Usage:
+#   ./scripts/install.sh              # Interactive setup
+#   ./scripts/install.sh --check      # Check current setup status
+#   ./scripts/install.sh --uninstall  # Remove configuration
+#
+# Prerequisites:
+#   - Node.js 18+
+#   - Git
+#   - AWS CLI (for Bedrock access)
+#
+
+set -euo pipefail
+
+# Script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+BASE_AGENTS_ROOT="$REPO_DIR/base"
+BASE_CONFIG_DIR="$BASE_AGENTS_ROOT"
+TENANT_CONFIG_DIR="$REPO_DIR"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Logging functions
+log_info() { echo -e "${BLUE}[INFO]${NC} $*"; }
+log_ok() { echo -e "${GREEN}[OK]${NC} $*"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+log_section() { echo -e "\n${CYAN}=== $* ===${NC}\n"; }
+
+# Default paths
+CLAUDE_DIR="${HOME}/.claude"
+ENV_FILE="${REPO_DIR}/.env"
+ENV_EXAMPLE="${REPO_DIR}/.env.example"
+
+# Check if command exists
+has_command() {
+    command -v "$1" &>/dev/null
+}
+
+# Bootstrap jq - needed to parse brew-packages.json
+ensure_jq() {
+    if command -v jq &>/dev/null; then
+        return 0
+    fi
+
+    log_info "jq is required but not installed"
+
+    if [[ "$(uname)" != "Darwin" ]]; then
+        log_error "jq not found. Install it: apt-get install jq (Linux)"
+        return 1
+    fi
+
+    if ! command -v brew &>/dev/null; then
+        log_error "jq not found and Homebrew not available. Install jq manually."
+        return 1
+    fi
+
+    log_info "Installing jq via Homebrew..."
+    if brew install jq 2>/dev/null; then
+        log_ok "jq installed"
+        return 0
+    else
+        log_error "Failed to install jq via Homebrew"
+        return 1
+    fi
+}
+
+# Load and merge brew package configs from base and tenant
+# Sets BREW_PACKAGES variable with merged JSON array
+load_brew_packages() {
+    local base_dir="${1:-}"
+    local tenant_dir="${2:-}"
+    local base_config="${base_dir}/config/brew-packages.json"
+    local tenant_config="${tenant_dir:+${tenant_dir}/config/brew-packages.json}"
+
+    BREW_PACKAGES="[]"
+
+    if [[ ! -f "$base_config" ]]; then
+        log_warn "Base brew package config not found: ${base_config}"
+        return 0
+    fi
+
+    BREW_PACKAGES=$(cat "$base_config")
+
+    # Merge tenant config on top (last-write-wins by name)
+    if [[ -n "$tenant_config" && -f "$tenant_config" ]]; then
+        BREW_PACKAGES=$(jq -s '
+            .[0] as $base | .[1] as $tenant |
+            ($tenant | map({(.name): .}) | add // {}) as $overrides |
+            [$base[] | if $overrides[.name] then $overrides[.name] else . end] +
+            [$tenant[] | select(.name as $n | $base | map(.name) | index($n) | not)]
+        ' <(echo "$BREW_PACKAGES") <(cat "$tenant_config"))
+        log_info "Merged tenant brew package overrides"
+    fi
+}
+
+# Install missing brew packages from the merged config
+install_brew_packages() {
+    if ! ensure_jq; then
+        return 1
+    fi
+
+    load_brew_packages "$BASE_CONFIG_DIR" "$TENANT_CONFIG_DIR"
+
+    local pkg_count
+    pkg_count=$(echo "$BREW_PACKAGES" | jq 'length')
+
+    if [[ "$pkg_count" -eq 0 ]]; then
+        return 0
+    fi
+
+    log_section "Installing Homebrew Packages"
+
+    if [[ "$(uname)" != "Darwin" ]]; then
+        log_info "Not macOS - skipping Homebrew package management"
+        return 0
+    fi
+
+    if ! command -v brew &>/dev/null; then
+        log_warn "Homebrew not installed - cannot manage packages"
+        return 1
+    fi
+
+    local i=0
+    while [[ $i -lt $pkg_count ]]; do
+        local name required description version_command
+        name=$(echo "$BREW_PACKAGES" | jq -r ".[$i].name")
+        required=$(echo "$BREW_PACKAGES" | jq -r ".[$i].required")
+        description=$(echo "$BREW_PACKAGES" | jq -r ".[$i].description")
+        version_command=$(echo "$BREW_PACKAGES" | jq -r ".[$i].version_command")
+
+        if command -v "$name" &>/dev/null; then
+            local current_version
+            current_version=$(eval "$version_command" 2>/dev/null | head -n1 || echo "unknown")
+            log_ok "${name}: already installed (${current_version})"
+        else
+            log_info "Installing ${name} - ${description}..."
+            if brew install "$name" 2>/dev/null; then
+                log_ok "${name}: installed"
+            else
+                if [[ "$required" == "true" ]]; then
+                    log_error "Failed to install required package: ${name}"
+                    return 1
+                else
+                    log_warn "Could not install optional package: ${name}"
+                    log_info "  Install manually: brew install ${name}"
+                fi
+            fi
+        fi
+
+        ((i++))
+    done
+
+    log_ok "Homebrew package check complete"
+}
+
+# Check prerequisites
+check_prerequisites() {
+    log_section "Checking Prerequisites"
+
+    local missing=()
+
+    if ! has_command node; then
+        missing+=("node")
+    else
+        local node_version=$(node -v | sed 's/v//' | cut -d. -f1)
+        if [[ $node_version -lt 18 ]]; then
+            log_warn "Node.js version $node_version found, 18+ recommended"
+        else
+            log_ok "Node.js $(node -v)"
+        fi
+    fi
+
+    if ! has_command npm; then
+        missing+=("npm")
+    else
+        log_ok "npm $(npm -v)"
+    fi
+
+    if ! has_command git; then
+        missing+=("git")
+    else
+        log_ok "git $(git --version | cut -d' ' -f3)"
+        # Verify SSH access to Bitbucket
+        if ssh -T git@bitbucket.org 2>&1 | grep -q "authenticated"; then
+            log_ok "Bitbucket SSH access configured"
+        else
+            log_warn "Bitbucket SSH access not configured"
+            log_info "  SSH access is required to clone MCP server repos"
+            log_info "  See: https://support.atlassian.com/bitbucket-cloud/docs/set-up-an-ssh-key/"
+        fi
+    fi
+
+    if ! has_command aws; then
+        log_warn "AWS CLI not found - needed for Bedrock access"
+    else
+        log_ok "AWS CLI $(aws --version | cut -d' ' -f1 | cut -d'/' -f2)"
+    fi
+
+    if ! has_command claude; then
+        log_warn "Claude Code CLI not found - will be installed"
+    else
+        log_ok "Claude Code CLI installed"
+    fi
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "Missing required tools: ${missing[*]}"
+        log_error "Please install them first:"
+        log_error "  brew install node git  # macOS"
+        log_error "  Or visit: https://nodejs.org/"
+        exit 1
+    fi
+
+    log_ok "All prerequisites met"
+}
+
+# Initialize base-agents submodule
+init_base_agents_submodule() {
+    log_section "Initializing Base Agents Submodule"
+
+    cd "$REPO_DIR"
+
+    if [[ ! -d "$BASE_AGENTS_ROOT/.git" ]] && [[ ! -f "$BASE_AGENTS_ROOT/.git" ]]; then
+        log_info "Initializing base-agents submodule..."
+        git submodule update --init --recursive
+        log_ok "base-agents submodule initialized"
+    else
+        log_info "Updating base-agents submodule..."
+        git submodule update --recursive
+        log_ok "base-agents submodule updated"
+    fi
+
+    # Verify base-agents has required directories
+    if [[ ! -d "$BASE_AGENTS_ROOT/.claude" ]]; then
+        log_error "base-agents/.claude directory not found"
+        log_error "Submodule may not be properly initialized"
+        exit 1
+    fi
+
+    log_ok "base-agents ready at ${BASE_AGENTS_ROOT}"
+}
+
+# Install Claude Code CLI
+install_claude_cli() {
+    log_section "Installing Claude Code CLI"
+
+    if has_command claude; then
+        log_ok "Claude Code CLI already installed"
+        return 0
+    fi
+
+    log_info "Installing @anthropic-ai/claude-code..."
+    npm install -g @anthropic-ai/claude-code
+
+    if has_command claude; then
+        log_ok "Claude Code CLI installed successfully"
+    else
+        log_error "Failed to install Claude Code CLI"
+        exit 1
+    fi
+}
+
+# Create .claude directory structure
+setup_claude_directory() {
+    log_section "Setting Up Claude Directory"
+
+    local dirs=(
+        "${CLAUDE_DIR}"
+        "${CLAUDE_DIR}/commands"
+        "${CLAUDE_DIR}/hooks"
+        "${CLAUDE_DIR}/skills"
+        "${CLAUDE_DIR}/workflows"
+        "${CLAUDE_DIR}/pattern-training"
+        "${CLAUDE_DIR}/projects"
+        "${CLAUDE_DIR}/supergateway"
+        "${CLAUDE_DIR}/supergateway/pids"
+        "${CLAUDE_DIR}/supergateway/logs"
+    )
+
+    for dir in "${dirs[@]}"; do
+        mkdir -p "$dir"
+    done
+
+    log_ok "Claude directory structure created: ${CLAUDE_DIR}"
+}
+
+# Install core MCP servers
+install_core_mcp_servers() {
+    log_section "Core MCP Servers"
+    log_info "AgentDB and project MCP servers are configured separately."
+    log_ok "Skipped (not needed)"
+}
+
+# Clone or update MCP server repositories
+setup_mcp_repos() {
+    log_section "Setting Up MCP Server Repositories"
+
+    # Load paths from .env or use defaults
+    if [[ -f "$ENV_FILE" ]]; then
+        source "$ENV_FILE"
+    fi
+
+    local jira_mcp_path="${JIRA_MCP_PATH:-${REPO_DIR}/mcp-servers/jira}"
+    local bb_mcp_path="${BITBUCKET_MCP_PATH:-${REPO_DIR}/mcp-servers/bitbucket}"
+
+    # Create mcp-servers directory if using defaults
+    if [[ -z "${JIRA_MCP_PATH:-}" ]] || [[ -z "${BITBUCKET_MCP_PATH:-}" ]]; then
+        mkdir -p "${REPO_DIR}/mcp-servers"
+    fi
+
+    # Clone or update jira
+    log_info "Setting up jira at ${jira_mcp_path}..."
+    if [[ -d "${jira_mcp_path}/.git" ]]; then
+        log_info "Repository exists, pulling latest..."
+        (cd "$jira_mcp_path" && git pull origin main)
+    else
+        log_info "Cloning jira..."
+        git clone git@bitbucket.org:your-org/jira.git "$jira_mcp_path"
+    fi
+    log_info "Installing dependencies and building..."
+    (cd "$jira_mcp_path" && npm install && npm run build)
+    log_ok "jira ready at ${jira_mcp_path}"
+
+    # Clone or update bitbucket
+    log_info "Setting up bitbucket at ${bb_mcp_path}..."
+    if [[ -d "${bb_mcp_path}/.git" ]]; then
+        log_info "Repository exists, pulling latest..."
+        (cd "$bb_mcp_path" && git pull origin main)
+    else
+        log_info "Cloning bitbucket..."
+        git clone git@bitbucket.org:your-org/bitbucket.git "$bb_mcp_path"
+    fi
+    log_info "Installing dependencies and building..."
+    (cd "$bb_mcp_path" && npm install && npm run build)
+    log_ok "bitbucket ready at ${bb_mcp_path}"
+
+    # Export paths for use by setup_project_mcp_servers
+    export JIRA_MCP_PATH="$jira_mcp_path"
+    export BITBUCKET_MCP_PATH="$bb_mcp_path"
+}
+
+# Check if project repos are configured
+check_project_repos_configured() {
+    if [[ -f "$ENV_FILE" ]]; then
+        source "$ENV_FILE"
+    fi
+
+    # Check if PROJECT_REPOS is set and at least one repo exists
+    if [[ -z "${PROJECT_REPOS:-}" ]]; then
+        return 1
+    fi
+
+    local project_root="${PROJECT_ROOT:-$(dirname "$REPO_DIR")}"
+    # Resolve relative path
+    if [[ "$project_root" == ".." || "$project_root" == "../"* ]]; then
+        project_root="$(cd "$REPO_DIR" && cd "$project_root" && pwd)"
+    fi
+
+    # Check if at least one configured repo exists
+    IFS=',' read -ra repos <<< "$PROJECT_REPOS"
+    for repo in "${repos[@]}"; do
+        repo=$(echo "$repo" | xargs)  # Trim whitespace
+        if [[ -d "${project_root}/${repo}/.git" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# Configure project repositories interactively
+configure_project_repos() {
+    log_section "Configuring Project Repositories"
+
+    # Load existing config
+    if [[ -f "$ENV_FILE" ]]; then
+        source "$ENV_FILE"
+    fi
+
+    echo ""
+    log_info "This configures where project repositories should be cloned."
+    log_info "This is useful for new developers setting up their environment."
+    echo ""
+
+    # Project root directory
+    local default_root="$(dirname "$REPO_DIR")"
+    read -p "Project root directory [${PROJECT_ROOT:-$default_root}]: " input_root
+    PROJECT_ROOT="${input_root:-${PROJECT_ROOT:-$default_root}}"
+
+    # Resolve relative paths for display
+    local resolved_root="$PROJECT_ROOT"
+    if [[ "$resolved_root" == ".." || "$resolved_root" == "../"* ]]; then
+        resolved_root="$(cd "$REPO_DIR" && cd "$resolved_root" 2>/dev/null && pwd)" || resolved_root="$PROJECT_ROOT"
+    fi
+    log_info "Repositories will be cloned to: ${resolved_root}/<repo-name>"
+
+    # Git host
+    echo ""
+    echo "Git hosting provider:"
+    echo "  1) Bitbucket (default)"
+    echo "  2) GitHub"
+    read -p "Select [1]: " input_host
+    case "$input_host" in
+        2) PROJECT_GIT_HOST="github" ;;
+        *) PROJECT_GIT_HOST="${PROJECT_GIT_HOST:-bitbucket}" ;;
+    esac
+
+    # Workspace/Org configuration
+    if [[ "$PROJECT_GIT_HOST" == "bitbucket" ]]; then
+        read -p "Bitbucket workspace [${PROJECT_BITBUCKET_WORKSPACE:-your-org}]: " input_workspace
+        PROJECT_BITBUCKET_WORKSPACE="${input_workspace:-${PROJECT_BITBUCKET_WORKSPACE:-your-org}}"
+    else
+        read -p "GitHub organization [${PROJECT_GITHUB_ORG:-}]: " input_org
+        PROJECT_GITHUB_ORG="${input_org:-${PROJECT_GITHUB_ORG:-}}"
+    fi
+
+    # Core repositories
+    echo ""
+    log_info "Core project repositories (recommended for all developers):"
+    echo "  api        - Core business logic API"
+    echo "  spa        - Frontend UI"
+    echo "  auth       - Platform authentication"
+    echo "  sdk        - SDK for publishers"
+    echo "  docs       - Documentation"
+    echo "  test-data  - Test fixtures"
+    echo ""
+
+    local default_repos="api,spa,auth,sdk,docs,test-data"
+    read -p "Repositories to clone (comma-sep) [${PROJECT_REPOS:-$default_repos}]: " input_repos
+    PROJECT_REPOS="${input_repos:-${PROJECT_REPOS:-$default_repos}}"
+
+    # Optional repositories
+    echo ""
+    log_info "Optional repositories (not required for most developers):"
+    echo "  gw-bootstrap, gw-canary, gw-cli, gw-jwt-demo, odef-spec"
+    read -p "Additional repos to clone (comma-sep, or press Enter to skip) [${PROJECT_REPOS_OPTIONAL:-}]: " input_optional
+    PROJECT_REPOS_OPTIONAL="${input_optional:-${PROJECT_REPOS_OPTIONAL:-}}"
+
+    # Default branch
+    read -p "Default branch [${GW_DEFAULT_BRANCH:-main}]: " input_branch
+    GW_DEFAULT_BRANCH="${input_branch:-${GW_DEFAULT_BRANCH:-main}}"
+
+    # Save to .env (append or update)
+    log_info "Saving project repository configuration..."
+
+    # Check if these settings exist in .env, if so update, otherwise append
+    if [[ -f "$ENV_FILE" ]]; then
+        # Create temp file with updated/new values
+        local temp_env=$(mktemp)
+
+        # Remove existing GW_* lines (we'll add fresh ones)
+        grep -v "^PROJECT_ROOT=" "$ENV_FILE" | \
+        grep -v "^PROJECT_GIT_HOST=" | \
+        grep -v "^PROJECT_BITBUCKET_WORKSPACE=" | \
+        grep -v "^PROJECT_GITHUB_ORG=" | \
+        grep -v "^PROJECT_REPOS=" | \
+        grep -v "^PROJECT_REPOS_OPTIONAL=" | \
+        grep -v "^GW_DEFAULT_BRANCH=" > "$temp_env" || true
+
+        mv "$temp_env" "$ENV_FILE"
+    fi
+
+    # Append project repo configuration
+    cat >> "$ENV_FILE" <<EOF
+
+# Project Repository Configuration
+PROJECT_ROOT=${PROJECT_ROOT}
+PROJECT_GIT_HOST=${PROJECT_GIT_HOST}
+PROJECT_BITBUCKET_WORKSPACE=${PROJECT_BITBUCKET_WORKSPACE:-}
+PROJECT_GITHUB_ORG=${PROJECT_GITHUB_ORG:-}
+PROJECT_REPOS=${PROJECT_REPOS}
+PROJECT_REPOS_OPTIONAL=${PROJECT_REPOS_OPTIONAL:-}
+GW_DEFAULT_BRANCH=${GW_DEFAULT_BRANCH}
+EOF
+
+    log_ok "Project repository configuration saved to .env"
+}
+
+# Clone project repositories
+setup_project_repos() {
+    log_section "Setting Up Project Repositories"
+
+    # Load configuration
+    if [[ -f "$ENV_FILE" ]]; then
+        source "$ENV_FILE"
+    fi
+
+    # Check if configuration exists
+    if [[ -z "${PROJECT_REPOS:-}" ]]; then
+        log_warn "Project repositories not configured"
+        echo ""
+        read -p "Would you like to configure project repositories now? (y/N): " confirm
+        if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+            configure_project_repos
+            source "$ENV_FILE"
+        else
+            log_info "Skipping project repository setup"
+            log_info "Run './scripts/install.sh --configure-repos' later to set this up"
+            return 0
+        fi
+    fi
+
+    # Resolve project root
+    local project_root="${PROJECT_ROOT:-$(dirname "$REPO_DIR")}"
+    if [[ "$project_root" == ".." || "$project_root" == "../"* ]]; then
+        project_root="$(cd "$REPO_DIR" && cd "$project_root" && pwd)"
+    fi
+
+    # Create project root if needed
+    if [[ ! -d "$project_root" ]]; then
+        log_info "Creating project directory: ${project_root}"
+        mkdir -p "$project_root"
+    fi
+
+    # Determine git URL prefix
+    local git_prefix
+    if [[ "$PROJECT_GIT_HOST" == "github" ]]; then
+        git_prefix="git@github.com:${PROJECT_GITHUB_ORG}/"
+    else
+        git_prefix="git@bitbucket.org:${PROJECT_BITBUCKET_WORKSPACE}/"
+    fi
+
+    # Clone core repositories
+    log_info "Cloning repositories to ${project_root}/..."
+    echo ""
+
+    IFS=',' read -ra repos <<< "$PROJECT_REPOS"
+    local cloned=0
+    local skipped=0
+    local failed=0
+
+    for repo in "${repos[@]}"; do
+        repo=$(echo "$repo" | xargs)  # Trim whitespace
+        local repo_path="${project_root}/${repo}"
+        local repo_url="${git_prefix}${repo}.git"
+
+        if [[ -d "${repo_path}/.git" ]]; then
+            log_ok "${repo}: already exists"
+            ((skipped++))
+        else
+            log_info "Cloning ${repo}..."
+            if git clone --branch "${GW_DEFAULT_BRANCH:-main}" "$repo_url" "$repo_path" 2>/dev/null; then
+                log_ok "${repo}: cloned"
+                ((cloned++))
+            else
+                log_error "${repo}: failed to clone from ${repo_url}"
+                ((failed++))
+            fi
+        fi
+    done
+
+    # Clone optional repositories if configured
+    if [[ -n "${PROJECT_REPOS_OPTIONAL:-}" ]]; then
+        echo ""
+        log_info "Setting up optional repositories..."
+
+        IFS=',' read -ra optional_repos <<< "$PROJECT_REPOS_OPTIONAL"
+        for repo in "${optional_repos[@]}"; do
+            repo=$(echo "$repo" | xargs)
+            local repo_path="${project_root}/${repo}"
+            local repo_url="${git_prefix}${repo}.git"
+
+            if [[ -d "${repo_path}/.git" ]]; then
+                log_ok "${repo}: already exists"
+                ((skipped++))
+            else
+                log_info "Cloning ${repo}..."
+                if git clone --branch "${GW_DEFAULT_BRANCH:-main}" "$repo_url" "$repo_path" 2>/dev/null; then
+                    log_ok "${repo}: cloned"
+                    ((cloned++))
+                else
+                    log_warn "${repo}: failed to clone (optional)"
+                    ((failed++))
+                fi
+            fi
+        done
+    fi
+
+    echo ""
+    log_ok "Repository setup complete: ${cloned} cloned, ${skipped} already present, ${failed} failed"
+
+    if [[ $failed -gt 0 ]]; then
+        log_warn "Some repositories failed to clone. Check SSH access and repository names."
+        log_info "Verify SSH: ssh -T git@bitbucket.org (or github.com)"
+    fi
+}
+
+# Setup project-docs centralized documentation structure
+setup_gw_docs() {
+    log_section "Setting Up Project-Docs Centralization"
+
+    # Load environment configuration
+    if [[ -f "$ENV_FILE" ]]; then
+        source "$ENV_FILE"
+    fi
+
+    # Determine TENANT_DOCS_PATH
+    local docs_path="${TENANT_DOCS_PATH:-}"
+    if [[ -z "$docs_path" ]]; then
+        # Default to project root/project-docs
+        local project_root="${PROJECT_ROOT:-$(dirname "$REPO_DIR")}"
+        docs_path="${project_root}/project-docs"
+        log_info "TENANT_DOCS_PATH not set. Using default: ${docs_path}"
+    fi
+
+    # Check if project-docs repository exists
+    if [[ ! -d "$docs_path" ]]; then
+        log_warn "project-docs directory not found at: ${docs_path}"
+        log_info "Clone project-docs first or set TENANT_DOCS_PATH in .env"
+        log_info "Skipping project-docs setup..."
+        return 0
+    fi
+
+    # Create required subdirectories in project-docs if they don't exist
+    local docs_dirs=(
+        "initiatives"
+        "designs"
+        "implementations"
+        "technical"
+        "tools"
+        "runbooks"
+        "patterns"
+        "release-notes"
+        "repositories"
+    )
+
+    local created=0
+    local existing=0
+
+    for dir in "${docs_dirs[@]}"; do
+        if [[ ! -d "${docs_path}/${dir}" ]]; then
+            mkdir -p "${docs_path}/${dir}"
+            log_info "Created ${dir}/"
+            ((created++))
+        else
+            ((existing++))
+        fi
+    done
+
+    log_ok "project-docs directories: ${created} created, ${existing} already exist"
+
+    # Verify project-docs-categories.yaml exists
+    local config_file="${REPO_DIR}/config/project-docs-categories.yaml"
+    if [[ -f "$config_file" ]]; then
+        log_ok "config/project-docs-categories.yaml present"
+    else
+        log_warn "config/project-docs-categories.yaml not found"
+    fi
+
+    # Create symlink in project-docs to project-agents configuration (for easy reference)
+    local config_link="${docs_path}/.project-agents-config"
+    if [[ ! -L "$config_link" ]] && [[ -f "$config_file" ]]; then
+        ln -sf "$config_file" "$config_link"
+        log_info "Created symlink to project-agents config"
+    fi
+
+    # Add GW_DOCS environment variables to local .env if not present
+    if [[ -f "$ENV_FILE" ]]; then
+        if ! grep -q "GW_DOCS_ENABLED" "$ENV_FILE" 2>/dev/null; then
+            cat >> "$ENV_FILE" << EOF
+
+# Project-Docs Configuration (added by install.sh)
+GW_DOCS_ENABLED=true
+TENANT_DOCS_PATH=${docs_path}
+GW_DOCS_REPO=project-docs
+GW_DOCS_ENFORCEMENT=true
+EOF
+            log_info "Added GW_DOCS configuration to .env"
+        else
+            log_info "GW_DOCS configuration already in .env"
+        fi
+    fi
+
+    log_ok "Project-Docs setup complete"
+}
+
+# Prompt for credentials and add project-specific MCP servers
+setup_project_mcp_servers() {
+    log_section "Setting Up Project MCP Servers"
+
+    # Load existing credentials if .env exists
+    if [[ -f "$ENV_FILE" ]]; then
+        log_info "Loading credentials from ${ENV_FILE}..."
+        source "$ENV_FILE"
+    fi
+
+    echo ""
+    log_info "These MCP servers require credentials for your project's Jira and Bitbucket instances."
+    echo ""
+
+    # Jira MCP setup
+    echo -e "${CYAN}--- Jira MCP Setup ---${NC}"
+    echo "Get API token: https://id.atlassian.com/manage-profile/security/api-tokens"
+    echo ""
+
+    read -p "Jira Host (e.g., company.atlassian.net) [${JIRA_HOST:-}]: " input_jira_host
+    JIRA_HOST="${input_jira_host:-${JIRA_HOST:-}}"
+
+    read -p "Jira Username (email) [${JIRA_USERNAME:-}]: " input_jira_username
+    JIRA_USERNAME="${input_jira_username:-${JIRA_USERNAME:-}}"
+
+    read -sp "Jira API Token [${JIRA_API_TOKEN:+****}]: " input_jira_token
+    echo ""
+    JIRA_API_TOKEN="${input_jira_token:-${JIRA_API_TOKEN:-}}"
+
+    read -p "Jira Project Keys (comma-sep) [${JIRA_PROJECT_KEYS:-PROJ}]: " input_jira_projects
+    JIRA_PROJECT_KEYS="${input_jira_projects:-${JIRA_PROJECT_KEYS:-PROJ}}"
+
+    echo ""
+    echo -e "${CYAN}--- Bitbucket MCP Setup ---${NC}"
+    echo "Get app password: https://bitbucket.org/account/settings/app-passwords/"
+    echo "Required scopes: Repository (read/write), Pull requests (read/write), Pipelines (read)"
+    echo ""
+
+    read -p "Bitbucket Username (email) [${BITBUCKET_USERNAME:-}]: " input_bb_username
+    BITBUCKET_USERNAME="${input_bb_username:-${BITBUCKET_USERNAME:-}}"
+
+    read -sp "Bitbucket App Password (Token) [${BITBUCKET_TOKEN:+****}]: " input_bb_password
+    echo ""
+    BITBUCKET_TOKEN="${input_bb_password:-${BITBUCKET_TOKEN:-}}"
+
+    read -p "Bitbucket Workspace [${BITBUCKET_WORKSPACE:-}]: " input_bb_workspace
+    BITBUCKET_WORKSPACE="${input_bb_workspace:-${BITBUCKET_WORKSPACE:-}}"
+
+    read -p "Bitbucket Project Key [${BITBUCKET_PROJECT_KEY:-PROJ}]: " input_bb_project
+    BITBUCKET_PROJECT_KEY="${input_bb_project:-${BITBUCKET_PROJECT_KEY:-PROJ}}"
+
+    read -p "Bitbucket Repository Slugs (comma-sep) [${BITBUCKET_REPOSITORY_SLUGS:-}]: " input_bb_repos
+    BITBUCKET_REPOSITORY_SLUGS="${input_bb_repos:-${BITBUCKET_REPOSITORY_SLUGS:-}}"
+
+    read -p "Default Branch [${BITBUCKET_DEFAULT_BRANCH:-main}]: " input_bb_branch
+    BITBUCKET_DEFAULT_BRANCH="${input_bb_branch:-${BITBUCKET_DEFAULT_BRANCH:-main}}"
+
+    # Save credentials to .env
+    log_info "Saving credentials to ${ENV_FILE}..."
+    cat > "$ENV_FILE" <<EOF
+# Project Agents Environment Configuration
+# This file contains credentials - DO NOT COMMIT TO GIT
+
+# Jira Configuration
+JIRA_HOST=${JIRA_HOST}
+JIRA_USERNAME=${JIRA_USERNAME}
+JIRA_API_TOKEN=${JIRA_API_TOKEN}
+JIRA_PROJECT_KEYS=${JIRA_PROJECT_KEYS}
+JIRA_PROTOCOL=https
+JIRA_API_VERSION=2
+
+# Bitbucket Configuration
+BITBUCKET_USERNAME=${BITBUCKET_USERNAME}
+BITBUCKET_TOKEN=${BITBUCKET_TOKEN}
+BITBUCKET_WORKSPACE=${BITBUCKET_WORKSPACE}
+BITBUCKET_PROJECT_KEY=${BITBUCKET_PROJECT_KEY}
+BITBUCKET_REPOSITORY_SLUGS=${BITBUCKET_REPOSITORY_SLUGS}
+BITBUCKET_DEFAULT_BRANCH=${BITBUCKET_DEFAULT_BRANCH}
+
+# AWS Configuration (for Bedrock)
+AWS_PROFILE=\${AWS_PROFILE:-default}
+AWS_REGION=\${AWS_REGION:-us-east-1}
+EOF
+    chmod 600 "$ENV_FILE"
+    log_ok "Credentials saved"
+
+    # Add Jira MCP (paths set by setup_mcp_repos or from .env)
+    log_info "Configuring jira..."
+
+    local jira_mcp_path="${JIRA_MCP_PATH:-${REPO_DIR}/mcp-servers/jira}"
+    if [[ ! -d "${jira_mcp_path}/dist" ]]; then
+        log_error "jira not built at ${jira_mcp_path}"
+        log_info "Run setup_mcp_repos first or check JIRA_MCP_PATH in .env"
+    else
+        # Remove existing and add fresh
+        claude mcp remove jira 2>/dev/null || true
+        claude mcp add jira "node" "${jira_mcp_path}/dist/index.js" \
+            --env "JIRA_HOST=${JIRA_HOST}" \
+            --env "JIRA_USERNAME=${JIRA_USERNAME}" \
+            --env "JIRA_API_TOKEN=${JIRA_API_TOKEN}" \
+            --env "JIRA_PROJECT_KEYS=${JIRA_PROJECT_KEYS}" \
+            --env "JIRA_PROTOCOL=https" \
+            --env "JIRA_API_VERSION=2"
+        log_ok "jira configured"
+    fi
+
+    # Add Bitbucket MCP (paths set by setup_mcp_repos or from .env)
+    log_info "Configuring bitbucket..."
+
+    local bb_mcp_path="${BITBUCKET_MCP_PATH:-${REPO_DIR}/mcp-servers/bitbucket}"
+    if [[ ! -d "${bb_mcp_path}/dist" ]]; then
+        log_error "bitbucket not built at ${bb_mcp_path}"
+        log_info "Run setup_mcp_repos first or check BITBUCKET_MCP_PATH in .env"
+    else
+        # Remove existing and add fresh
+        claude mcp remove bitbucket 2>/dev/null || true
+        claude mcp add bitbucket "node" "${bb_mcp_path}/dist/index.js" \
+            --env "BITBUCKET_USERNAME=${BITBUCKET_USERNAME}" \
+            --env "BITBUCKET_TOKEN=${BITBUCKET_TOKEN}" \
+            --env "BITBUCKET_WORKSPACE=${BITBUCKET_WORKSPACE}" \
+            --env "BITBUCKET_PROJECT_KEY=${BITBUCKET_PROJECT_KEY}" \
+            --env "BITBUCKET_REPOSITORY_SLUGS=${BITBUCKET_REPOSITORY_SLUGS}" \
+            --env "BITBUCKET_DEFAULT_BRANCH=${BITBUCKET_DEFAULT_BRANCH}"
+        log_ok "bitbucket configured"
+    fi
+}
+
+# Copy commands to user's .claude directory
+install_commands() {
+    log_section "Installing Workflow Commands"
+
+    local commands_src="$BASE_AGENTS_ROOT/.claude/commands"
+    local commands_dst="${CLAUDE_DIR}/commands"
+
+    if [[ ! -d "$commands_src" ]]; then
+        log_warn "Commands directory not found: ${commands_src}"
+        return 1
+    fi
+
+    local cmd_count=0
+    local group_count=0
+
+    # Copy top-level command files from base-agents
+    for cmd_file in "${commands_src}"/*.md; do
+        if [[ -f "$cmd_file" ]]; then
+            local filename=$(basename "$cmd_file")
+            cp "$cmd_file" "${commands_dst}/${filename}"
+            ((cmd_count++))
+        fi
+    done
+
+    # Copy command group subdirectories from base-agents (e.g., loop/, metrics/)
+    for group_dir in "${commands_src}"/*/; do
+        if [[ -d "$group_dir" ]]; then
+            local group_name=$(basename "$group_dir")
+            local dst_group="${commands_dst}/${group_name}"
+            mkdir -p "$dst_group"
+
+            for cmd_file in "${group_dir}"*.md; do
+                if [[ -f "$cmd_file" ]]; then
+                    local filename=$(basename "$cmd_file")
+                    cp "$cmd_file" "${dst_group}/${filename}"
+                fi
+            done
+            ((group_count++))
+        fi
+    done
+
+    # Apply tenant-specific command overrides
+    local gw_commands="${REPO_DIR}/.claude/commands"
+    if [[ -d "$gw_commands" ]]; then
+        for cmd_file in "${gw_commands}"/*.md; do
+            if [[ -f "$cmd_file" ]]; then
+                local filename=$(basename "$cmd_file")
+                cp "$cmd_file" "${commands_dst}/${filename}"
+                log_info "Applied tenant override: ${filename%.md}"
+            fi
+        done
+
+        # Apply tenant command group overrides
+        for group_dir in "${gw_commands}"/*/; do
+            if [[ -d "$group_dir" ]]; then
+                local group_name=$(basename "$group_dir")
+                local dst_group="${commands_dst}/${group_name}"
+                mkdir -p "$dst_group"
+
+                for cmd_file in "${group_dir}"*.md; do
+                    if [[ -f "$cmd_file" ]]; then
+                        local filename=$(basename "$cmd_file")
+                        cp "$cmd_file" "${dst_group}/${filename}"
+                    fi
+                done
+            fi
+        done
+    fi
+
+    log_ok "Workflow commands installed: ${cmd_count} commands, ${group_count} groups"
+}
+
+# Install hooks
+install_hooks() {
+    log_section "Installing Hooks"
+
+    local hooks_src="$BASE_AGENTS_ROOT/.claude/hooks"
+    local hooks_dst="${CLAUDE_DIR}/hooks"
+
+    if [[ ! -d "$hooks_src" ]]; then
+        log_warn "Hooks directory not found: ${hooks_src}"
+        return 1
+    fi
+
+    # Copy hook files from base-agents
+    for hook_file in "${hooks_src}"/*; do
+        if [[ -f "$hook_file" ]]; then
+            local filename=$(basename "$hook_file")
+            cp "$hook_file" "${hooks_dst}/${filename}"
+            chmod +x "${hooks_dst}/${filename}" 2>/dev/null || true
+        fi
+    done
+
+    # Apply tenant-specific hook overrides
+    local gw_hooks="${REPO_DIR}/.claude/hooks"
+    if [[ -d "$gw_hooks" ]]; then
+        for hook_file in "${gw_hooks}"/*; do
+            if [[ -f "$hook_file" ]]; then
+                local filename=$(basename "$hook_file")
+                cp "$hook_file" "${hooks_dst}/${filename}"
+                chmod +x "${hooks_dst}/${filename}" 2>/dev/null || true
+                log_info "Applied tenant hook: ${filename}"
+            fi
+        done
+    fi
+
+    log_ok "Hooks installed"
+}
+
+# Install global hook configuration to ~/.claude/settings.json
+install_global_hook_config() {
+    log_section "Installing Global Hook Configuration"
+
+    local settings_file="${CLAUDE_DIR}/settings.json"
+    local template_file="${REPO_DIR}/base/.claude/settings.template.json"
+
+    if [[ ! -f "$template_file" ]]; then
+        log_warn "Hook configuration template not found: ${template_file}"
+        return 1
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        log_warn "jq not installed - run install_brew_packages first"
+        return 1
+    fi
+
+    # Create settings.json if it doesn't exist
+    if [[ ! -f "$settings_file" ]]; then
+        log_info "Creating settings.json..."
+        echo '{}' > "$settings_file"
+    fi
+
+    # Backup existing settings
+    local backup_file="${settings_file}.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "$settings_file" "$backup_file"
+    log_info "Backed up settings to: ${backup_file}"
+
+    # Merge all template keys into settings:
+    # - hooks, statusLine, extraKnownMarketplaces: template takes precedence
+    # - env: template defaults, existing user values preserved (user overrides win)
+    # - permissions: use template if not already set
+    # - includeCoAuthoredBy: set from template if not present
+    local merged_settings
+    merged_settings=$(jq --argjson template "$(cat "$template_file")" '
+        # Hooks: template takes precedence
+        .hooks = ($template.hooks // {})
+        # StatusLine: template takes precedence
+        | if $template.statusLine then .statusLine = $template.statusLine else . end
+        # Env: merge (template defaults, existing overrides preserved)
+        | .env = (($template.env // {}) * (.env // {}))
+        # Permissions: use template if current is empty or missing
+        | if ((.permissions // {}) | length) == 0 then .permissions = ($template.permissions // {}) else . end
+        # ExtraKnownMarketplaces: merge (both sources preserved)
+        | .extraKnownMarketplaces = (($template.extraKnownMarketplaces // {}) * (.extraKnownMarketplaces // {}))
+        # includeCoAuthoredBy: set from template if not present
+        | .includeCoAuthoredBy = (.includeCoAuthoredBy // $template.includeCoAuthoredBy // true)
+    ' "$settings_file")
+
+    if [[ -z "$merged_settings" ]] || ! echo "$merged_settings" | jq empty 2>/dev/null; then
+        log_error "Failed to merge settings - invalid JSON produced"
+        return 1
+    fi
+
+    # Write merged settings
+    echo "$merged_settings" > "$settings_file"
+
+    # Verify all 4 hook types installed
+    local installed_hooks=0
+    for hook_type in PreToolUse PostToolUse Stop SessionEnd; do
+        if jq -e ".hooks.${hook_type}" "$settings_file" &>/dev/null; then
+            log_ok "Hook type installed: ${hook_type}"
+            ((installed_hooks++))
+        else
+            log_warn "Hook type missing: ${hook_type}"
+        fi
+    done
+
+    if [[ $installed_hooks -eq 4 ]]; then
+        log_ok "All 4 hook types installed successfully"
+    else
+        log_warn "Only ${installed_hooks}/4 hook types installed"
+    fi
+}
+
+install_statusline() {
+    log_section "Installing Statusline"
+
+    local statusline_src="$BASE_AGENTS_ROOT/.claude/statusline-command.sh"
+    local statusline_dst="${CLAUDE_DIR}/statusline-command.sh"
+
+    if [[ ! -f "$statusline_src" ]]; then
+        log_warn "Statusline script not found: ${statusline_src}"
+        return 1
+    fi
+
+    cp "$statusline_src" "$statusline_dst"
+    chmod +x "$statusline_dst"
+    log_ok "Statusline installed: ${statusline_dst}"
+}
+
+# NOTE: setup_project_hooks() was REMOVED
+# Hooks should ONLY be installed to ~/.claude/hooks/ (done by install_hooks())
+# Individual repos do NOT get .claude/ folders - they all use the global ~/.claude/
+#
+# See architecture documentation at the top of this file.
+setup_project_hooks() {
+    # This function is now a no-op but kept for backwards compatibility
+    # All hooks are installed to ~/.claude/hooks/ by install_hooks()
+    log_info "Note: Hooks are installed to ~/.claude/hooks/ (shared by all repos)"
+}
+
+# Install skills (progressive disclosure examples, documentation)
+install_skills() {
+    log_section "Installing Skills"
+
+    local skills_src="$BASE_AGENTS_ROOT/.claude/skills"
+    local skills_dst="${CLAUDE_DIR}/skills"
+
+    if [[ ! -d "$skills_src" ]]; then
+        log_warn "Skills directory not found: ${skills_src}"
+        return 0
+    fi
+
+    mkdir -p "$skills_dst"
+
+    # Copy skill files and directories from base-agents
+    cp -r "$skills_src"/* "$skills_dst/" 2>/dev/null || true
+
+    # Apply tenant-specific skill overrides
+    local gw_skills="${REPO_DIR}/.claude/skills"
+    if [[ -d "$gw_skills" ]]; then
+        cp -r "$gw_skills"/* "$skills_dst/" 2>/dev/null || true
+        log_info "Applied tenant skill overrides"
+    fi
+
+    log_ok "Skills installed"
+}
+
+# Generate skills cache for fast session startup
+generate_skills_cache() {
+    log_section "Generating Skills Cache"
+
+    local cache_builder="${CLAUDE_DIR}/hooks/skills-cache-builder.py"
+
+    if [[ ! -f "$cache_builder" ]]; then
+        log_warn "Skills cache builder not found: ${cache_builder}"
+        return 1
+    fi
+
+    # Run the cache builder
+    if python3 "$cache_builder" &>/dev/null; then
+        log_ok "Skills cache generated successfully"
+    else
+        log_warn "Failed to generate skills cache (non-fatal)"
+    fi
+}
+
+# Create symlinks from project root to global skills (REST executable skills)
+# This enables project-relative paths like .claude/skills/jira/search_issues.ts
+symlink_skills_to_project() {
+    log_section "Creating Skills Symlinks in Project Root"
+
+    # Load configuration
+    if [[ -f "$ENV_FILE" ]]; then
+        source "$ENV_FILE"
+    fi
+
+    # Resolve project root
+    local project_root="${PROJECT_ROOT:-$(dirname "$REPO_DIR")}"
+    if [[ "$project_root" == ".." || "$project_root" == "../"* ]]; then
+        project_root="$(cd "$REPO_DIR" && cd "$project_root" && pwd)"
+    fi
+
+    local project_skills="${project_root}/.claude/skills"
+    local global_skills="${CLAUDE_DIR}/skills"
+
+    # REST skill directories to symlink
+    local skill_dirs=("jira" "bitbucket" "agentdb" "slack" "cml" "concourse" "fly" "playwright")
+
+    # Create project .claude/skills directory if needed
+    mkdir -p "$project_skills"
+
+    local linked=0
+    local skipped=0
+
+    for skill_dir in "${skill_dirs[@]}"; do
+        local src="${global_skills}/${skill_dir}"
+        local dst="${project_skills}/${skill_dir}"
+
+        if [[ ! -d "$src" ]]; then
+            log_warn "${skill_dir}: source not found at ${src}"
+            continue
+        fi
+
+        if [[ -L "$dst" ]]; then
+            # Already a symlink - check if it points to the right place
+            local current_target=$(readlink "$dst")
+            if [[ "$current_target" == "$src" ]]; then
+                log_ok "${skill_dir}: symlink already exists"
+                ((skipped++))
+            else
+                # Symlink exists but points elsewhere - update it
+                rm "$dst"
+                ln -s "$src" "$dst"
+                log_ok "${skill_dir}: symlink updated"
+                ((linked++))
+            fi
+        elif [[ -d "$dst" ]]; then
+            # Directory exists (not a symlink) - warn and skip
+            log_warn "${skill_dir}: directory exists at ${dst} (not a symlink, skipping)"
+            ((skipped++))
+        else
+            # Create new symlink
+            ln -s "$src" "$dst"
+            log_ok "${skill_dir}: symlink created"
+            ((linked++))
+        fi
+    done
+
+    log_ok "Skills symlinks: ${linked} created, ${skipped} skipped"
+    log_info "Project-relative paths now work: .claude/skills/jira/search_issues.ts"
+}
+
+# Setup project-root .claude/ directory with config templates and rx files
+# Seeds credentials.json, settings.json, repositories.json if missing;
+# always syncs rx command and skill, and copies commands to project root.
+setup_project_claude_dir() {
+    log_section "Setting Up Project Root .claude/ Directory"
+
+    # Load configuration
+    if [[ -f "$ENV_FILE" ]]; then
+        source "$ENV_FILE"
+    fi
+
+    # Resolve project root
+    local project_root="${PROJECT_ROOT:-$(dirname "$REPO_DIR")}"
+    if [[ "$project_root" == ".." || "$project_root" == "../"* ]]; then
+        project_root="$(cd "$REPO_DIR" && cd "$project_root" && pwd)"
+    fi
+
+    local project_claude="${project_root}/.claude"
+    mkdir -p "${project_claude}/commands" "${project_claude}/skills"
+
+    # --- Seed credentials.json (only if missing) ---
+    local creds_file="${project_claude}/credentials.json"
+    local creds_template="${REPO_DIR}/templates/project-credentials.json"
+    if [[ ! -f "$creds_file" ]]; then
+        if [[ -f "$creds_template" ]]; then
+            cp "$creds_template" "$creds_file"
+            log_ok "credentials.json: seeded template (fill in your values)"
+        else
+            log_warn "credentials.json template not found: ${creds_template}"
+        fi
+    else
+        log_ok "credentials.json: already exists"
+    fi
+
+    # --- Seed settings.json (only if missing) ---
+    local settings_file="${project_claude}/settings.json"
+    local settings_template="${REPO_DIR}/templates/project-settings.json"
+    if [[ ! -f "$settings_file" ]]; then
+        if [[ -f "$settings_template" ]]; then
+            cp "$settings_template" "$settings_file"
+            log_ok "settings.json: seeded template"
+        else
+            log_warn "settings.json template not found: ${settings_template}"
+        fi
+    else
+        log_ok "settings.json: already exists"
+    fi
+
+    # --- Copy repositories.json (always update) ---
+    local repos_src="${REPO_DIR}/config/repositories.json"
+    local repos_dst="${project_claude}/repositories.json"
+    if [[ -f "$repos_src" ]]; then
+        cp "$repos_src" "$repos_dst"
+        log_ok "repositories.json: updated from config"
+    else
+        log_warn "repositories.json source not found: ${repos_src}"
+    fi
+
+    # --- Sync rx command to project root ---
+    local rx_cmd_src="${REPO_DIR}/.claude/commands/rx.md"
+    local rx_cmd_dst="${project_claude}/commands/rx.md"
+    if [[ -f "$rx_cmd_src" ]]; then
+        cp "$rx_cmd_src" "$rx_cmd_dst"
+        log_ok "commands/rx.md: installed"
+    fi
+
+    # --- Sync rx skill to project root ---
+    local rx_skill_src="${REPO_DIR}/.claude/skills/rx"
+    local rx_skill_dst="${project_claude}/skills/rx"
+    if [[ -d "$rx_skill_src" ]]; then
+        # Copy entire rx directory (it's a TypeScript package, not a symlink target)
+        mkdir -p "$rx_skill_dst"
+        cp -r "$rx_skill_src"/* "$rx_skill_dst/" 2>/dev/null || true
+        log_ok "skills/rx: installed"
+    fi
+
+    log_ok "Project root .claude/ directory configured"
+}
+
+# Install workflows
+install_workflows() {
+    log_section "Installing Workflows"
+
+    local workflows_src="${REPO_DIR}/.claude/workflows"
+    local workflows_dst="${CLAUDE_DIR}/workflows"
+
+    if [[ ! -d "$workflows_src" ]]; then
+        log_warn "Workflows directory not found: ${workflows_src}"
+        return 0
+    fi
+
+    mkdir -p "$workflows_dst"
+
+    local workflow_count=0
+
+    # Copy workflow YAML files
+    for workflow_file in "${workflows_src}"/*.yaml "${workflows_src}"/*.yml; do
+        if [[ -f "$workflow_file" ]]; then
+            local filename=$(basename "$workflow_file")
+            cp "$workflow_file" "${workflows_dst}/${filename}"
+            log_ok "Installed workflow: ${filename%.yaml}"
+            ((workflow_count++))
+        fi
+    done
+
+    # Copy README if exists
+    if [[ -f "${workflows_src}/README.md" ]]; then
+        cp "${workflows_src}/README.md" "${workflows_dst}/README.md"
+        log_ok "Installed workflows README"
+    fi
+
+    log_ok "Workflows installed: ${workflow_count} workflows"
+}
+
+# Install plugins by adding them to settings.json (non-interactive)
+# This replaces `claude plugins install` which launches interactive sessions
+install_plugins() {
+    log_section "Configuring Plugins"
+
+    local settings_file="${CLAUDE_DIR}/settings.json"
+
+    if [[ ! -f "$settings_file" ]]; then
+        log_warn "Settings file not found: ${settings_file}"
+        return 1
+    fi
+
+    # Load plugin list from config/plugins.json (single source of truth)
+    local plugins_config="${REPO_DIR}/config/plugins.json"
+    local plugins=()
+
+    if [[ -f "$plugins_config" ]] && command -v jq &>/dev/null; then
+        while IFS= read -r plugin_id; do
+            plugins+=("$plugin_id")
+        done < <(jq -r '.[] | "\(.name)@\(.marketplace)"' "$plugins_config")
+        log_info "Loaded ${#plugins[@]} plugins from config/plugins.json"
+    else
+        # Fallback: hardcoded list if config file or jq unavailable
+        plugins=(
+            "superpowers@claude-plugins-official"
+            "context7@claude-plugins-official"
+            "code-review@claude-plugins-official"
+            "impeccable@impeccable"
+            "ralph-loop@claude-plugins-official"
+            "ralph-wiggum@claude-plugins-official"
+            "concourse-ci@netresearch-claude-code-marketplace"
+            "gopls-lsp@claude-plugins-official"
+            "typescript-lsp@claude-plugins-official"
+        )
+        log_warn "Using fallback plugin list (config/plugins.json not found or jq unavailable)"
+    fi
+
+    # Ensure enabledPlugins object exists
+    local temp_file
+    temp_file=$(mktemp)
+    jq '.enabledPlugins //= {}' "$settings_file" > "$temp_file"
+    mv "$temp_file" "$settings_file"
+
+    for plugin in "${plugins[@]}"; do
+        if jq -e ".enabledPlugins[\"${plugin}\"]" "$settings_file" &>/dev/null; then
+            log_ok "${plugin}: already enabled"
+        else
+            temp_file=$(mktemp)
+            jq --arg p "$plugin" '.enabledPlugins[$p] = true' "$settings_file" > "$temp_file"
+            if jq empty "$temp_file" 2>/dev/null; then
+                mv "$temp_file" "$settings_file"
+                log_ok "${plugin}: enabled"
+            else
+                log_error "Failed to enable ${plugin} (invalid JSON)"
+                rm -f "$temp_file"
+            fi
+        fi
+    done
+
+    log_ok "Plugins configured"
+}
+
+# Install testing tools (Pact)
+install_testing_tools() {
+    log_section "Installing Testing Tools"
+
+    # Install Pact CLI for contract testing
+    log_info "Installing Pact CLI for contract testing..."
+    if has_command pact; then
+        log_ok "Pact CLI already installed"
+    else
+        if npm install -g @pact-foundation/pact-cli 2>/dev/null; then
+            log_ok "Pact CLI installed"
+        else
+            log_warn "Could not install Pact CLI globally (may need sudo)"
+            log_info "Install manually: npm install -g @pact-foundation/pact-cli"
+        fi
+    fi
+
+    log_ok "Testing tools installation complete"
+}
+
+# Setup supergateway - shared MCP server instances across Claude sessions
+setup_supergateway() {
+    log_section "Setting Up Supergateway (Shared MCP Servers)"
+
+    local sg_src="${REPO_DIR}/supergateway"
+    local sg_dst="${CLAUDE_DIR}/supergateway"
+
+    if [[ ! -d "$sg_src" ]]; then
+        log_warn "Supergateway source not found: ${sg_src}"
+        return 0
+    fi
+
+    # Ensure supergateway npm package is available
+    log_info "Verifying supergateway package..."
+    if ! npx -y supergateway --version &>/dev/null; then
+        log_warn "supergateway not available via npx"
+        log_info "  It will be fetched on first run"
+    else
+        log_ok "supergateway available"
+    fi
+
+    # Create runtime directories
+    mkdir -p "${sg_dst}/pids" "${sg_dst}/logs"
+
+    # Copy config and scripts
+    cp "${sg_src}/config.json" "${sg_dst}/config.json"
+    for script in start.sh stop.sh status.sh; do
+        cp "${sg_src}/${script}" "${sg_dst}/${script}"
+        chmod +x "${sg_dst}/${script}"
+    done
+
+    log_ok "Supergateway scripts installed to ${sg_dst}"
+
+    # Install launchd plist for auto-start (macOS only)
+    if [[ "$(uname)" == "Darwin" ]]; then
+        local plist_name="com.gw.supergateway"
+        local plist_dst="${HOME}/Library/LaunchAgents/${plist_name}.plist"
+        local plist_src="${sg_src}/${plist_name}.plist"
+
+        if [[ -f "$plist_src" ]]; then
+            # Unload existing plist if loaded
+            launchctl bootout "gui/$(id -u)/${plist_name}" 2>/dev/null || true
+
+            # Generate plist with resolved paths
+            local current_path
+            current_path=$(echo "$PATH")
+            sed -e "s|__SUPERGATEWAY_DIR__|${sg_dst}|g" \
+                -e "s|__LOG_DIR__|${sg_dst}/logs|g" \
+                -e "s|__PATH__|${current_path}|g" \
+                "$plist_src" > "$plist_dst"
+
+            # Load the plist
+            launchctl bootstrap "gui/$(id -u)" "$plist_dst" 2>/dev/null || \
+                launchctl load "$plist_dst" 2>/dev/null || \
+                log_warn "Could not load launchd plist (may need manual load)"
+
+            log_ok "Launchd agent installed: ${plist_name}"
+            log_info "Supergateway will auto-start on login"
+        fi
+    fi
+
+    # Start the gateways now
+    log_info "Starting supergateway instances..."
+    if "${sg_dst}/start.sh"; then
+        log_ok "Supergateway instances running"
+    else
+        log_warn "Some supergateway instances failed to start"
+        log_info "  Check logs: ${sg_dst}/logs/"
+        log_info "  Manual start: ${sg_dst}/start.sh"
+    fi
+
+    # Update MCP configurations to use SSE transport
+    _update_mcp_for_supergateway
+
+    log_ok "Supergateway setup complete"
+}
+
+# Update MCP server configurations to use SSE transport via supergateway
+_update_mcp_for_supergateway() {
+    local settings_file="${CLAUDE_DIR}/settings.json"
+    local claude_json="${HOME}/.claude.json"
+    local sg_config="${CLAUDE_DIR}/supergateway/config.json"
+
+    if [[ ! -f "$sg_config" ]]; then
+        log_warn "Supergateway config not found, skipping MCP reconfiguration"
+        return 0
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        log_warn "jq not found, skipping MCP reconfiguration"
+        return 0
+    fi
+
+    # Read server configs
+    local server_names
+    server_names=$(jq -r '.servers | keys[]' "$sg_config")
+
+    for name in $server_names; do
+        local port scope
+        port=$(jq -r ".servers[\"${name}\"].port" "$sg_config")
+        scope=$(jq -r ".servers[\"${name}\"].scope" "$sg_config")
+        local sse_url="http://localhost:${port}/sse"
+
+        if [[ "$scope" == "user" ]]; then
+            # Update user-level MCP in ~/.claude.json
+            if [[ -f "$claude_json" ]]; then
+                local temp_file
+                temp_file=$(mktemp)
+
+                # Check if server exists in top-level mcpServers
+                if jq -e ".mcpServers[\"${name}\"]" "$claude_json" &>/dev/null; then
+                    # Replace stdio config with SSE
+                    jq ".mcpServers[\"${name}\"] = {\"type\": \"sse\", \"url\": \"${sse_url}\"}" \
+                        "$claude_json" > "$temp_file"
+
+                    if jq empty "$temp_file" 2>/dev/null; then
+                        mv "$temp_file" "$claude_json"
+                        log_ok "${name}: updated to SSE in ~/.claude.json (${sse_url})"
+                    else
+                        log_error "${name}: generated invalid JSON, skipping"
+                        rm -f "$temp_file"
+                    fi
+                else
+                    # Add new SSE entry
+                    jq ".mcpServers[\"${name}\"] = {\"type\": \"sse\", \"url\": \"${sse_url}\"}" \
+                        "$claude_json" > "$temp_file"
+
+                    if jq empty "$temp_file" 2>/dev/null; then
+                        mv "$temp_file" "$claude_json"
+                        log_ok "${name}: added as SSE to ~/.claude.json (${sse_url})"
+                    else
+                        rm -f "$temp_file"
+                    fi
+                fi
+            fi
+        else
+            # Project-scope servers: add to global settings.json mcpServers
+            if [[ -f "$settings_file" ]]; then
+                local temp_file
+                temp_file=$(mktemp)
+
+                jq ".mcpServers[\"${name}\"] = {\"type\": \"sse\", \"url\": \"${sse_url}\"}" \
+                    "$settings_file" > "$temp_file"
+
+                if jq empty "$temp_file" 2>/dev/null; then
+                    mv "$temp_file" "$settings_file"
+                    log_ok "${name}: added as SSE to settings.json (${sse_url})"
+                else
+                    rm -f "$temp_file"
+                fi
+            fi
+        fi
+    done
+
+    # Configure per-session stdio MCP servers (not shared via supergateway)
+    # Prefer stdio over supergateway SSE: stdio gives each session its own
+    # process, avoids the supergateway SSE reconnection crash bug, and
+    # eliminates shared-state conflicts between concurrent sessions.
+    if [[ -f "$claude_json" ]]; then
+        local temp_file
+        temp_file=$(mktemp)
+
+        jq '
+            del(.mcpServers["chrome-devtools"]) |
+            .mcpServers["CodeGraphContext"] = {"command": "cgc", "args": ["mcp", "start"], "type": "stdio"}
+        ' "$claude_json" > "$temp_file"
+
+        if jq empty "$temp_file" 2>/dev/null; then
+            mv "$temp_file" "$claude_json"
+            log_ok "chrome-devtools: removed from ~/.claude.json (replaced by Playwright)"
+            log_ok "CodeGraphContext: configured as stdio in ~/.claude.json"
+        else
+            log_error "stdio MCP servers: generated invalid JSON, skipping"
+            rm -f "$temp_file"
+        fi
+    fi
+}
+
+# Install tokf filters for fly and terraform commands
+setup_tokf() {
+    log_section "Setting Up Tokf Filters"
+
+    if ! has_command tokf; then
+        log_warn "tokf not installed - skipping filter setup"
+        log_info "  Install via: brew install mpecan/tokf/tokf"
+        return 0
+    fi
+
+    log_ok "tokf installed ($(tokf --version 2>/dev/null || echo 'unknown'))"
+
+    local tokf_src="${REPO_DIR}/tokf/filters"
+
+    if [[ ! -d "$tokf_src" ]]; then
+        log_warn "Tokf filter source not found: ${tokf_src}"
+        return 0
+    fi
+
+    # Determine user-level filter directory (macOS vs Linux)
+    local tokf_dst
+    if [[ "$(uname)" == "Darwin" ]]; then
+        tokf_dst="${HOME}/Library/Application Support/tokf/filters"
+    else
+        tokf_dst="${HOME}/.config/tokf/filters"
+    fi
+
+    # Copy filter directories preserving structure
+    local filter_count=0
+    while IFS= read -r -d '' filter_file; do
+        local rel_path="${filter_file#"${tokf_src}/"}"
+        local dest_dir
+        dest_dir="$(dirname "${tokf_dst}/${rel_path}")"
+        mkdir -p "$dest_dir"
+        cp "$filter_file" "${tokf_dst}/${rel_path}"
+        filter_count=$((filter_count + 1))
+    done < <(find "$tokf_src" -name '*.toml' -print0)
+
+    if [[ $filter_count -gt 0 ]]; then
+        log_ok "Installed ${filter_count} tokf filters to ${tokf_dst}"
+    else
+        log_warn "No .toml filter files found in ${tokf_src}"
+    fi
+
+    log_ok "Tokf filter setup complete"
+}
+
+install_playwright() {
+    log_section "Installing Playwright"
+
+    if ! has_command npx; then
+        log_warn "npx not available - skipping Playwright install"
+        log_info "  Install Node.js first, then re-run install.sh"
+        return 0
+    fi
+
+    # Install Chromium browser binary
+    if npx playwright install chromium 2>/dev/null; then
+        log_ok "Chromium browser installed"
+    else
+        log_warn "Failed to install Chromium browser"
+        log_info "  Run manually: npx playwright install chromium"
+    fi
+}
+
+    fi
+
+    log_ok "CodeGraphContext setup complete"
+}
+
+# Setup agentdb (remote memory service)
+setup_agentdb_mcp() {
+    log_section "Setting Up AgentDB MCP (Remote Memory)"
+
+    local settings_file="${CLAUDE_DIR}/settings.json"
+    local agentdb_url="YOUR_AGENTDB_URL/sse"
+
+    # Check if already configured
+    if grep -q '"agentdb"' "$settings_file" 2>/dev/null; then
+        log_ok "agentdb: already configured in settings"
+        return 0
+    fi
+
+    echo ""
+    log_info "AgentDB MCP provides persistent memory across Claude sessions."
+    log_info "Service URL: ${agentdb_url}"
+    echo ""
+
+    # Try to get API key from AWS Secrets Manager
+    local api_key=""
+    if has_command aws; then
+        log_info "Attempting to retrieve API key from AWS Secrets Manager..."
+        api_key=$(aws secretsmanager get-secret-value \
+            --secret-id agentdb-dev-api-key \
+            --region us-east-1 \
+            --query 'SecretString' \
+            --output text 2>/dev/null | jq -r '.apiKey' 2>/dev/null || echo "")
+    fi
+
+    if [[ -z "$api_key" ]]; then
+        log_warn "Could not retrieve API key automatically."
+        log_info "You need the 'agentdb-dev-read-api-key' IAM policy attached to your user."
+        log_info "Or get the key manually: ./scripts/get-api-key.sh (in agentdb repo)"
+        echo ""
+        read -sp "Enter AgentDB API Key (or press Enter to skip): " input_api_key
+        echo ""
+        api_key="$input_api_key"
+    fi
+
+    if [[ -z "$api_key" ]]; then
+        log_warn "Skipping agentdb configuration (no API key)"
+        log_info "To add later, run: ./scripts/install.sh --configure-agentdb"
+        return 0
+    fi
+
+    # Add to settings.json using jq
+    if has_command jq; then
+        local temp_file=$(mktemp)
+        jq --arg url "$agentdb_url" --arg key "$api_key" \
+            '.mcpServers["agentdb"] = {
+                "url": $url,
+                "transport": "sse",
+                "headers": { "X-Api-Key": $key }
+            }' "$settings_file" > "$temp_file"
+        mv "$temp_file" "$settings_file"
+        log_ok "agentdb configured in settings.json"
+    else
+        log_warn "jq not found - please add agentdb manually to ${settings_file}"
+        log_info "Configuration:"
+        cat <<EOF
+    "agentdb": {
+      "url": "${agentdb_url}",
+      "transport": "sse",
+      "headers": {
+        "X-Api-Key": "${api_key}"
+      }
+    }
+EOF
+    fi
+}
+
+# configure_settings() REMOVED
+# Settings are now fully managed by install_global_hook_config() using
+# base/.claude/settings.template.json as the single source of truth.
+# The old templates/settings.json.template was a stale duplicate.
+configure_settings() {
+    log_info "Note: Settings managed by install_global_hook_config()"
+}
+
+# Copy CLAUDE.md template to user's home for reference
+setup_claude_md() {
+    log_section "Setting Up Global CLAUDE.md"
+
+    local template="${REPO_DIR}/CLAUDE.md.template"
+    local target="${CLAUDE_DIR}/CLAUDE.md"
+
+    if [[ -f "$target" ]]; then
+        log_warn "Global CLAUDE.md already exists"
+        read -p "Append project-agents instructions? (y/N): " confirm
+        if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+            echo "" >> "$target"
+            echo "# Project Agents Integration" >> "$target"
+            echo "$(cat "$template")" >> "$target"
+            log_ok "Project Agents instructions appended"
+        fi
+    else
+        cp "$template" "$target"
+        log_ok "Global CLAUDE.md created"
+    fi
+}
+
+# Install parent CLAUDE.md to project root
+setup_parent_claude_md() {
+    log_section "Setting Up Parent CLAUDE.md"
+
+    # Load configuration
+    if [[ -f "$ENV_FILE" ]]; then
+        source "$ENV_FILE"
+    fi
+
+    # Resolve project root
+    local project_root="${PROJECT_ROOT:-$(dirname "$REPO_DIR")}"
+    if [[ "$project_root" == ".." || "$project_root" == "../"* ]]; then
+        project_root="$(cd "$REPO_DIR" && cd "$project_root" && pwd)"
+    fi
+
+    local template="${REPO_DIR}/templates/parent-CLAUDE.md"
+    local target="${project_root}/CLAUDE.md"
+
+    if [[ ! -f "$template" ]]; then
+        log_warn "Parent CLAUDE.md template not found: ${template}"
+        return 1
+    fi
+
+    if [[ -f "$target" ]]; then
+        # Check if it's managed by project-agents (has our footer)
+        if grep -q "Managed by project-agents" "$target" 2>/dev/null; then
+            log_info "Updating existing parent CLAUDE.md..."
+            cp "$target" "${target}.backup.$(date +%Y%m%d_%H%M%S)"
+            cp "$template" "$target"
+            log_ok "Parent CLAUDE.md updated at ${target}"
+        else
+            log_warn "Parent CLAUDE.md exists but is not managed by project-agents"
+            read -p "Replace with project-agents template? Existing will be backed up. (y/N): " confirm
+            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+                cp "$target" "${target}.backup.$(date +%Y%m%d_%H%M%S)"
+                cp "$template" "$target"
+                log_ok "Parent CLAUDE.md replaced at ${target}"
+                log_info "Backup saved with .backup.* extension"
+            else
+                log_info "Keeping existing parent CLAUDE.md"
+            fi
+        fi
+    else
+        cp "$template" "$target"
+        log_ok "Parent CLAUDE.md created at ${target}"
+    fi
+}
+
+# Show status of current setup
+show_status() {
+    log_section "Current Setup Status"
+
+    # Check Claude CLI
+    if has_command claude; then
+        log_ok "Claude Code CLI: installed"
+    else
+        log_warn "Claude Code CLI: not installed"
+    fi
+
+    # Check MCP servers
+    echo ""
+    log_info "MCP Servers:"
+    if claude mcp list &>/dev/null; then
+        claude mcp list
+    else
+        log_warn "Could not list MCP servers"
+    fi
+
+    # Check commands
+    echo ""
+    log_info "Installed Commands:"
+    local cmd_count=0
+    for cmd in "${CLAUDE_DIR}/commands"/*.md; do
+        if [[ -f "$cmd" ]]; then
+            echo "  - $(basename "${cmd%.md}")"
+            ((cmd_count++))
+        fi
+    done
+    log_info "Total: ${cmd_count} commands"
+
+    # Check hooks
+    echo ""
+    log_info "Installed Hooks:"
+    local hook_count=0
+    for hook in "${CLAUDE_DIR}/hooks"/*.py "${CLAUDE_DIR}/hooks"/*.sh; do
+        if [[ -f "$hook" ]]; then
+            echo "  - $(basename "$hook")"
+            ((hook_count++))
+        fi
+    done
+    log_info "Total: ${hook_count} hooks"
+
+    # Check .env
+    echo ""
+    if [[ -f "$ENV_FILE" ]]; then
+        log_ok "Credentials file: ${ENV_FILE}"
+    else
+        log_warn "Credentials file: not found (run install.sh to configure)"
+    fi
+}
+
+# Uninstall
+uninstall() {
+    log_section "Uninstalling Project Agents Configuration"
+
+    read -p "This will remove project workflow commands and hooks. Continue? (y/N): " confirm
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        log_info "Aborted"
+        exit 0
+    fi
+
+    # Remove commands
+    for cmd in plan groom work validate audit next bug issue fix-pipeline; do
+        rm -f "${CLAUDE_DIR}/commands/${cmd}.md"
+    done
+    log_ok "Commands removed"
+
+    # Remove hooks
+    rm -f "${CLAUDE_DIR}/hooks/workflow-pattern-trainer.py"
+    log_ok "Hooks removed"
+
+    # Remove MCP servers
+    for mcp in jira bitbucket; do
+        claude mcp remove "$mcp" 2>/dev/null || true
+    done
+    log_ok "Project MCP servers removed (core servers retained)"
+
+    log_ok "Uninstall complete"
+}
+
+# Show usage
+usage() {
+    cat <<EOF
+Project Agents - Developer Setup Script
+
+Usage:
+  ${0##*/}                    Interactive setup
+  ${0##*/} --check            Check current setup status
+  ${0##*/} --update-commands  Update workflow commands only
+  ${0##*/} --configure-repos  Configure and clone project repositories
+  ${0##*/} --configure-agentdb Configure agentdb only
+  ${0##*/} --configure-supergateway Configure supergateway only
+  ${0##*/} --uninstall        Remove project configuration
+
+Options:
+  --check              Show current setup status
+  --validate           Validate current installation integrity
+  --update-commands    Update workflow commands only
+  --configure-repos    Configure project repositories (PROJECT_REPOS in .env)
+                       and clone any missing repositories
+  --configure-agentdb  Configure agentdb remote memory service
+  --configure-supergateway  Configure supergateway shared MCP servers
+  --uninstall          Remove tenant-specific configuration
+  --help               Show this help message
+
+Multi-Repo Setup:
+  The install script can clone all project repositories for new developers.
+  Configure PROJECT_REPOS in .env or use --configure-repos to set up interactively.
+
+  Default repositories:
+    api, spa, auth, sdk, docs, test-data, e2e, evals, migrations
+
+Documentation:
+  README.md          Overview and quick start
+  docs/MCP-SETUP.md  Detailed MCP server setup
+
+EOF
+    exit 0
+}
+
+# Update commands only
+update_commands() {
+    log_section "Updating Workflow Commands"
+    install_commands
+    install_hooks
+    install_statusline
+    install_global_hook_config
+    setup_project_hooks
+    install_skills
+    generate_skills_cache
+    symlink_skills_to_project
+    setup_project_claude_dir
+    install_workflows
+    log_ok "Commands, hooks, skills, and workflows updated"
+}
+
+# Configure agentdb only
+configure_agentdb_only() {
+    log_section "Configuring AgentDB MCP"
+    setup_agentdb_mcp
+    log_ok "AgentDB MCP configuration complete"
+}
+
+# Configure supergateway only
+configure_supergateway_only() {
+    log_section "Configuring Supergateway"
+    setup_supergateway
+    log_ok "Supergateway configuration complete"
+}
+
+# Configure and clone project repos only
+configure_repos_only() {
+    log_section "Configuring Project Repositories"
+    configure_project_repos
+    setup_project_repos
+    log_ok "Project repository configuration complete"
+}
+
+# Update tool permissions in settings.json
+update_tool_permissions() {
+    log_section "Updating Tool Permissions"
+
+    local permissions_script="${REPO_DIR}/scripts/update-permissions.sh"
+
+    if [[ -x "$permissions_script" ]]; then
+        "$permissions_script" --claude-dir "$CLAUDE_DIR"
+    else
+        log_warn "Permissions script not found or not executable: ${permissions_script}"
+        log_info "Skipping automatic permission updates"
+    fi
+}
+
+# Validate installation integrity
+validate_installation() {
+    log_section "Validating Installation"
+
+    local errors=0
+
+    # 1. Validate settings.json is valid JSON
+    local settings_file="${CLAUDE_DIR}/settings.json"
+    if [[ -f "$settings_file" ]]; then
+        if jq empty "$settings_file" 2>/dev/null; then
+            log_ok "settings.json: valid JSON"
+        else
+            log_error "settings.json: INVALID JSON"
+            errors=$((errors + 1))
+        fi
+    else
+        log_error "settings.json: not found"
+        errors=$((errors + 1))
+    fi
+
+    # 2. Verify hook scripts exist
+    local hook_scripts=(
+        "session-start-workflow-prompt.py"
+        "result-compressor.py"
+        "post-command.py"
+        "workflow-pattern-trainer.py"
+        "memory-optimizer.sh"
+        "enforce-worktree.sh"
+        "checkpoint-loader.py"
+    )
+    local hook_dir="${CLAUDE_DIR}/hooks"
+    for hook in "${hook_scripts[@]}"; do
+        if [[ -f "${hook_dir}/${hook}" ]]; then
+            log_ok "hook ${hook}: present"
+        else
+            log_warn "hook ${hook}: missing"
+        fi
+    done
+
+    # 3. Verify required commands
+    local cmd_dir="${CLAUDE_DIR}/commands"
+    local required_commands=("work" "validate" "next" "implement" "review" "fix-pr" "resolve-pr")
+    for cmd in "${required_commands[@]}"; do
+        if [[ -f "${cmd_dir}/${cmd}.md" ]]; then
+            log_ok "command /${cmd}: installed"
+        else
+            log_warn "command /${cmd}: missing"
+        fi
+    done
+
+    # 4. Verify plugins configured
+    if [[ -f "$settings_file" ]]; then
+        local plugin_count
+        plugin_count=$(jq '.enabledPlugins // {} | length' "$settings_file" 2>/dev/null || echo "0")
+        if [[ "$plugin_count" -gt 0 ]]; then
+            log_ok "Plugins configured: ${plugin_count}"
+        else
+            log_warn "No plugins configured"
+        fi
+    fi
+
+    # 5. Verify brew packages
+    if command -v jq &>/dev/null; then
+        load_brew_packages "$BASE_CONFIG_DIR" "$TENANT_CONFIG_DIR"
+        local pkg_count
+        pkg_count=$(echo "$BREW_PACKAGES" | jq 'length')
+        local i=0
+        while [[ $i -lt $pkg_count ]]; do
+            local name required
+            name=$(echo "$BREW_PACKAGES" | jq -r ".[$i].name")
+            required=$(echo "$BREW_PACKAGES" | jq -r ".[$i].required")
+            local cmd_name="${name##*/}"
+            if command -v "$cmd_name" &>/dev/null || brew list --formula "$name" &>/dev/null 2>&1; then
+                log_ok "brew ${name}: installed"
+            elif [[ "$required" == "true" ]]; then
+                log_error "brew ${name}: MISSING (required)"
+                errors=$((errors + 1))
+            else
+                log_warn "brew ${name}: not installed (optional)"
+            fi
+            i=$((i + 1))
+        done
+    fi
+
+    # 6. Verify statusline
+    if [[ -f "${CLAUDE_DIR}/statusline-command.sh" ]]; then
+        log_ok "statusline: installed"
+    else
+        log_warn "statusline: missing"
+    fi
+
+    # 7. Verify skill symlinks
+    local project_root="${PROJECT_ROOT:-$(dirname "$REPO_DIR")}"
+    if [[ "$project_root" == ".." || "$project_root" == "../"* ]]; then
+        project_root="$(cd "$REPO_DIR" && cd "$project_root" && pwd)"
+    fi
+    local skill_dirs=("jira" "bitbucket" "agentdb" "slack" "playwright")
+    for skill in "${skill_dirs[@]}"; do
+        if [[ -L "${project_root}/.claude/skills/${skill}" ]] || [[ -d "${project_root}/.claude/skills/${skill}" ]]; then
+            log_ok "skill symlink ${skill}: present"
+        else
+            log_warn "skill symlink ${skill}: missing"
+        fi
+    done
+
+    # 8. Verify extraKnownMarketplaces includes impeccable
+    if [[ -f "$settings_file" ]]; then
+        if jq -e '.extraKnownMarketplaces.impeccable' "$settings_file" &>/dev/null; then
+            log_ok "impeccable marketplace: configured"
+        else
+            log_warn "impeccable marketplace: not configured"
+        fi
+    fi
+
+    echo ""
+    if [[ $errors -gt 0 ]]; then
+        log_error "Validation found ${errors} error(s)"
+        return 1
+    else
+        log_ok "Validation passed"
+        return 0
+    fi
+}
+
+# Main installation
+main() {
+    echo ""
+    echo -e "${CYAN}╔═══════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║   Project Agents - Claude Code Setup Script    ║${NC}"
+    echo -e "${CYAN}╚═══════════════════════════════════════════╝${NC}"
+    echo ""
+
+    check_prerequisites
+    install_claude_cli
+    init_base_agents_submodule
+    install_brew_packages
+    setup_claude_directory
+    install_core_mcp_servers
+    # setup_mcp_repos  # DEPRECATED: Skills now call REST APIs directly
+    setup_project_repos
+    setup_gw_docs
+    # setup_project_mcp_servers  # DEPRECATED: Skills now call REST APIs directly
+    install_commands
+    install_hooks
+    install_statusline
+    install_global_hook_config
+    setup_project_hooks
+    install_skills
+    generate_skills_cache
+    symlink_skills_to_project
+    setup_project_claude_dir
+    install_workflows
+    install_plugins
+    install_testing_tools
+    setup_codegraphcontext
+    setup_supergateway
+    setup_tokf
+    install_playwright
+    configure_settings
+    setup_agentdb_mcp
+    setup_claude_md
+    setup_parent_claude_md
+    update_tool_permissions
+    validate_installation
+
+    # --- Post-Install Verification (rx) ---
+    log_section "Post-Install Verification"
+    log_info "Running rx to verify installation..."
+
+    RX_SCRIPT="${CLAUDE_DIR}/skills/rx/rx.ts"
+    if [[ -f "$RX_SCRIPT" ]]; then
+      RX_OUTPUT=$(npx tsx "$RX_SCRIPT" --json 2>/dev/null || true)
+
+      if [[ -n "$RX_OUTPUT" ]]; then
+        TOTAL=$(echo "$RX_OUTPUT" | jq -r '.summary.total // 0')
+        PASS=$(echo "$RX_OUTPUT" | jq -r '.summary.pass // 0')
+        FIXED=$(echo "$RX_OUTPUT" | jq -r '.summary.fixed // 0')
+        FAIL=$(echo "$RX_OUTPUT" | jq -r '.summary.fail // 0')
+
+        if [[ "$FAIL" -eq 0 ]]; then
+          log_ok "All ${TOTAL} checks passed (${PASS} pass, ${FIXED} fixed)"
+        else
+          log_warn "${FAIL} checks failed out of ${TOTAL}. Run ./scripts/rx.sh for details."
+        fi
+      else
+        log_warn "rx verification returned empty output. Run ./scripts/rx.sh manually."
+      fi
+    else
+      log_info "rx skill not yet installed. Run ./scripts/rx.sh after installation to verify."
+    fi
+
+    # Cleanup old backups (keep 10 most recent)
+    source "${REPO_DIR}/scripts/cleanup-backups.sh"
+    cleanup_old_backups "${REPO_DIR}/.backups" 10
+
+    log_section "Setup Complete!"
+    echo ""
+    log_ok "Project Agents environment is ready"
+    echo ""
+    log_info "Available workflow commands:"
+    echo "  /plan <EPIC>      - Create planning document from Epic"
+    echo "  /groom <EPIC>     - Create Jira issues from planning doc"
+    echo "  /work <ISSUE>     - Implement issue through PR merge"
+    echo "  /validate <ISSUE> - Validate deployed changes"
+    echo "  /next             - Find next priority issue"
+    echo "  /bug <desc>       - Report and create bug issue"
+    echo "  /issue <desc>     - Create new issue"
+    echo "  /audit <URL>      - Run UI compliance audit"
+    echo ""
+    log_info "Autonomous workflow (ralph-wiggum plugin):"
+    echo "  /ralph-wiggum:ralph-loop \"<prompt>\" --completion-promise \"<text>\""
+    echo "  /cancel-ralph     - Stop running ralph loop"
+    echo ""
+    log_info "tenant-specific ralph loop:"
+    echo "  /ralph-wiggum:ralph-loop \"\$(cat .claude/ralph-prompts/gw-jira-workflow.md)\" \\"
+    echo "    --max-iterations 20 --completion-promise \"BACKLOG CLEAR\""
+    echo ""
+    log_info "Start Claude Code in your project directory:"
+    echo "  cd /path/to/your/project"
+    echo "  claude"
+    echo ""
+    log_info "Then try: /next"
+    echo ""
+}
+
+# Parse arguments
+case "${1:-}" in
+    --check|--status)
+        show_status
+        ;;
+    --validate)
+        validate_installation
+        ;;
+    --update-commands)
+        update_commands
+        ;;
+    --configure-repos)
+        configure_repos_only
+        ;;
+    --configure-agentdb)
+        configure_agentdb_only
+        ;;
+    --configure-supergateway)
+        configure_supergateway_only
+        ;;
+    --uninstall)
+        uninstall
+        ;;
+    --help|-h)
+        usage
+        ;;
+    *)
+        main
+        ;;
+esac

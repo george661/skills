@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# work — Run /work (or any command) on the local Ollama model at $0 cost
+#
+# Usage:
+#   work PROJ-730              # runs /work PROJ-730
+#   work PROJ-730 --team       # runs /work PROJ-730 --team
+#   SKILL_COMMAND=implement work PROJ-730   # runs /implement PROJ-730
+#
+# Environment:
+#   SKILL_COMMAND   — slash command to run (default: work)
+#   SKILL_VERBOSE   — set to 1 for debug output
+#
+# Requirements:
+#   - Ollama running locally with the target model
+#   - Ollama model alias: ollama cp qwen3-coder:30b global.anthropic.claude-sonnet-4-20250514-v1:0
+
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+  echo "Usage: work <issue-key> [flags...]"
+  echo "Example: work PROJ-730"
+  exit 1
+fi
+
+COMMAND="${SKILL_COMMAND:-work}"
+ISSUE="$1"
+shift
+EXTRA_ARGS="${*:-}"
+
+# Constants
+OLLAMA_API_KEY="sk-ant-api03-ollama000000000000000000000000000000000000000000000000000000000000000000000000000000-00000000AA"
+OLLAMA_CLAUDE_MODEL="global.anthropic.claude-sonnet-4-20250514-v1:0"
+PROJECT_ROOT="${PROJECT_ROOT:-${HOME}/dev/project}"
+
+# Build the prompt (same logic as the hook)
+PROMPT="Execute the /${COMMAND} workflow for ${ISSUE} ${EXTRA_ARGS}.
+
+Instructions are in ~/.claude/commands/${COMMAND}.md — read it with: cat ~/.claude/commands/${COMMAND}.md | head -200
+
+Follow the instructions step by step. Use bash for ALL operations:
+- Read files: cat <path>
+- Write files: cat > <path> << 'HEREDOC' ... HEREDOC
+- Search: grep -rn 'pattern' <dir>
+- Find files: find <dir> -name 'pattern'
+- Run tests: npm test, pytest, etc.
+- Git operations: git add, git commit, etc.
+
+IMPORTANT - Repository awareness:
+- The project root is at ${PROJECT_ROOT}/
+- Available repos: $(python3 -c "import json; print(', '.join(r['slug'] for r in json.load(open('${HOME}/.claude/config/repos.json')).get('repos',[])))" 2>/dev/null || echo 'repo-1, repo-2, repo-3')
+- Before implementing, check the Jira issue to determine which repo the work belongs in
+- Use cd ${PROJECT_ROOT}/<repo> before making changes
+- Current directory may NOT be the right repo — always verify"
+
+# Trim trailing whitespace
+PROMPT="${PROMPT%"${PROMPT##*[![:space:]]}"}"
+
+if [ "${SKILL_VERBOSE:-0}" = "1" ]; then
+  echo "[work] command=/${COMMAND} model=${OLLAMA_CLAUDE_MODEL}"
+  echo "[work] prompt length: ${#PROMPT} chars"
+fi
+
+echo "[work] /${COMMAND} ${ISSUE} → qwen3-coder:30b via Ollama (\$0 cost)"
+echo "[work] Starting... (this may take several minutes)"
+
+# Use env -i + bash -c (the only pattern that reliably works)
+exec env -i \
+  HOME="$HOME" \
+  PATH="$PATH" \
+  TERM="${TERM:-xterm-256color}" \
+  SHELL="${SHELL:-/bin/bash}" \
+  bash -c "
+export ANTHROPIC_API_KEY='${OLLAMA_API_KEY}'
+export ANTHROPIC_BASE_URL='http://localhost:11434'
+export CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1
+claude --model '${OLLAMA_CLAUDE_MODEL}' -p $(printf '%q' "${PROMPT}") --allowedTools 'Bash,Read,Write,Edit,Glob,Grep,LSP'
+"
