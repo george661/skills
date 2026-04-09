@@ -85,8 +85,8 @@ npx tsx ~/.claude/skills/vcs/get_ci_logs.ts '{"repo": "my-repo", "run_id": 12345
 {
   "my-repo": {
     "provider": "github",
-    "owner": "Mission-Sciences",
-    "remote_repo": "provider-sdk",
+    "owner": "your-org",
+    "remote_repo": "my-sdk",
     "ci": "github-actions"
   }
 }
