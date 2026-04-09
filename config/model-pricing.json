@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "description": "AWS Bedrock model pricing per 1M tokens (USD)",
+  "models": {
+    "anthropic.claude-opus-4-5-20251101-v1:0": {
+      "input": 15.0,
+      "output": 75.0
+    },
+    "anthropic.claude-sonnet-4-20250514-v1:0": {
+      "input": 3.0,
+      "output": 15.0
+    },
+    "anthropic.claude-haiku-4-5-20250514-v1:0": {
+      "input": 1.0,
+      "output": 5.0
+    }
+  },
+  "aliases": {
+    "opus": "anthropic.claude-opus-4-5-20251101-v1:0",
+    "sonnet": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "haiku": "anthropic.claude-haiku-4-5-20250514-v1:0"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "example-repo": {
+    "provider": "github",
+    "owner": "your-org",
+    "remote_repo": "example-repo",
+    "ci": "github-actions"
+  }
+}

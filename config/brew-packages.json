@@ -1,0 +1,44 @@
+[
+  {
+    "name": "jq",
+    "required": true,
+    "description": "JSON processor used by install/update scripts",
+    "version_command": "jq --version"
+  },
+  {
+    "name": "hurl",
+    "required": false,
+    "description": "HTTP testing tool for API contract tests",
+    "version_command": "hurl --version"
+  },
+  {
+    "name": "mpecan/tokf/tokf",
+    "required": false,
+    "description": "Token counting and formatting utility",
+    "version_command": "tokf --version"
+  },
+  {
+    "name": "ngrok",
+    "required": false,
+    "description": "Secure tunnels to localhost for testing webhooks and APIs",
+    "version_command": "ngrok version"
+  },
+  {
+    "name": "ollama",
+    "required": false,
+    "description": "Local LLM inference server with OpenAI-compatible API",
+    "version_command": "ollama --version"
+  },
+  {
+    "name": "pandoc",
+    "required": false,
+    "description": "Document converter used by render-pdf.sh to produce branded PDFs from Markdown. Also requires xelatex: brew install --cask mactex",
+    "version_command": "pandoc --version"
+  },
+  {
+    "name": "librsvg",
+    "required": false,
+    "description": "Provides rsvg-convert, used by render-pdf.sh to convert the project SVG logo to PNG for PDF headers",
+    "version_command": "rsvg-convert --version"
+  }
+]

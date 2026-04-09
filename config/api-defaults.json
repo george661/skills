@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "jira": {
+    "search_issues": {
+      "default_fields": "key,summary,status,priority,issuetype,assignee"
+    },
+    "get_issue": {
+      "default_fields": "key,summary,status,priority,description,labels,components,issuetype,assignee"
+    },
+    "list_transitions": {
+      "default_fields": "id,name,to"
+    }
+  },
+  "bitbucket": {
+    "list_pull_requests": {
+      "default_fields": "values.id,values.title,values.state,values.author,values.source,values.destination"
+    },
+    "get_pull_request": {
+      "default_fields": "id,title,state,description,source,destination,reviewers,participants"
+    },
+    "list_pipelines": {
+      "default_fields": "values.uuid,values.state,values.target,values.created_on,values.completed_on"
+    }
+  }
+}

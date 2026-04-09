@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "inline": [
+    {
+      "command": "create-implementation-plan",
+      "reason": "Local models misidentify current state and target wrong files"
+    },
+    {
+      "command": "review-implementation-plan",
+      "reason": "MODEL_TIER: opus quality gate"
+    },
+    {
+      "command": "review",
+      "reason": "MODEL_TIER: opus quality gate"
+    },
+    {
+      "command": "resolve-pr",
+      "reason": "Short, high-stakes merge operation — local models fail on VCS merge API"
+    }
+  ]
+}

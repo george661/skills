@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "eviction": {
+    "ttl_days": 30,
+    "max_active_episodes": 200,
+    "archive_strategy": "move"
+  },
+  "retrieval": {
+    "default_k": 3,
+    "max_k": 10
+  },
+  "namespaces": {
+    "operational": {
+      "ttl_days": 7,
+      "max_episodes": 50
+    },
+    "patterns": {
+      "ttl_days": 90,
+      "max_episodes": 100
+    },
+    "episodes": {
+      "ttl_days": 30,
+      "max_episodes": 200
+    }
+  }
+}

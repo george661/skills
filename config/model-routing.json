@@ -1,0 +1,413 @@
+{
+  "version": 3,
+  "providers": {
+    "bedrock": {
+      "type": "bedrock",
+      "description": "AWS Bedrock (Claude models via IAM auth)"
+    },
+    "ollama": {
+      "type": "openai",
+      "base_url": "http://localhost:11434",
+      "description": "Local Ollama instance",
+      "health_check": "http://localhost:11434/api/tags",
+      "cost_per_million_input": 0,
+      "cost_per_million_output": 0
+    }
+  },
+  "models": {
+    "opus": {
+      "provider": "bedrock",
+      "model": "global.anthropic.claude-opus-4-6-v1",
+      "cost_per_million_input": 15.0,
+      "cost_per_million_output": 75.0
+    },
+    "sonnet": {
+      "provider": "bedrock",
+      "model": "global.anthropic.claude-sonnet-4-6",
+      "cost_per_million_input": 3.0,
+      "cost_per_million_output": 15.0
+    },
+    "qwen3-32b": {
+      "provider": "ollama",
+      "model": "qwen3:32b",
+      "capabilities": [
+        "code",
+        "tools",
+        "agentic"
+      ]
+    },
+    "qwen3-8b": {
+      "provider": "ollama",
+      "model": "qwen3:8b",
+      "capabilities": [
+        "code",
+        "tools"
+      ]
+    },
+    "qwen3-coder-30b": {
+      "provider": "ollama",
+      "model": "qwen3-coder:30b",
+      "capabilities": [
+        "code",
+        "agentic"
+      ],
+      "notes": "MoE 30B total / 3.3B active. 78.7 tok/s on M3 Max. Best quality/speed ratio."
+    },
+    "qwen3.5-35b": {
+      "provider": "ollama",
+      "model": "qwen3.5:35b",
+      "capabilities": [
+        "code",
+        "tools",
+        "thinking"
+      ],
+      "notes": "Dense 35B. 38 tok/s on M3 Max. Quality contender for Go/React. Use think=false for code gen."
+    },
+    "qwen-coder-32b": {
+      "provider": "ollama",
+      "model": "qwen2.5-coder:32b",
+      "capabilities": [
+        "code"
+      ],
+      "notes": "Dense 32B. 15.9 tok/s. Superseded by qwen3-coder-30b."
+    },
+    "qwen-coder-7b": {
+      "provider": "ollama",
+      "model": "qwen2.5-coder:7b",
+      "capabilities": [
+        "code"
+      ],
+      "notes": "Dense 7B. 64.9 tok/s. Good for simple tasks."
+    },
+    "deepseek-r1-32b": {
+      "provider": "ollama",
+      "model": "deepseek-r1:32b",
+      "capabilities": [
+        "reasoning",
+        "cot"
+      ]
+    },
+    "deepseek-r1-8b": {
+      "provider": "ollama",
+      "model": "deepseek-r1:8b",
+      "capabilities": [
+        "reasoning"
+      ]
+    },
+    "glm-flash": {
+      "provider": "ollama",
+      "model": "glm-4.7-flash",
+      "capabilities": [
+        "tools",
+        "thinking"
+      ]
+    },
+    "gemma4-26b": {
+      "provider": "ollama",
+      "model": "gemma4:26b",
+      "capabilities": [
+        "code",
+        "agentic",
+        "multimodal",
+        "tools"
+      ],
+      "notes": "MoE 25.2B total / 3.8B active. Multimodal (text/image/video). Native tool calling. 256K context."
+    },
+    "nomic-embed": {
+      "provider": "ollama",
+      "model": "nomic-embed-text:latest",
+      "capabilities": [
+        "embedding"
+      ]
+    },
+    "local": {
+      "coding": "qwen3-coder:30b",
+      "fast": "qwen2.5-coder:7b",
+      "reasoning": "deepseek-r1:32b",
+      "embedding": "nomic-embed-text:latest",
+      "base_url": "http://localhost:11434/v1"
+    }
+  },
+  "defaults": {
+    "main": "opus",
+    "subagent": "sonnet",
+    "exploration": "qwen3-coder-30b",
+    "fallback": "qwen3-coder-30b",
+    "local_coding": "local.coding",
+    "local_fast": "local.fast",
+    "local_reasoning": "local.reasoning"
+  },
+  "commands": {
+    "plan": {
+      "main": "opus"
+    },
+    "groom": {
+      "main": "opus"
+    },
+    "work": {
+      "main": "opus",
+      "subagents": {
+        "implementer": "sonnet",
+        "tester": "sonnet",
+        "monitor": "qwen3-coder-30b"
+      }
+    },
+    "review": {
+      "main": "opus"
+    },
+    "implement": {
+      "main": "sonnet"
+    },
+    "create-implementation-plan": {
+      "main": "opus"
+    },
+    "fix-pr": {
+      "main": "sonnet"
+    },
+    "fix-plan": {
+      "main": "sonnet"
+    },
+    "fix-implementation-plan": {
+      "main": "sonnet"
+    },
+    "review-implementation-plan": {
+      "main": "opus"
+    },
+    "fix-groom": {
+      "main": "sonnet"
+    },
+    "fix-pipeline": {
+      "main": "sonnet"
+    },
+    "resolve-pr": {
+      "main": "sonnet"
+    },
+    "issue": {
+      "main": "sonnet"
+    },
+    "bug": {
+      "main": "sonnet"
+    },
+    "change": {
+      "main": "sonnet"
+    },
+    "update-docs": {
+      "main": "sonnet"
+    },
+    "release-notes": {
+      "main": "sonnet"
+    },
+    "deploy-bypass": {
+      "main": "sonnet"
+    },
+    "consolidate-prs": {
+      "main": "sonnet"
+    },
+    "next": {
+      "main": "qwen3-coder-30b"
+    },
+    "validate": {
+      "main": "opus"
+    },
+    "validate-deploy-status": {
+      "main": "qwen3-coder-30b"
+    },
+    "validate-run-tests": {
+      "main": "qwen3-coder-30b"
+    },
+    "validate-collect-evidence": {
+      "main": "qwen3-coder-30b"
+    },
+    "validate-evaluate": {
+      "main": "opus"
+    },
+    "validate-transition": {
+      "main": "opus"
+    },
+    "validate-issue": {
+      "main": "qwen3-coder-30b"
+    },
+    "validate-plan": {
+      "main": "qwen3-coder-30b"
+    },
+    "validate-groom": {
+      "main": "qwen3-coder-30b"
+    },
+    "validate-all": {
+      "main": "qwen3-coder-30b"
+    },
+    "garden": {
+      "main": "qwen3-coder-30b"
+    },
+    "garden-cache": {
+      "main": "qwen3-coder-30b"
+    },
+    "garden-relevancy": {
+      "main": "qwen3-coder-30b"
+    },
+    "garden-accuracy": {
+      "main": "qwen3-coder-30b"
+    },
+    "garden-readiness": {
+      "main": "qwen3-coder-30b"
+    },
+    "sequence": {
+      "main": "qwen3-coder-30b"
+    },
+    "sequence-json": {
+      "main": "qwen3-coder-30b"
+    },
+    "investigate": {
+      "main": "qwen3-coder-30b"
+    },
+    "audit": {
+      "main": "qwen3-coder-30b"
+    },
+    "cleanup-worktrees": {
+      "main": "qwen3-coder-30b"
+    },
+    "reclaim": {
+      "main": "qwen3-coder-30b"
+    },
+    "metrics:report": {
+      "main": "qwen3-coder-30b"
+    },
+    "metrics:baseline": {
+      "main": "qwen3-coder-30b"
+    },
+    "metrics:current": {
+      "main": "qwen3-coder-30b"
+    },
+    "metrics:compare": {
+      "main": "qwen3-coder-30b"
+    },
+    "metrics:before-after": {
+      "main": "qwen3-coder-30b"
+    },
+    "metrics:models": {
+      "main": "qwen3-coder-30b"
+    },
+    "loop:issue": {
+      "inherit": "work"
+    },
+    "loop:epic": {
+      "inherit": "work"
+    },
+    "loop:backlog": {
+      "inherit": "work"
+    },
+    "triage": {
+      "main": "sonnet"
+    },
+    "scrub-issue": {
+      "main": "qwen3-coder-30b"
+    }
+  },
+  "active_profile": "gemma4_test",
+  "profiles": {
+    "default": {
+      "description": "Use commands section as-is, no overrides."
+    },
+    "cost_optimized": {
+      "description": "Local model for implementation/validation, Opus for orchestration/review.",
+      "overrides": {
+        "implement": "qwen3-coder-30b",
+        "fix-pr": "qwen3-coder-30b",
+        "fix-plan": "qwen3-coder-30b",
+        "fix-groom": "qwen3-coder-30b",
+        "fix-pipeline": "qwen3-coder-30b",
+        "resolve-pr": "qwen3-coder-30b",
+        "issue": "qwen3-coder-30b",
+        "bug": "qwen3-coder-30b",
+        "change": "qwen3-coder-30b",
+        "update-docs": "qwen3-coder-30b",
+        "release-notes": "qwen3-coder-30b",
+        "deploy-bypass": "qwen3-coder-30b",
+        "consolidate-prs": "qwen3-coder-30b",
+        "triage": "qwen3-coder-30b",
+        "validate": "opus",
+        "validate-evaluate": "opus",
+        "validate-transition": "opus",
+        "create-implementation-plan": "qwen3-coder-30b",
+        "fix-implementation-plan": "qwen3-coder-30b"
+      }
+    },
+    "quality_optimized": {
+      "description": "Claude for implementation, local only for validation/analysis.",
+      "overrides": {
+        "implement": "sonnet",
+        "work": "sonnet"
+      }
+    },
+    "gemma4_test": {
+      "description": "Gemma 4 26B MoE for implementation/validation. Same routing as cost_optimized but swaps qwen3-coder for gemma4. A/B test profile.",
+      "overrides": {
+        "implement": "gemma4-26b",
+        "fix-pr": "gemma4-26b",
+        "fix-plan": "gemma4-26b",
+        "fix-groom": "gemma4-26b",
+        "fix-pipeline": "gemma4-26b",
+        "resolve-pr": "gemma4-26b",
+        "issue": "gemma4-26b",
+        "bug": "gemma4-26b",
+        "change": "gemma4-26b",
+        "update-docs": "gemma4-26b",
+        "release-notes": "gemma4-26b",
+        "deploy-bypass": "gemma4-26b",
+        "consolidate-prs": "gemma4-26b",
+        "triage": "gemma4-26b",
+        "validate": "opus",
+        "validate-evaluate": "opus",
+        "validate-transition": "opus",
+        "create-implementation-plan": "gemma4-26b",
+        "fix-implementation-plan": "gemma4-26b",
+        "next": "gemma4-26b",
+        "validate-deploy-status": "gemma4-26b",
+        "validate-run-tests": "gemma4-26b",
+        "validate-collect-evidence": "gemma4-26b",
+        "validate-issue": "gemma4-26b",
+        "validate-plan": "gemma4-26b",
+        "validate-groom": "gemma4-26b",
+        "validate-all": "gemma4-26b",
+        "garden": "gemma4-26b",
+        "garden-cache": "gemma4-26b",
+        "garden-relevancy": "gemma4-26b",
+        "garden-accuracy": "gemma4-26b",
+        "garden-readiness": "gemma4-26b",
+        "sequence": "gemma4-26b",
+        "sequence-json": "gemma4-26b",
+        "investigate": "gemma4-26b",
+        "audit": "gemma4-26b",
+        "cleanup-worktrees": "gemma4-26b",
+        "reclaim": "gemma4-26b",
+        "scrub-issue": "gemma4-26b"
+      }
+    },
+    "all_local": {
+      "description": "Everything on local model including orchestration.",
+      "overrides": {
+        "work": "qwen3-coder-30b",
+        "review": "qwen3-coder-30b",
+        "review-implementation-plan": "qwen3-coder-30b",
+        "plan": "qwen3-coder-30b",
+        "groom": "qwen3-coder-30b",
+        "implement": "qwen3-coder-30b",
+        "create-implementation-plan": "qwen3-coder-30b",
+        "fix-implementation-plan": "qwen3-coder-30b",
+        "fix-pr": "qwen3-coder-30b",
+        "fix-plan": "qwen3-coder-30b",
+        "fix-groom": "qwen3-coder-30b",
+        "fix-pipeline": "qwen3-coder-30b",
+        "resolve-pr": "qwen3-coder-30b",
+        "issue": "qwen3-coder-30b",
+        "bug": "qwen3-coder-30b",
+        "change": "qwen3-coder-30b",
+        "update-docs": "qwen3-coder-30b",
+        "release-notes": "qwen3-coder-30b",
+        "deploy-bypass": "qwen3-coder-30b",
+        "consolidate-prs": "qwen3-coder-30b",
+        "triage": "qwen3-coder-30b"
+      }
+    }
+  }
+}

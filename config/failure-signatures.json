@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "signatures": [
+    {
+      "pattern": "ExpiredTokenException|The SSO.*token.*expired|UnauthorizedSSOTokenException",
+      "type": "aws-token-expired",
+      "suggested_fix": "Run: aws sso login --profile <profile>",
+      "promotion_threshold": 2
+    },
+    {
+      "pattern": "ENOENT.*\\.claude/skills|Cannot find.*\\.claude/skills|no such file.*skills",
+      "type": "wrong-cwd-skill",
+      "suggested_fix": "Run skills from $PROJECT_ROOT where .env lives, not from a subdirectory",
+      "promotion_threshold": 2
+    },
+    {
+      "pattern": "fly.*not authorized|not logged in.*concourse|token.*expired.*fly",
+      "type": "concourse-not-authenticated",
+      "suggested_fix": "Run: fly -t ${CI_TARGET} login -c https://ci.dev.example.com -n main -b",
+      "promotion_threshold": 2
+    },
+    {
+      "pattern": "Access-Control-Allow-Origin|CORS|cors policy|has been blocked by CORS",
+      "type": "missing-cors-config",
+      "suggested_fix": "New API routes in api-service require CORS configuration. Update cors.go.",
+      "promotion_threshold": 3
+    },
+    {
+      "pattern": "pre-commit hook.*failed|husky.*hook.*exit",
+      "type": "pre-commit-hook-failure",
+      "suggested_fix": "Run all TESTING.md pre-commit requirements before committing",
+      "promotion_threshold": 3
+    }
+  ]
+}

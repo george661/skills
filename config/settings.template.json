@@ -1,0 +1,236 @@
+{
+  "env": {
+    "CLAUDE_CODE_USE_BEDROCK": "1",
+    "AWS_DEFAULT_REGION": "us-east-1",
+    "AWS_REGION": "us-east-1",
+    "ANTHROPIC_MODEL": "global.anthropic.claude-opus-4-6-v1",
+    "ANTHROPIC_SMALL_FAST_MODEL": "global.anthropic.claude-sonnet-4-6",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "16384",
+    "DISABLE_PROMPT_CACHING": "0",
+    "ANTHROPIC_MAX_RETRIES": "5"
+  },
+  "permissions": {
+    "allow": [
+      "Bash",
+      "WebFetch",
+      "Write",
+      "Edit",
+      "MultiEdit",
+      "Read",
+      "Glob",
+      "Grep",
+      "LS",
+      "Task",
+      "ExitPlanMode",
+      "NotebookEdit",
+      "TodoWrite",
+      "BashOutput",
+      "KillBash",
+      "mcp__agentdb__*",
+      "Skill(superpowers:*)",
+      "mcp__playwright__*",
+      "mcp__contentful-mcp__*"
+    ],
+    "deny": [
+      "Bash(rm -rf /)"
+    ],
+    "defaultMode": "bypassPermissions"
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "skipAutoPermissionPrompt": true,
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py sync-repo-list"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py session-start-workflow-prompt"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py domain-context-injection"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py ollama-health-check"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py route-user-prompt",
+            "timeout": 1800
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "SlashCommand",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py route-slash-command",
+            "timeout": 1800
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py active_command_tracker"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py checkpoint-loader"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tokf hook handle"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py pre-command"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py pre-push-validation-wrapper"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py enforce-skill-project-root"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py second-brain-alert-checker"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py enforce-worktree"
+          }
+        ]
+      },
+      {
+        "matcher": "jira:transition_issue",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py warn-manual-jira-transition"
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py route-slash-command",
+            "timeout": 1800
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py domain-context-skill-hook"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py aws-sso-refresh",
+            "timeout": 120
+          }
+        ]
+      },
+      {
+        "matcher": "jira:.*|bitbucket:.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py result-compressor"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py jira-worklog-identity"
+          }
+        ]
+      },
+      {
+        "matcher": "SlashCommand",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py validation-loop"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py update-docs-hook"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py metrics-agentdb"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py session-cleanup"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py second-brain-transcript-capture",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hook-loader.py second-brain-transcript-capture",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  },
+  "includeCoAuthoredBy": false,
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline-command.sh"
+  },
+  "extraKnownMarketplaces": {
+    "impeccable": {
+      "source": {
+        "source": "github",
+        "owner": "pbakaus",
+        "repo": "impeccable"
+      }
+    }
+  },
+  "enabledPlugins": {}
+}

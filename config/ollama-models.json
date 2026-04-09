@@ -1,0 +1,77 @@
+{
+  "version": 3,
+  "description": "Local Ollama model configuration for ARM Mac (Apple Silicon)",
+  "hardware_profile": {
+    "target": "apple_silicon",
+    "min_ram_gb": 32,
+    "recommended_ram_gb": 48,
+    "gpu_backend": "metal"
+  },
+  "models": {
+    "coding": [
+      {
+        "name": "qwen3-coder:30b",
+        "alias": "qwen3-coder-30b",
+        "description": "Qwen 3 Coder 30B MoE (3.3B active) - 78.7 tok/s on M3 Max, 32B quality at 5x speed",
+        "size_gb": 19,
+        "ram_required_gb": 22,
+        "capabilities": ["code", "agentic"],
+        "tier": "primary",
+        "required": true
+      },
+      {
+        "name": "gemma4:26b",
+        "alias": "gemma4-26b",
+        "description": "Gemma 4 26B MoE (3.8B active) - multimodal (text/image/video), native tool calling, 256K context",
+        "size_gb": 18,
+        "ram_required_gb": 22,
+        "capabilities": ["code", "agentic", "multimodal", "tools"],
+        "tier": "experimental",
+        "required": false
+      },
+      {
+        "name": "qwen2.5-coder:7b",
+        "alias": "qwen-coder-7b",
+        "description": "Qwen 2.5 Coder 7B - fast triage and simple tasks",
+        "size_gb": 4.5,
+        "ram_required_gb": 7,
+        "capabilities": ["code", "code_completion"],
+        "tier": "fast",
+        "required": true
+      }
+    ],
+    "embedding": [
+      {
+        "name": "nomic-embed-text:latest",
+        "alias": "nomic-embed",
+        "description": "Nomic Embed Text - high-quality text embeddings",
+        "size_gb": 0.3,
+        "ram_required_gb": 1,
+        "capabilities": ["embedding"],
+        "tier": "utility",
+        "required": true
+      }
+    ]
+  },
+  "proxy": {
+    "description": "Ollama exposes an OpenAI-compatible API at /v1/",
+    "base_url": "http://localhost:11434",
+    "openai_compat_url": "http://localhost:11434/v1",
+    "health_endpoint": "http://localhost:11434/api/tags",
+    "default_coding_model": "qwen3-coder:30b",
+    "default_fast_model": "qwen2.5-coder:7b",
+    "default_embedding_model": "nomic-embed-text:latest"
+  },
+  "performance": {
+    "apple_silicon": {
+      "env": {
+        "OLLAMA_FLASH_ATTENTION": "1",
+        "OLLAMA_KV_CACHE_TYPE": "q8_0",
+        "OLLAMA_NUM_PARALLEL": "2",
+        "OLLAMA_MAX_LOADED_MODELS": "2",
+        "OLLAMA_KEEP_ALIVE": "10m"
+      },
+      "notes": "Metal GPU acceleration is automatic on Apple Silicon. Flash attention and KV cache quantization reduce memory usage significantly."
+    }
+  }
+}

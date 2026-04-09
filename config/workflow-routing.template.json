@@ -1,0 +1,47 @@
+{
+  "statuses": {
+    "TODO": "To Do",
+    "IN_PROGRESS": "In Progress",
+    "CODE_REVIEW": "Code Review",
+    "VALIDATE": "Validate",
+    "DONE": "Done"
+  },
+  "transitions": {
+    "START_WORK": "Start Progress",
+    "SUBMIT_FOR_REVIEW": "Submit for Review",
+    "APPROVE": "Approve",
+    "REQUEST_CHANGES": "Request Changes",
+    "COMPLETE": "Done"
+  },
+  "labels": {
+    "steps": {
+      "prefix": "step:",
+      "values": {
+        "PLAN": "step:plan",
+        "IMPLEMENT": "step:implement",
+        "REVIEW": "step:review",
+        "FIX_PR": "step:fix-pr",
+        "VALIDATE": "step:validate"
+      }
+    },
+    "outcomes": {
+      "prefix": "outcome:",
+      "values": {
+        "PR_CREATED": "outcome:pr-created",
+        "PIPELINE_PASSED": "outcome:pipeline-passed",
+        "PIPELINE_FAILED": "outcome:pipeline-failed",
+        "REVIEW_APPROVED": "outcome:review-approved",
+        "CHANGES_REQUESTED": "outcome:changes-requested"
+      }
+    },
+    "flags": {
+      "BLOCKED": "blocked",
+      "NEEDS_HUMAN": "needs-human"
+    }
+  },
+  "routing": {
+    "use_labels": true,
+    "use_statuses": true,
+    "label_precedence": true
+  }
+}
