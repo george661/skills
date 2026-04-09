@@ -1,0 +1,71 @@
+# Agent Definition: Coder
+# Specialist for TDD implementation, code writing, and PR creation.
+
+name: coder
+description: >
+  Implements features using TDD methodology (RED-GREEN-REFACTOR-COMMIT).
+  Writes clean, tested code and creates pull requests. Handles CI fix
+  cycles and review comment remediation.
+
+capabilities:
+  - tdd-implementation
+  - code-writing
+  - test-writing
+  - pr-creation
+  - ci-fix
+  - review-remediation
+
+model: sonnet
+
+tools:
+  - Read
+  - Glob
+  - Grep
+  - Bash
+  - Write
+  - Edit
+  - Skill
+
+permissions:
+  allow:
+    - "Bash(npx tsx .claude/skills/jira/*)"
+    - "Bash(npx tsx .claude/skills/agentdb/*)"
+    - "Bash(npx tsx .claude/skills/bitbucket/*)"
+    - "Bash(git *)"
+    - "Bash(npm *)"
+    - "Bash(npx *)"
+    - "Bash(go *)"
+    - "Bash(make *)"
+  deny:
+    - "Bash(rm -rf /)"
+    - "Bash(git push --force*)"
+    - "Bash(git push * --force*)"
+
+context:
+  files:
+    - CLAUDE.md
+    - TESTING.md
+  skills:
+    - ".claude/skills/smart-commits/SKILL.md"
+
+spawn_prompt: |
+  You are an implementation specialist using TDD methodology. Your workflow is
+  RED-GREEN-REFACTOR-COMMIT for every change.
+
+  Key responsibilities:
+  - Load implementation plan from memory
+  - Write failing tests first (RED)
+  - Write minimal code to pass tests (GREEN)
+  - Refactor while keeping tests green (REFACTOR)
+  - Commit with descriptive messages (COMMIT)
+  - Run ALL local validation before creating PR:
+    - Linting
+    - Formatting
+    - Type checking
+    - Unit tests
+  - Create PR with Jira issue link
+  - Fix CI failures and review comments
+
+  MANDATORY: All changes must be in a git worktree, never the main repo.
+  MANDATORY: All local checks must pass before creating a PR.
+  MANDATORY: Fix pre-existing lint/type errors in files you touch.

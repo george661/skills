@@ -1,0 +1,100 @@
+{
+    "version": "3.0",
+    "time_budget_ms": 120000,
+    "hooks": {
+        "sync-repo-list": {
+            "file": "sync-repo-list.sh",
+            "timeout": 10
+        },
+        "session-start-workflow-prompt": {
+            "file": "session-start-workflow-prompt.py",
+            "timeout": 10
+        },
+        "domain-context-injection": {
+            "file": "domain-context-injection.py",
+            "timeout": 10
+        },
+        "ollama-health-check": {
+            "file": "ollama-health-check.sh",
+            "timeout": 10
+        },
+        "route-user-prompt": {
+            "file": "route-user-prompt.py",
+            "timeout": 1800,
+            "max_failures": 5
+        },
+        "route-slash-command": {
+            "file": "route-slash-command.py",
+            "timeout": 1800,
+            "max_failures": 5
+        },
+        "active_command_tracker": {
+            "file": "active_command_tracker.py",
+            "timeout": 5
+        },
+        "checkpoint-loader": {
+            "file": "checkpoint-loader.py",
+            "timeout": 10
+        },
+        "pre-command": {
+            "file": "pre-command.py",
+            "timeout": 10
+        },
+        "pre-push-validation-wrapper": {
+            "file": "pre-push-validation.py",
+            "timeout": 30
+        },
+        "enforce-skill-project-root": {
+            "file": "enforce-skill-project-root.sh",
+            "timeout": 5
+        },
+        "enforce-worktree": {
+            "file": "enforce-worktree.sh",
+            "timeout": 5
+        },
+        "warn-manual-jira-transition": {
+            "file": "warn-manual-jira-transition.py",
+            "timeout": 5
+        },
+        "jira-worklog-identity": {
+            "file": "jira-worklog-identity.py",
+            "timeout": 5
+        },
+        "domain-context-skill-hook": {
+            "file": "domain-context-skill-hook.py",
+            "timeout": 10
+        },
+        "result-compressor": {
+            "file": "result-compressor.py",
+            "timeout": 10
+        },
+        "validation-loop": {
+            "file": "validation-loop.py",
+            "timeout": 10
+        },
+        "update-docs-hook": {
+            "file": "update-docs-hook.py",
+            "timeout": 10
+        },
+        "metrics-agentdb": {
+            "file": "metrics-agentdb.py",
+            "timeout": 10
+        },
+        "session-cleanup": {
+            "file": "session-cleanup.py",
+            "timeout": 30
+        },
+        "aws-sso-refresh": {
+            "file": "aws-sso-refresh.py",
+            "timeout": 120
+        },
+        "second-brain-transcript-capture": {
+            "file": "second-brain-transcript-capture.py",
+            "timeout": 30
+        },
+        "second-brain-alert-checker": {
+            "file": "second-brain-alert-checker.py",
+            "timeout": 5
+        }
+    }
+}

@@ -1,0 +1,157 @@
+# Team Definition: Work
+# Agent team composition for the /work command.
+# Full implementation workflow from issue to merged PR.
+#
+# Usage: /work PROJ-123 --team
+#
+# The team lead orchestrates the full lifecycle while specialized teammates
+# handle planning, implementation, CI monitoring, review, and validation.
+
+name: work-team
+command: /work
+description: >
+  Multi-agent team for full issue implementation. Coordinates planning,
+  TDD implementation, CI monitoring, code review, and validation across
+  specialized agents.
+
+
+agents:
+  - role: planner
+    agent: planner
+    count: 1
+    spawn_prompt_override: |
+      You are the planning specialist for the /work team. Your job is to
+      create the implementation plan for this issue.
+
+      Tasks:
+      1. Load issue details from Jira
+      2. Search AgentDB for relevant patterns and prior implementations
+      3. Classify the issue type (UI_DISPLAY, API_ENDPOINT, BACKEND_LOGIC, etc.)
+      4. Create a git worktree for the feature branch
+      5. Write an implementation plan with:
+         - Files to create/modify
+         - Test strategy (unit, integration, e2e)
+         - Validation criteria
+         - Dependencies and risks
+      6. Store plan in AgentDB memory
+
+      Report to team lead when planning is complete. The coder teammate
+      will use your plan for implementation.
+
+  - role: implementer
+    agent: coder
+    count: 1
+    spawn_prompt_override: |
+      You are the implementation specialist for the /work team. Your job is
+      to implement the feature using TDD methodology.
+
+      Wait for the planner to complete, then:
+      1. Load implementation plan from memory
+      2. Follow TDD cycle: RED → GREEN → REFACTOR → COMMIT
+      3. Run ALL local validation:
+         - Linting
+         - Formatting
+         - Type checking
+         - Unit tests
+      4. Create PR with Jira issue link
+      5. Fix any CI failures or review comments
+
+      MANDATORY: Work in the git worktree, not the main repo.
+      MANDATORY: All local checks must pass before creating PR.
+
+  - role: ci-monitor
+    agent: monitor
+    count: 1
+    spawn_prompt_override: |
+      You are the CI monitoring specialist for the /work team. Your job is
+      to watch the CI pipeline after PR creation.
+
+      Tasks:
+      1. Wait for implementer to create PR
+      2. Poll pipeline status every 60 seconds
+      3. On pipeline PASSED: notify team lead
+      4. On pipeline FAILED: extract failure logs and notify team lead
+         so the implementer can fix the issues
+
+      Report pipeline status transitions to the team lead.
+
+  - role: code-reviewer
+    agent: reviewer
+    count: 1
+    spawn_prompt_override: |
+      You are the code review specialist for the /work team. Your job is to
+      perform a thorough code review once CI passes.
+
+      Wait for CI to pass, then:
+      1. Fetch PR diff and related Jira issue context
+      2. Clone repo and checkout PR branch
+      3. Run local validation (TESTING.md commands)
+      4. Analyze: code quality, security, requirements, tests
+      5. Post inline comments with severity ratings
+      6. Post summary on PR and Jira
+
+      Require plan approval from team lead before starting review
+      to confirm CI has passed and PR is ready.
+
+task_flow:
+  - task: Create implementation plan and git worktree
+    assigned_to: planner
+    depends_on: []
+
+  - task: TDD implementation and PR creation
+    assigned_to: implementer
+    depends_on: [0]
+
+  - task: Monitor CI pipeline
+    assigned_to: ci-monitor
+    depends_on: [1]
+
+  - task: Code review (after CI passes)
+    assigned_to: code-reviewer
+    depends_on: [2]
+
+  - task: Address review comments and fix issues
+    assigned_to: implementer
+    depends_on: [3]
+
+  - task: Re-monitor CI after fixes
+    assigned_to: ci-monitor
+    depends_on: [4]
+
+  - task: Verify merge gate conditions
+    assigned_to: code-reviewer
+    depends_on: [5]
+
+lead_instructions: |
+  You are the team lead for the /work workflow. Coordinate the full
+  implementation lifecycle for a Jira issue.
+
+  **Workflow:**
+  1. Transition issue to In Progress, set step:implementing label
+  2. Spawn planner to create implementation plan
+  3. Once plan ready, assign implementer to build the feature (TDD)
+  4. Once PR created, spawn ci-monitor to watch pipeline
+  5. If CI fails, redirect implementer to fix issues (loop until CI passes)
+  6. Once CI passes, assign code-reviewer to review the PR
+  7. If review has critical/warning findings, redirect implementer to fix
+  8. Once review clean and CI passes, verify merge gate:
+     - CI passed
+     - No unresolved critical or warning comments
+     - No unresolved questions
+  9. Merge PR via squash strategy
+  10. Clean up worktree and feature branch
+  11. Transition to Validate status
+
+  **Gates (BLOCKING):**
+  - PR creation requires all local validation passing
+  - Review requires CI to have passed
+  - Merge requires CI passed + all critical/warning comments resolved
+  - NEVER merge with unresolved critical or warning comments
+
+  **Delegation mode recommended** for phases 1-7.
+
+  After merge:
+  - Update labels: remove step:*, add outcome:success-merged
+  - Store merge data in AgentDB
+  - Transition issue to Validate
+  - Note: /validate should be run separately after deployment completes

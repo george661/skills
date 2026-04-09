@@ -653,7 +653,7 @@ sync_project_repos() {
 }
 
 # Validate Docs centralized documentation structure
-validate_gw_docs() {
+validate_docs() {
     log_section "Validating Docs Configuration"
 
     # Load environment
@@ -2342,7 +2342,7 @@ main() {
     update_brew_packages
     setup_ollama_models
     sync_project_repos
-    validate_gw_docs
+    validate_docs
     # update_mcp_repos  # DEPRECATED: Skills now call REST APIs directly
     update_commands
     update_hooks

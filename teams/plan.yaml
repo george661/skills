@@ -1,0 +1,161 @@
+# Team Definition: Plan
+# Agent team composition for the /plan command.
+# Creates a PRP (Plan, Requirements, Process) document from an Epic.
+#
+# Usage: /plan PROJ-123 --team
+#
+# The team lead orchestrates the planning workflow while specialized
+# teammates handle research, PRP authoring, architectural review,
+# and security auditing in parallel where possible.
+
+name: plan-team
+command: /plan
+description: >
+  Multi-agent team for Epic planning. Parallelizes research, PRP authoring,
+  and multi-pass review across specialized agents.
+
+
+agents:
+  - role: researcher
+    agent: researcher
+    count: 1
+    spawn_prompt_override: |
+      You are the research specialist for the /plan team. Your job is to gather
+      all context needed for PRP creation.
+
+      Tasks:
+      1. Fetch the Epic from Jira and extract requirements
+      2. Search AgentDB for similar prior PRPs and patterns
+      3. Identify affected repositories and their current state
+      4. Map dependencies to other Epics/issues
+      5. Review existing documentation in project-docs for related designs
+
+      Report your findings to the team lead when complete. Include:
+      - Epic details and requirements summary
+      - Relevant prior patterns (with confidence scores)
+      - Affected repositories list
+      - Dependency map
+      - Existing documentation references
+
+  - role: author
+    agent: planner
+    count: 1
+    spawn_prompt_override: |
+      You are the PRP author for the /plan team. You create the PRP document
+      based on research findings.
+
+      Wait for the researcher to provide context, then:
+      1. Create PRP with sections: Problem, Requirements, Solution, Acceptance Criteria, Tasks
+      2. Define validation criteria for each task
+      3. Map tasks to repositories
+      4. Identify implementation order and dependencies
+      5. Write clear, testable acceptance criteria
+
+      Submit the draft PRP to the team lead for review coordination.
+
+  - role: arch-reviewer
+    agent: architect
+    count: 1
+    spawn_prompt_override: |
+      You are the architectural reviewer for the /plan team. You validate the
+      PRP against system architecture and perform security auditing.
+
+      Wait for the PRP draft, then perform TWO reviews:
+
+      **Architectural Review:**
+      - Domain boundary validation (correct repo ownership)
+      - Token economy integrity (SMART token flow)
+      - Publisher integration patterns
+      - Frontend/API architecture alignment
+      - Cross-repository impact assessment
+
+      **Security Audit (STRIDE):**
+      - Spoofing: authentication/authorization gaps
+      - Tampering: data integrity risks
+      - Repudiation: audit trail gaps
+      - Information Disclosure: data exposure risks
+      - Denial of Service: availability concerns
+      - Elevation of Privilege: access control gaps
+
+      Rate each finding: Critical, High, Medium, Low.
+      Critical/High findings MUST be addressed before PRP approval.
+
+  - role: quality-reviewer
+    agent: reviewer
+    count: 1
+    spawn_prompt_override: |
+      You are the quality reviewer for the /plan team. You perform two passes
+      of PRP quality review.
+
+      **First Review (before arch review):**
+      - Completeness: all required sections present
+      - Clarity: unambiguous requirements and acceptance criteria
+      - Structure: proper formatting and organization
+      - Testability: all criteria are verifiable
+
+      **Second Review (after arch/security feedback incorporated):**
+      - Verify all architectural feedback addressed
+      - Verify all security findings mitigated
+      - Final quality assessment
+      - Commit readiness determination
+
+      Report findings with specific line references and suggested fixes.
+
+task_flow:
+  # Phase 1: Research (researcher works independently)
+  - task: Gather Epic context and prior patterns
+    assigned_to: researcher
+    depends_on: []
+
+  # Phase 2: PRP Draft (author waits for research)
+  - task: Create PRP document draft
+    assigned_to: author
+    depends_on: [0]
+
+  # Phase 3: First quality review
+  - task: First PRP quality review (completeness, clarity, structure)
+    assigned_to: quality-reviewer
+    depends_on: [1]
+
+  # Phase 4: Architecture + Security review (parallel with quality fix cycle)
+  - task: Architectural review and STRIDE security audit
+    assigned_to: arch-reviewer
+    depends_on: [1]
+
+  # Phase 5: Author incorporates feedback
+  - task: Incorporate review feedback into PRP
+    assigned_to: author
+    depends_on: [2, 3]
+
+  # Phase 6: Final quality review
+  - task: Second PRP quality review (final validation)
+    assigned_to: quality-reviewer
+    depends_on: [4]
+
+lead_instructions: |
+  You are the team lead for the /plan workflow. Coordinate the planning team
+  to create a high-quality PRP document.
+
+  **Workflow:**
+  1. Spawn all teammates
+  2. Assign the researcher to gather context (Epic details, patterns, dependencies)
+  3. Once research completes, assign the author to create the PRP draft
+  4. Send PRP draft to quality-reviewer for first review AND arch-reviewer
+     for architectural + security review (these can run in parallel)
+  5. Collect all feedback and send to author for incorporation
+  6. Send revised PRP to quality-reviewer for final review
+  7. If final review passes, commit PRP and transition Epic to GROOMING
+
+  **Gates:**
+  - PRP must pass quality review before arch/security review
+  - All Critical/High security findings must be mitigated
+  - All architectural concerns must be addressed
+  - Final quality review must pass before commit
+
+  **Delegation mode recommended** - focus on coordination, not implementation.
+
+  After all reviews pass:
+  - Commit PRP to project-docs
+  - Transition Epic to GROOMING status
+  - Update labels: remove step:planning, add outcome:success-prp-created
+  - Store completion metrics in AgentDB

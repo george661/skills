@@ -1862,7 +1862,7 @@ EOF
 }
 
 # Setup test-data MCP server (local test fixture server)
-setup_gw_test_data_mcp() {
+setup_test_data_mcp() {
     log_section "Test Data MCP Server"
 
     local test_data_path="${PROJECT_ROOT}/test-data"
@@ -2329,7 +2329,7 @@ main() {
     install_e2e_config
     configure_settings
     setup_agentdb_mcp
-    setup_gw_test_data_mcp
+    setup_test_data_mcp
     setup_claude_md
     setup_parent_claude_md
     update_tool_permissions
