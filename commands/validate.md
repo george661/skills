@@ -123,7 +123,7 @@ validated entirely via file checks and local CLI commands.
    if [ ! -d "$PROJECT_ROOT/${repo}" ]; then
      # Clone via VCS-appropriate URL (resolved by git remote or config)
      cd $PROJECT_ROOT && git clone git@bitbucket.org:your-org/${repo}.git
-     # Note: GitHub repos (e.g. sdk) may need: gh repo clone Mission-Sciences/<remote_repo> ${repo}
+     # Note: GitHub repos may need: gh repo clone ${GITHUB_OWNER}/<remote_repo> ${repo}
    fi
    ```
 3. Read the repo's CLAUDE.md validation profile:
