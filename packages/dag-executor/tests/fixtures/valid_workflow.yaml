@@ -1,0 +1,83 @@
+name: Test Workflow
+config:
+  checkpoint_prefix: test-wf
+  worktree: true
+  labels:
+    - tier-1
+    - automated
+
+inputs:
+  user_id:
+    type: string
+    required: true
+  dry_run:
+    type: boolean
+    required: false
+    default: false
+  email_pattern:
+    type: string
+    required: false
+    pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+
+nodes:
+  - id: fetch-user
+    name: Fetch User Data
+    type: skill
+    skill: "/skills/db/get-user.skill.md"
+    params:
+      user_id: "{{ inputs.user_id }}"
+    output_format: json
+
+  - id: validate-email
+    name: Validate Email
+    type: bash
+    depends_on:
+      - fetch-user
+    script: |
+      if [[ "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        echo "Valid"
+      else
+        exit 1
+      fi
+    retry:
+      max_attempts: 2
+      delay_ms: 1000
+
+  - id: send-notification
+    name: Send Email Notification
+    type: command
+    depends_on:
+      - validate-email
+    command: notify
+    args:
+      - email
+      - "{{ inputs.user_id }}"
+    when: "dry_run == false"
+    trigger_rule: all_success
+    on_failure: continue
+
+  - id: generate-report
+    name: Generate Summary Report
+    type: prompt
+    depends_on:
+      - fetch-user
+      - send-notification
+    prompt: "Summarize the user data: {{ nodes.fetch-user.output }}"
+    model: sonnet
+    dispatch: inline
+    trigger_rule: one_success
+
+  - id: approval-gate
+    name: Manual Approval Gate
+    type: gate
+    depends_on:
+      - generate-report
+    condition: "approved == true"
+    timeout: 3600
+
+outputs:
+  report:
+    node: generate-report
+  user_email:
+    node: fetch-user
+    field: email

@@ -1,0 +1,6 @@
+name: No Config Workflow
+nodes:
+  - id: node1
+    name: Test Node
+    type: bash
+    script: echo test
