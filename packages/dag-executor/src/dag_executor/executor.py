@@ -1,6 +1,7 @@
 """Core DAG workflow executor with layer-parallel execution."""
 import asyncio
 import json
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -16,6 +17,11 @@ from dag_executor.schema import (
     WorkflowDef, WorkflowStatus
 )
 from dag_executor.variables import resolve_variables
+
+# TYPE_CHECKING import to avoid circular dependency
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from dag_executor.checkpoint import CheckpointStore, CheckpointMetadata
 
 
 @dataclass
@@ -73,18 +79,41 @@ class WorkflowExecutor:
         self,
         workflow_def: WorkflowDef,
         inputs: Dict[str, Any],
-        concurrency_limit: int = 10
+        concurrency_limit: int = 10,
+        checkpoint_store: Optional["CheckpointStore"] = None,
+        run_id: Optional[str] = None
     ) -> WorkflowResult:
         """Execute workflow from start to completion.
-        
+
         Args:
             workflow_def: Workflow definition to execute
             inputs: Workflow input values
             concurrency_limit: Maximum concurrent node executions
-        
+            checkpoint_store: Optional checkpoint store for state persistence
+            run_id: Optional run identifier (generated if not provided)
+
         Returns:
             WorkflowResult with execution status and node results
         """
+        # Generate run_id if not provided
+        if run_id is None:
+            run_id = str(uuid.uuid4())
+
+        # Capture workflow start time once (reused in both initial and final metadata saves)
+        started_at = datetime.now(timezone.utc).isoformat()
+
+        # Save initial checkpoint metadata if checkpoint_store provided
+        if checkpoint_store:
+            from dag_executor.checkpoint import CheckpointMetadata
+            metadata = CheckpointMetadata(
+                workflow_name=workflow_def.name,
+                run_id=run_id,
+                started_at=started_at,
+                inputs=inputs,
+                status="running"
+            )
+            checkpoint_store.save_metadata(workflow_def.name, run_id, metadata)
+
         # Initialize execution context with shared pool and semaphore
         pool = ThreadPoolExecutor(max_workers=concurrency_limit)
         ctx = ExecutionContext(
@@ -113,8 +142,10 @@ class WorkflowExecutor:
                         ctx.node_statuses[node_id] = NodeStatus.SKIPPED
                 continue
             
-            await self._execute_layer(layer, nodes_map, ctx)
-            
+            await self._execute_layer(
+                layer, nodes_map, ctx, workflow_def.name, checkpoint_store, run_id
+            )
+
             # Check if any node triggered a stop
             if ctx.stopped:
                 continue
@@ -128,6 +159,18 @@ class WorkflowExecutor:
         # Extract workflow outputs
         outputs = self._extract_outputs(workflow_def, ctx)
 
+        # Save final checkpoint metadata
+        if checkpoint_store:
+            from dag_executor.checkpoint import CheckpointMetadata
+            final_metadata = CheckpointMetadata(
+                workflow_name=workflow_def.name,
+                run_id=run_id,
+                started_at=started_at,
+                inputs=inputs,
+                status=final_status.value
+            )
+            checkpoint_store.save_metadata(workflow_def.name, run_id, final_metadata)
+
         return WorkflowResult(
             status=final_status,
             node_results=ctx.node_results,
@@ -138,22 +181,30 @@ class WorkflowExecutor:
         self,
         layer_node_ids: List[str],
         nodes_map: Dict[str, NodeDef],
-        ctx: ExecutionContext
+        ctx: ExecutionContext,
+        workflow_name: str,
+        checkpoint_store: Optional["CheckpointStore"],
+        run_id: str
     ) -> None:
         """Execute all nodes in a layer concurrently.
-        
+
         Args:
             layer_node_ids: Node IDs in this layer
             nodes_map: Map of node_id -> NodeDef
             ctx: Execution context
+            workflow_name: Workflow name for checkpointing
+            checkpoint_store: Optional checkpoint store
+            run_id: Run identifier for checkpointing
         """
         # Create tasks for all nodes in layer
         tasks = []
         for node_id in layer_node_ids:
             node_def = nodes_map[node_id]
-            task = self._execute_node(node_def, ctx, nodes_map)
+            task = self._execute_node(
+                node_def, ctx, nodes_map, workflow_name, checkpoint_store, run_id
+            )
             tasks.append(task)
-        
+
         # Execute all nodes in parallel
         await asyncio.gather(*tasks)
     
@@ -161,17 +212,53 @@ class WorkflowExecutor:
         self,
         node_def: NodeDef,
         ctx: ExecutionContext,
-        nodes_map: Dict[str, NodeDef]
+        nodes_map: Dict[str, NodeDef],
+        workflow_name: str,
+        checkpoint_store: Optional["CheckpointStore"],
+        run_id: str
     ) -> None:
         """Execute a single node with all pre/post checks.
-        
+
         Args:
             node_def: Node definition to execute
             ctx: Execution context
             nodes_map: Map of node_id -> NodeDef (for failure handling)
+            workflow_name: Workflow name for checkpointing
+            checkpoint_store: Optional checkpoint store
+            run_id: Run identifier for checkpointing
         """
         node_id = node_def.id
-        
+
+        # Check if checkpointing is enabled for this node (respect node-level checkpoint flag)
+        enable_checkpoint = checkpoint_store is not None and node_def.checkpoint is not False
+
+        # Check cache for completed result
+        if enable_checkpoint and checkpoint_store:
+            # Build dependency outputs for cache key
+            dependency_outputs = {}
+            for dep_id in node_def.depends_on:
+                if dep_id in ctx.node_outputs:
+                    dependency_outputs[dep_id] = ctx.node_outputs[dep_id]
+
+            # Compute content hash and check cache
+            content_hash = checkpoint_store.compute_content_hash(node_def, dependency_outputs)
+            cached = checkpoint_store.check_cache(workflow_name, run_id, node_id, content_hash)
+
+            if cached and cached.status == NodeStatus.COMPLETED:
+                # Cache hit - restore result and skip execution
+                result = NodeResult(
+                    status=cached.status,
+                    output=cached.output,
+                    error=cached.error,
+                    started_at=datetime.fromisoformat(cached.started_at),
+                    completed_at=datetime.fromisoformat(cached.completed_at)
+                )
+                ctx.node_results[node_id] = result
+                ctx.node_statuses[node_id] = result.status
+                if result.output:
+                    ctx.node_outputs[node_id] = result.output
+                return
+
         # Check if already skipped
         if node_id in ctx.skipped_nodes:
             ctx.node_results[node_id] = NodeResult(
@@ -266,11 +353,21 @@ class WorkflowExecutor:
         # Store result
         ctx.node_results[node_id] = result
         ctx.node_statuses[node_id] = result.status
-        
+
         # Store output for downstream variable resolution
         if result.status == NodeStatus.COMPLETED and result.output:
             ctx.node_outputs[node_id] = result.output
-        
+
+        # Save checkpoint after successful execution
+        if enable_checkpoint and checkpoint_store and result.status == NodeStatus.COMPLETED:
+            # Rebuild dependency outputs for hash computation
+            dependency_outputs = {}
+            for dep_id in node_def.depends_on:
+                if dep_id in ctx.node_outputs:
+                    dependency_outputs[dep_id] = ctx.node_outputs[dep_id]
+            content_hash = checkpoint_store.compute_content_hash(node_def, dependency_outputs)
+            checkpoint_store.save_node(workflow_name, run_id, node_id, result, content_hash)
+
         # Handle failure
         if result.status == NodeStatus.FAILED:
             await self._handle_failure(node_def, ctx, nodes_map)
