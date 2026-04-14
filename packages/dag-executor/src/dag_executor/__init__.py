@@ -23,11 +23,17 @@ from dag_executor.schema import (
 from dag_executor.parser import load_workflow as _load_workflow_impl
 from dag_executor.parser import load_workflow_from_string
 
+# Graph algorithms
+from dag_executor.graph import topological_sort_with_layers, CycleDetectedError
+
 __all__ = [
     "load_workflow",
     "load_workflow_from_string",
     "execute_workflow",
     "resume_workflow",
+    # Graph algorithms
+    "topological_sort_with_layers",
+    "CycleDetectedError",
     # Runtime models
     "Workflow",
     "Node",
