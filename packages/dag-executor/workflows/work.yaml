@@ -1,0 +1,313 @@
+---
+name: Work Command Workflow
+config:
+  checkpoint_prefix: work
+  worktree: true
+  labels:
+    - automated
+    - work-workflow
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+nodes:
+  # Phase 0: Resume Check
+  - id: resume_check
+    name: Resume Check
+    type: bash
+    script: |
+      python3 ~/.claude/hooks/checkpoint.py load $issue_key 2>/dev/null || echo '{"found":false}'
+    output_format: json
+    checkpoint: true
+
+  # Phase 0.1: Git Sync Gate (HARD GATE)
+  - id: git_sync
+    name: Git Sync Gate
+    type: bash
+    depends_on:
+      - resume_check
+    script: |
+      cd $PROJECT_ROOT/$repo
+      git fetch origin main
+      LOCAL=$(git rev-parse main 2>/dev/null || echo "none")
+      REMOTE=$(git rev-parse origin/main 2>/dev/null || echo "none")
+      if [ "$LOCAL" != "$REMOTE" ]; then
+        git checkout main && git pull origin main
+      fi
+    on_failure: stop
+
+  # Phase 0.2: Repo Context Loading
+  - id: repo_context
+    name: Repo Context Loading
+    type: bash
+    depends_on:
+      - git_sync
+    script: |
+      REPO_PATH=$PROJECT_ROOT/$repo
+      cat $REPO_PATH/CLAUDE.md 2>/dev/null || echo "WARNING: CLAUDE.md missing"
+      cat $REPO_PATH/TESTING.md 2>/dev/null || echo "WARNING: TESTING.md missing"
+      cat $REPO_PATH/VALIDATION.md 2>/dev/null || echo "WARNING: VALIDATION.md missing"
+    output_format: json
+
+  # Phase 0.5: Prior Work Assessment
+  - id: prior_work_assessment
+    name: Prior Work Assessment
+    type: prompt
+    depends_on:
+      - repo_context
+    prompt: |
+      Assess prior work for issue $issue_key.
+      Read Jira labels and status, detect prior work signals
+      (PR exists, validation failed, rework needed, plan created).
+      Route to the correct resume path.
+    model: opus
+    dispatch: inline
+    output_format: json
+
+  # Phase 0.7: Bug Test Verification Gate
+  # on_failure: continue means the gate failure does NOT propagate to
+  # downstream nodes. Only bug_test_verify (which requires all_success
+  # on this gate) is blocked. planning uses trigger_rule: all_done
+  # so it runs regardless of whether this gate passed or failed.
+  - id: bug_test_gate
+    name: Bug Test Verification Gate
+    type: gate
+    depends_on:
+      - prior_work_assessment
+    condition: "$prior_work_assessment.issue_type == \"Bug\""
+    on_failure: continue
+
+  # Phase 0.7b: Bug Test Verification (only runs if gate passed)
+  - id: bug_test_verify
+    name: Bug Test Verification
+    type: bash
+    depends_on:
+      - bug_test_gate
+    trigger_rule: all_success
+    script: |
+      echo "Verifying bug test branches for $issue_key"
+    output_format: json
+
+  # Phase 1: Planning (runs after bug tests OR when not a bug)
+  # trigger_rule: all_done fires when all deps reach terminal state
+  # (completed, failed, or skipped). This ensures planning runs
+  # whether the bug gate passed, failed, or was skipped.
+  - id: planning
+    name: Create Implementation Plan
+    type: command
+    command: create-implementation-plan
+    args:
+      - "$issue_key"
+    depends_on:
+      - bug_test_verify
+      - prior_work_assessment
+    trigger_rule: all_done
+    dispatch: inline
+    label: "step:planning"
+    output_format: json
+
+  # Phase 1.5: Plan Review (Opus quality gate)
+  - id: plan_review
+    name: Review Implementation Plan
+    type: command
+    command: review-implementation-plan
+    args:
+      - "$issue_key"
+    depends_on:
+      - planning
+    dispatch: inline
+    output_format: json
+
+  # Phase 2: Implementation
+  - id: implement
+    name: Implement Solution
+    type: command
+    command: implement
+    args:
+      - "$issue_key"
+    depends_on:
+      - plan_review
+    dispatch: local
+    checkpoint: true
+    label: "step:implementing"
+    output_format: json
+
+  # Phase 3: Code Review
+  - id: code_review
+    name: Code Review
+    type: command
+    command: review
+    args:
+      - "$implement.repo"
+      - "$implement.pr_number"
+    depends_on:
+      - implement
+    dispatch: inline
+    label: "step:reviewing"
+    output_format: json
+
+  # Phase 3b: Review Verdict (reads Jira for verdict)
+  # This is a bash node, not a gate, because the verdict must be
+  # read from Jira comments (source of truth) rather than trusting
+  # the code_review node's self-reported output.
+  - id: review_verdict
+    name: Read Review Verdict
+    type: bash
+    depends_on:
+      - code_review
+    script: |
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
+        "{\"issue_key\": \"$issue_key\", \"fields\": \"comment\"}")
+      echo "$issue" | jq -r '
+        .fields.comment.comments | reverse | .[] |
+        select(.body.content[].content[]?.text |
+          test("Verdict:|Code Review:")) |
+        .body.content[].content[]?.text' | head -1
+    output_format: json
+
+  # Phase 4 gate: Rework Required
+  # on_failure: skip_downstream skips fix_pr and re_review when
+  # the review was approved. ci_gate still runs because it depends
+  # on both re_review and review_verdict with trigger_rule: one_success.
+  - id: rework_gate
+    name: Rework Required Gate
+    type: gate
+    depends_on:
+      - review_verdict
+    condition: "$review_verdict.verdict == \"REQUIRES_REWORK\""
+    on_failure: skip_downstream
+
+  # Phase 4: Fix PR Issues
+  - id: fix_pr
+    name: Fix PR Issues
+    type: command
+    command: fix-pr
+    args:
+      - "$issue_key"
+      - "$implement.repo"
+      - "$implement.pr_number"
+    depends_on:
+      - rework_gate
+    dispatch: local
+    label: "step:fixing-pr"
+    retry:
+      max_attempts: 3
+      delay_ms: 0
+    output_format: json
+
+  # Phase 4c: Re-review after fixes
+  - id: re_review
+    name: Re-review After Fixes
+    type: command
+    command: review
+    args:
+      - "$implement.repo"
+      - "$implement.pr_number"
+    depends_on:
+      - fix_pr
+    dispatch: inline
+    output_format: json
+
+  # Phase 5: CI Gate Check
+  - id: ci_gate
+    name: CI Validation
+    type: bash
+    depends_on:
+      - re_review
+      - review_verdict
+    trigger_rule: one_success
+    label: "step:awaiting-ci"
+    script: |
+      ci_result=$(npx tsx ~/.claude/skills/fly/wait-for-ci.ts \
+        "{\"pipeline\": \"$implement.repo\", \"timeout_seconds\": 900}")
+      echo "$ci_result"
+    output_format: json
+
+  # Phase 5b: CI Success Gate
+  - id: gate_check
+    name: CI Success Gate
+    type: gate
+    depends_on:
+      - ci_gate
+    condition: "$ci_gate.ci_success == true"
+    on_failure: stop
+
+  # Phase 6: Merge
+  - id: merge
+    name: Merge PR
+    type: command
+    command: resolve-pr
+    args:
+      - "$issue_key"
+    depends_on:
+      - gate_check
+    dispatch: inline
+    label: "step:merging"
+    output_format: json
+
+  # Phase 7a: Verify Jira Status
+  - id: verify_jira
+    name: Verify Jira Status
+    type: bash
+    depends_on:
+      - merge
+    script: |
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
+        "{\"issue_key\": \"$issue_key\", \"fields\": \"status\"}")
+      status=$(echo "$issue" | jq -r '.fields.status.name')
+      echo "{\"status\": \"$status\"}"
+    output_format: json
+
+  # Phase 7b: Verify PR is Merged (parallel with 7a)
+  - id: verify_pr
+    name: Verify PR Merged
+    type: bash
+    depends_on:
+      - merge
+    script: |
+      pr=$(npx tsx ~/.claude/skills/vcs/get_pull_request.ts \
+        "{\"repo\": \"$implement.repo\", \"pr_number\": $implement.pr_number}")
+      state=$(echo "$pr" | jq -r '.state')
+      echo "{\"state\": \"$state\"}"
+    output_format: json
+
+  # Phase 7c: Summary (depends on both verify nodes)
+  - id: summary
+    name: Print Summary and Store Episode
+    type: prompt
+    depends_on:
+      - verify_jira
+      - verify_pr
+    prompt: |
+      Print a workflow summary table for $issue_key.
+      Show every phase, its result, and notable events.
+      Store the episode in AgentDB with appropriate reward score.
+    model: opus
+    dispatch: inline
+    output_format: json
+
+  # Phase 7d: Cleanup Worktree (runs last)
+  - id: cleanup
+    name: Cleanup Worktree
+    type: bash
+    depends_on:
+      - summary
+    script: |
+      cd $PROJECT_ROOT/$implement.repo
+      git worktree remove $PROJECT_ROOT/worktrees/$implement.repo-$issue_key --force 2>/dev/null || true
+      git push origin --delete $branch 2>/dev/null || true
+      git checkout main && git pull origin main
+
+outputs:
+  repo:
+    node: implement
+    field: repo
+  pr_number:
+    node: implement
+    field: pr_number
+  merge_status:
+    node: merge
+    field: status
