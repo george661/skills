@@ -88,6 +88,32 @@ def test_skill_path_outside_skills_dir_rejected(skills_dir, valid_skill_node):
     assert "outside skills directory" in result.error.lower()
 
 
+def test_skill_sibling_directory_attack_rejected(skills_dir, valid_skill_node):
+    """Test that sibling directory names don't bypass path validation.
+
+    Regression test: str.startswith('/tmp/skills') matches '/tmp/skills_evil/' too.
+    Path.is_relative_to() prevents this.
+    """
+    # Create a sibling directory with a prefix-matching name
+    sibling = skills_dir.parent / (skills_dir.name + "_evil")
+    sibling.mkdir()
+    malicious = sibling / "malicious.py"
+    malicious.write_text("print('pwned')")
+
+    valid_skill_node.skill = str(malicious)
+
+    ctx = RunnerContext(
+        node_def=valid_skill_node,
+        skills_dir=skills_dir
+    )
+
+    runner = SkillRunner()
+    result = runner.run(ctx)
+
+    assert result.status == NodeStatus.FAILED
+    assert "outside skills directory" in result.error.lower()
+
+
 def test_skill_non_zero_exit_code(skills_dir, valid_skill_node):
     """Test skill with non-zero exit code returns FAILED status."""
     ctx = RunnerContext(

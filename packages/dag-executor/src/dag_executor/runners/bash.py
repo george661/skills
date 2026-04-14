@@ -1,7 +1,6 @@
 """Bash runner for executing bash script nodes."""
 import os
 import subprocess
-from typing import Any, Dict
 
 from dag_executor.schema import NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
@@ -25,7 +24,8 @@ class BashRunner(BaseRunner):
             NodeResult with execution status and output
         """
         script = ctx.node_def.script
-        assert script is not None, "script field is required (validated by schema)"
+        if script is None:
+            raise ValueError("script field is required for type=bash")
         
         # Build environment with DAG_ prefixed variables
         env = os.environ.copy()

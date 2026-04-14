@@ -1,6 +1,5 @@
 """Prompt runner for LLM invocation nodes."""
 import subprocess
-import tempfile
 from pathlib import Path
 
 from dag_executor.schema import NodeResult, NodeStatus
@@ -25,7 +24,8 @@ class PromptRunner(BaseRunner):
             NodeResult with execution status and LLM response
         """
         node = ctx.node_def
-        assert node.model is not None, "model field is required (validated by schema)"
+        if node.model is None:
+            raise ValueError("model field is required for type=prompt")
         
         # Build CLI command
         dispatch_script = Path.home() / ".claude" / "dispatch-local.sh"

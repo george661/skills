@@ -2,7 +2,6 @@
 import json
 import subprocess
 from pathlib import Path
-from typing import Any, Dict
 
 from dag_executor.schema import NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
@@ -26,7 +25,8 @@ class SkillRunner(BaseRunner):
         """
         # Extract skill configuration from validated NodeDef
         skill_path = ctx.node_def.skill
-        assert skill_path is not None, "skill field is required (validated by schema)"
+        if skill_path is None:
+            raise ValueError("skill field is required for type=skill")
         params = ctx.node_def.params or {}
         
         # Validate skill path
@@ -97,21 +97,16 @@ class SkillRunner(BaseRunner):
         Raises:
             ValueError: If path is invalid or outside skills directory
         """
-        # Reject absolute paths
+        # Resolve the candidate path
         if Path(skill_path).is_absolute():
-            # Check if it's actually within skills_dir
             resolved = Path(skill_path).resolve()
-            skills_resolved = skills_dir.resolve()
-            if not str(resolved).startswith(str(skills_resolved)):
-                raise ValueError(f"Skill path outside skills directory: {skill_path}")
-            return resolved
-        
-        # Resolve relative path
-        full_path = (skills_dir / skill_path).resolve()
+        else:
+            resolved = (skills_dir / skill_path).resolve()
+
         skills_dir_resolved = skills_dir.resolve()
-        
-        # Verify resolved path is within skills_dir (prevents .. traversal)
-        if not str(full_path).startswith(str(skills_dir_resolved)):
+
+        # Verify resolved path is within skills_dir (prevents .. traversal and sibling-dir attacks)
+        if not resolved.is_relative_to(skills_dir_resolved):
             raise ValueError(f"Path traversal detected - skill path outside skills directory: {skill_path}")
-        
-        return full_path
+
+        return resolved

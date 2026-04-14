@@ -46,7 +46,8 @@ class CommandRunner(BaseRunner):
             )
         
         command = ctx.node_def.command
-        assert command is not None, "command field is required (validated by schema)"
+        if command is None:
+            raise ValueError("command field is required for type=command")
         args = ctx.node_def.args or []
         
         # Load sub-workflow

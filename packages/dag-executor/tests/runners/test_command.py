@@ -89,27 +89,31 @@ def test_command_recursion_depth_enforced():
 
 
 def test_command_recursion_depth_increments():
-    """Test recursion depth counter increments on recursive calls."""
+    """Test recursion depth counter increments — depth=4 succeeds, depth=5 fails."""
     node = NodeDef(
         id="cmd1",
         name="Command",
         type="command",
         command="sub-workflow"
     )
-    
-    ctx = RunnerContext(node_def=node)
-    initial_depth = getattr(ctx, "_recursion_depth", 0)
-    
+
     mock_workflow_def = Mock(spec=WorkflowDef)
     mock_result = NodeResult(status=NodeStatus.COMPLETED, output={})
-    
+
+    # depth=4 (below limit) should succeed
+    ctx_ok = RunnerContext(node_def=node)
+    ctx_ok._recursion_depth = MAX_RECURSION_DEPTH - 1
+
     with patch("dag_executor.runners.command.load_workflow", return_value=mock_workflow_def):
         with patch("dag_executor.runners.command._execute_workflow_stub", return_value=mock_result):
-            runner = CommandRunner()
-            runner.run(ctx)
-            
-            # Depth should have been checked/incremented
-            assert True  # Implementation detail - depth is tracked
+            result = CommandRunner().run(ctx_ok)
+            assert result.status == NodeStatus.COMPLETED
+
+    # depth=5 (at limit) should fail
+    ctx_fail = RunnerContext(node_def=node)
+    ctx_fail._recursion_depth = MAX_RECURSION_DEPTH
+    result = CommandRunner().run(ctx_fail)
+    assert result.status == NodeStatus.FAILED
 
 
 def test_command_invalid_workflow_path():
