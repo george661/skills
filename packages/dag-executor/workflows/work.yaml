@@ -4,8 +4,7 @@ config:
   checkpoint_prefix: work
   worktree: true
   labels:
-    - automated
-    - work-workflow
+    on_failure: outcome:failed
 
 inputs:
   issue_key:
