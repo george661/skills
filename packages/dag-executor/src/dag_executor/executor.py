@@ -3,7 +3,7 @@ import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from simpleeval import SimpleEval  # type: ignore
@@ -38,6 +38,8 @@ class ExecutionContext:
     concurrency_limit: int = 10
     stopped: bool = False
     skipped_nodes: Set[str] = field(default_factory=set)
+    pool: Optional[ThreadPoolExecutor] = field(default=None, repr=False)
+    semaphore: Optional[asyncio.Semaphore] = field(default=None, repr=False)
 
 
 class WorkflowResult:
@@ -83,12 +85,15 @@ class WorkflowExecutor:
         Returns:
             WorkflowResult with execution status and node results
         """
-        # Initialize execution context
+        # Initialize execution context with shared pool and semaphore
+        pool = ThreadPoolExecutor(max_workers=concurrency_limit)
         ctx = ExecutionContext(
             workflow_inputs=inputs,
-            concurrency_limit=concurrency_limit
+            concurrency_limit=concurrency_limit,
+            pool=pool,
+            semaphore=asyncio.Semaphore(concurrency_limit),
         )
-        
+
         # Get topologically sorted layers
         layers = topological_sort_with_layers(workflow_def.nodes)
         
@@ -114,12 +119,15 @@ class WorkflowExecutor:
             if ctx.stopped:
                 continue
         
+        # Shut down shared thread pool
+        pool.shutdown(wait=False)
+
         # Compute final workflow status
         final_status = self._compute_workflow_status(ctx)
-        
+
         # Extract workflow outputs
         outputs = self._extract_outputs(workflow_def, ctx)
-        
+
         return WorkflowResult(
             status=final_status,
             node_results=ctx.node_results,
@@ -174,8 +182,13 @@ class WorkflowExecutor:
             return
         
         # Evaluate when condition
+        self._last_when_error: Optional[str] = None
         if not self._evaluate_when(node_def, ctx):
-            ctx.node_results[node_id] = NodeResult(status=NodeStatus.SKIPPED)
+            error = self._last_when_error
+            ctx.node_results[node_id] = NodeResult(
+                status=NodeStatus.SKIPPED,
+                error=error,
+            )
             ctx.node_statuses[node_id] = NodeStatus.SKIPPED
             return
         
@@ -190,7 +203,7 @@ class WorkflowExecutor:
         
         # Mark as running
         ctx.node_statuses[node_id] = NodeStatus.RUNNING
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         
         try:
             # Resolve variables in node definition
@@ -214,13 +227,15 @@ class WorkflowExecutor:
             
             # Get timeout for this node
             timeout = self._get_node_timeout(node_def)
-            
-            # Execute in thread pool with timeout
-            loop = asyncio.get_event_loop()
-            with ThreadPoolExecutor(max_workers=ctx.concurrency_limit) as pool:
+
+            # Execute in shared thread pool with semaphore for concurrency limiting
+            loop = asyncio.get_running_loop()
+            assert ctx.semaphore is not None
+            assert ctx.pool is not None
+            async with ctx.semaphore:
                 try:
                     result = await asyncio.wait_for(
-                        loop.run_in_executor(pool, runner.run, runner_ctx),
+                        loop.run_in_executor(ctx.pool, runner.run, runner_ctx),
                         timeout=timeout
                     )
                 except asyncio.TimeoutError:
@@ -236,7 +251,7 @@ class WorkflowExecutor:
             )
         
         # Set timestamps
-        completed_at = datetime.utcnow()
+        completed_at = datetime.now(timezone.utc)
         result.started_at = started_at
         result.completed_at = completed_at
         
@@ -300,8 +315,9 @@ class WorkflowExecutor:
         try:
             result = evaluator.eval(when_expr)
             return bool(result)
-        except Exception:
-            # If evaluation fails, skip the node
+        except Exception as e:
+            # Store error context so callers can see why the node was skipped
+            self._last_when_error = f"when condition '{when_expr}' failed: {e}"
             return False
     
     def _check_trigger_rule(

@@ -362,9 +362,8 @@ class TestWorkflowExecutor:
             elapsed = time.time() - start
         
         # Should timeout and return error
-        # Timeout enforcement happens but thread may not be killed immediately
         assert result.node_results["A"].status == NodeStatus.FAILED
-        assert result.node_results["A"].status == NodeStatus.FAILED
+        assert "timed out" in (result.node_results["A"].error or "")
 
     def test_output_size_enforcement(self) -> None:
         """Mock runner returns huge output, verify truncation/warning."""
@@ -425,24 +424,44 @@ class TestWorkflowExecutor:
         assert result.node_results["B"].status == NodeStatus.COMPLETED
 
     def test_concurrency_limit(self) -> None:
-        """10+ independent nodes with limit=2, verify all complete."""
+        """10+ independent nodes with limit=2, verify max 2 run concurrently."""
+        import threading
+
         nodes = [
             NodeDef(id=f"N{i}", name=f"Node {i}", type="bash", script=f"echo {i}")
-            for i in range(12)
+            for i in range(8)
         ]
         workflow_def = WorkflowDef(
             name="test-workflow",
             config=WorkflowConfig(checkpoint_prefix="test"),
             nodes=nodes
         )
-        
-        def mock_get_runner(node_type):
-            return create_mock_runner_class(NodeResult(status=NodeStatus.COMPLETED), delay=0.05)
-        
+
+        # Track actual concurrent execution count
+        lock = threading.Lock()
+        active_count = 0
+        max_observed = 0
+
+        def mock_get_runner(node_type: str) -> type:
+            class ConcurrencyTracker(BaseRunner):
+                def run(self, ctx: RunnerContext) -> NodeResult:
+                    nonlocal active_count, max_observed
+                    with lock:
+                        active_count += 1
+                        if active_count > max_observed:
+                            max_observed = active_count
+                    time.sleep(0.1)  # Hold the slot to observe concurrency
+                    with lock:
+                        active_count -= 1
+                    return NodeResult(status=NodeStatus.COMPLETED)
+            return ConcurrencyTracker
+
         with patch("dag_executor.executor.get_runner", side_effect=mock_get_runner):
             executor = WorkflowExecutor()
             result = asyncio.run(executor.execute(workflow_def, {}, concurrency_limit=2))
-        
+
         # All nodes should complete
-        assert len(result.node_results) == 12
+        assert len(result.node_results) == 8
         assert all(r.status == NodeStatus.COMPLETED for r in result.node_results.values())
+        # Concurrency limit must be enforced: at most 2 running at any time
+        assert max_observed <= 2, f"Expected max 2 concurrent, observed {max_observed}"
