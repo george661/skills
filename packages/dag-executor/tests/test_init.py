@@ -88,5 +88,13 @@ class TestResumeWorkflow:
             nodes=[node]
         )
 
-        with pytest.raises(NotImplementedError, match="resume_workflow not yet fully implemented"):
-            resume_workflow(workflow_def, {})
+        # resume_workflow now requires checkpoint_store - test that it raises ValueError
+        # when checkpoint is not found
+        from dag_executor import CheckpointStore
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = CheckpointStore(str(Path(tmpdir) / ".checkpoints"))
+            with pytest.raises(ValueError, match="No checkpoint found"):
+                resume_workflow("Test", "nonexistent-run", store, workflow_def)
