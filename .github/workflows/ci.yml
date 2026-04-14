@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-packages:
+    name: Python Packages
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Find packages
+        id: packages
+        run: |
+          pkgs=$(find packages -name pyproject.toml -printf '%h\n' 2>/dev/null || true)
+          echo "list<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$pkgs" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          [ -n "$pkgs" ] && echo "found=true" >> "$GITHUB_OUTPUT" || echo "found=false" >> "$GITHUB_OUTPUT"
+
+      - name: Install, test, type-check each package
+        if: steps.packages.outputs.found == 'true'
+        run: |
+          set -e
+          while IFS= read -r pkg; do
+            [ -z "$pkg" ] && continue
+            echo "::group::$pkg"
+            pip install -e "$pkg[dev]"
+            (cd "$pkg" && pytest tests/ -v)
+            (cd "$pkg" && mypy src/)
+            echo "::endgroup::"
+          done <<< "${{ steps.packages.outputs.list }}"
+
+  hooks-lint:
+    name: Python Hooks Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Syntax check hooks
+        run: |
+          errors=0
+          for f in hooks/*.py; do
+            python -m py_compile "$f" || errors=$((errors + 1))
+          done
+          exit $errors
+
+      - name: Lint hooks
+        run: ruff check hooks/ --select E,F,W --ignore E501
+
+  shellcheck:
+    name: Shell Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run shellcheck
+        run: |
+          find hooks scripts -name '*.sh' -print0 | \
+            xargs -0 shellcheck --severity=warning || true
+
+  yaml-validate:
+    name: YAML Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Lint YAML configs
+        run: |
+          yamllint -d '{extends: default, rules: {line-length: disable, truthy: disable}}' \
+            agents/ teams/
