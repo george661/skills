@@ -301,18 +301,19 @@ class TestWorkflowConfig:
         config = WorkflowConfig(checkpoint_prefix="test")
         assert config.checkpoint_prefix == "test"
         assert config.worktree is False
-        assert config.labels == []
-    
+        assert config.labels.on_failure is None
+
     def test_full_config(self) -> None:
         """Test full workflow config."""
+        from dag_executor.schema import LabelsConfig
         config = WorkflowConfig(
             checkpoint_prefix="test-wf",
             worktree=True,
-            labels=["tier-1", "automated"]
+            labels=LabelsConfig(on_failure="failed")
         )
         assert config.checkpoint_prefix == "test-wf"
         assert config.worktree is True
-        assert config.labels == ["tier-1", "automated"]
+        assert config.labels.on_failure == "failed"
 
 
 class TestWorkflowDef:

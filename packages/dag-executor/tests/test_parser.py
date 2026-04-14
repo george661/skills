@@ -22,7 +22,7 @@ class TestLoadWorkflow:
         assert workflow.name == "Test Workflow"
         assert workflow.config.checkpoint_prefix == "test-wf"
         assert workflow.config.worktree is True
-        assert "tier-1" in workflow.config.labels
+        assert workflow.config.labels.on_failure == "workflow-failed"
     
     def test_valid_workflow_inputs(self) -> None:
         """Test that inputs are parsed correctly."""

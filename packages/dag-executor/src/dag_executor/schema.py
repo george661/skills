@@ -228,13 +228,20 @@ class NodeDef(BaseModel):
                 raise ValueError("condition field is required for type=gate")
 
 
+class LabelsConfig(BaseModel):
+    """Label lifecycle configuration for workflow execution."""
+    model_config = {"extra": "forbid"}
+
+    on_failure: Optional[str] = Field(default=None, description="Label to apply when workflow fails")
+
+
 class WorkflowConfig(BaseModel):
     """Workflow-level configuration."""
     model_config = {"extra": "forbid"}
-    
+
     checkpoint_prefix: str = Field(..., description="Prefix for checkpoint files")
     worktree: bool = Field(default=False, description="Use worktree isolation")
-    labels: List[str] = Field(default_factory=list, description="Workflow labels")
+    labels: LabelsConfig = Field(default_factory=LabelsConfig, description="Label lifecycle configuration")
 
 
 class WorkflowDef(BaseModel):
