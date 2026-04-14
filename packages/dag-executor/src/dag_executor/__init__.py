@@ -33,6 +33,9 @@ from dag_executor.variables import resolve_variables, VariableResolutionError
 # Executor
 from dag_executor.executor import WorkflowExecutor, WorkflowResult
 
+# Events
+from dag_executor.events import EventType, WorkflowEvent, EventEmitter
+
 __all__ = [
     "load_workflow",
     "load_workflow_from_string",
@@ -47,6 +50,10 @@ __all__ = [
     # Executor
     "WorkflowExecutor",
     "WorkflowResult",
+    # Events
+    "EventType",
+    "WorkflowEvent",
+    "EventEmitter",
     # Runtime models
     "Workflow",
     "Node",

@@ -1,4 +1,5 @@
 """Event system for workflow execution monitoring and logging."""
+import logging
 import threading
 from datetime import datetime
 from enum import Enum
@@ -9,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from .schema import NodeStatus, WorkflowStatus
 
+logger = logging.getLogger(__name__)
+
 
 class EventType(str, Enum):
     """Types of workflow events."""
@@ -18,11 +21,12 @@ class EventType(str, Enum):
     NODE_STARTED = "node_started"
     NODE_COMPLETED = "node_completed"
     NODE_FAILED = "node_failed"
+    NODE_SKIPPED = "node_skipped"
 
 
 class WorkflowEvent(BaseModel):
     """Structured event emitted during workflow execution.
-    
+
     Events are emitted at key workflow and node lifecycle points,
     enabling monitoring, debugging, and audit trail generation.
     """
@@ -30,31 +34,53 @@ class WorkflowEvent(BaseModel):
     workflow_id: str = Field(..., description="ID of the workflow")
     node_id: Optional[str] = Field(default=None, description="ID of the node (for node events)")
     status: Optional[Union[NodeStatus, WorkflowStatus]] = Field(
-        default=None, 
+        default=None,
         description="Current status (NodeStatus for node events, WorkflowStatus for workflow events)"
     )
+    duration_ms: Optional[int] = Field(default=None, description="Execution duration in milliseconds")
+    model: Optional[str] = Field(default=None, description="Model tier used for execution (sonnet/opus/haiku)")
+    dispatch: Optional[str] = Field(default=None, description="Dispatch mode (sync/async/webhook)")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional event metadata")
     timestamp: datetime = Field(..., description="Event timestamp")
 
 
 class EventEmitter:
     """Thread-safe event emitter with listener management and JSONL logging.
-    
+
     Supports registering multiple listeners that receive events synchronously.
     Optionally logs events to a JSONL file for audit trails and debugging.
     """
-    
-    def __init__(self, log_file: Optional[str] = None) -> None:
+
+    def __init__(
+        self,
+        log_file: Optional[str] = None,
+        workflow_name: Optional[str] = None,
+        run_id: Optional[str] = None
+    ) -> None:
         """Initialize event emitter.
-        
+
         Args:
-            log_file: Optional path to JSONL log file for event persistence
+            log_file: Optional path to JSONL log file for event persistence.
+                     If not provided, defaults to .dag-checkpoints/{workflow_name}-{run_id}/events.jsonl
+                     when workflow_name and run_id are specified.
+            workflow_name: Workflow name for default checkpoint path
+            run_id: Run ID for default checkpoint path
         """
         self._listeners: List[Callable[[WorkflowEvent], None]] = []
         self._lock = threading.Lock()
-        self._log_file = Path(log_file) if log_file else None
+
+        # Determine log file path
+        self._log_file: Optional[Path]
+        if log_file:
+            self._log_file = Path(log_file)
+        elif workflow_name and run_id:
+            # Use standard checkpoint directory convention
+            self._log_file = Path(f".dag-checkpoints/{workflow_name}-{run_id}/events.jsonl")
+        else:
+            self._log_file = None
+
         self._log_lock = threading.Lock()
-        
+
         # Create log file parent directory if needed
         if self._log_file:
             self._log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -97,8 +123,7 @@ class EventEmitter:
                 listener(event)
             except Exception as e:
                 # Log exception but continue with other listeners
-                # In production, you'd use proper logging here
-                print(f"Error in event listener: {e}")
+                logger.warning(f"Error in event listener: {e}")
         
         # Write to JSONL log if configured
         if self._log_file:
