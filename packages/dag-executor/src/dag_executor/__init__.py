@@ -10,6 +10,7 @@ from dag_executor.schema import (
     WorkflowDef,
     NodeDef,
     WorkflowConfig,
+    LabelsConfig,
     InputDef,
     OutputDef,
     TriggerRule,
@@ -36,6 +37,9 @@ from dag_executor.executor import WorkflowExecutor, WorkflowResult
 # Events
 from dag_executor.events import EventType, WorkflowEvent, EventEmitter
 
+# Label management
+from dag_executor.labels import LabelManager, LabelCallback
+
 # Checkpoint store
 from dag_executor.checkpoint import CheckpointStore, CheckpointMetadata, NodeCheckpoint
 
@@ -57,6 +61,9 @@ __all__ = [
     "EventType",
     "WorkflowEvent",
     "EventEmitter",
+    # Label management
+    "LabelManager",
+    "LabelCallback",
     # Checkpoint store
     "CheckpointStore",
     "CheckpointMetadata",
@@ -71,6 +78,7 @@ __all__ = [
     "WorkflowDef",
     "NodeDef",
     "WorkflowConfig",
+    "LabelsConfig",
     "InputDef",
     "OutputDef",
     "TriggerRule",

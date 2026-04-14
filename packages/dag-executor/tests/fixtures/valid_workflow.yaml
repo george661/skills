@@ -3,8 +3,7 @@ config:
   checkpoint_prefix: test-wf
   worktree: true
   labels:
-    - tier-1
-    - automated
+    on_failure: workflow-failed
 
 inputs:
   user_id:
