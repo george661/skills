@@ -1,5 +1,5 @@
 """Graph algorithms for DAG dependency resolution."""
-from collections import defaultdict, deque
+from collections import deque
 from typing import Dict, List, Set
 
 from dag_executor.schema import NodeDef
@@ -27,16 +27,18 @@ def topological_sort_with_layers(nodes: List[NodeDef]) -> List[List[str]]:
     if not nodes:
         return []
     
-    # Build adjacency list and in-degree count
+    # Build node map, in-degree count, and reverse adjacency list
     node_map: Dict[str, NodeDef] = {node.id: node for node in nodes}
     in_degree: Dict[str, int] = {node.id: 0 for node in nodes}
-    
-    # Count in-degrees (number of dependencies for each node)
+    dependents: Dict[str, List[str]] = {node.id: [] for node in nodes}
+
+    # Count in-degrees and build reverse adjacency (dep -> nodes that depend on it)
     for node in nodes:
         for dep in node.depends_on:
             if dep not in node_map:
                 raise ValueError(f"Node '{node.id}' depends on non-existent node '{dep}'")
             in_degree[node.id] += 1
+            dependents[dep].append(node.id)
     
     # Initialize queue with nodes that have no dependencies
     queue: deque[str] = deque()
@@ -57,14 +59,12 @@ def topological_sort_with_layers(nodes: List[NodeDef]) -> List[List[str]]:
         # Process each node in current layer
         for node_id in current_layer:
             processed_count += 1
-            
-            # For each node that depends on current node, decrease its in-degree
-            for node in nodes:
-                if node_id in node.depends_on:
-                    in_degree[node.id] -= 1
-                    # If all dependencies satisfied, add to queue for next layer
-                    if in_degree[node.id] == 0:
-                        queue.append(node.id)
+
+            # Decrement in-degree for all nodes that depend on current node
+            for dependent_id in dependents[node_id]:
+                in_degree[dependent_id] -= 1
+                if in_degree[dependent_id] == 0:
+                    queue.append(dependent_id)
     
     # If not all nodes were processed, there's a cycle
     if processed_count != len(nodes):
@@ -102,9 +102,6 @@ def _find_cycle_path(nodes: List[NodeDef], remaining_nodes: List[str]) -> str:
     def dfs(node_id: str) -> bool:
         """DFS to find cycle. Returns True if cycle found."""
         if node_id in path:
-            # Found cycle - extract cycle portion
-            cycle_start = path.index(node_id)
-            cycle = path[cycle_start:] + [node_id]
             return True
         
         if node_id in visited:
