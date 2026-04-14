@@ -26,6 +26,9 @@ from dag_executor.parser import load_workflow_from_string
 # Graph algorithms
 from dag_executor.graph import topological_sort_with_layers, CycleDetectedError
 
+# Variable substitution
+from dag_executor.variables import resolve_variables, VariableResolutionError
+
 __all__ = [
     "load_workflow",
     "load_workflow_from_string",
@@ -34,6 +37,9 @@ __all__ = [
     # Graph algorithms
     "topological_sort_with_layers",
     "CycleDetectedError",
+    # Variable substitution
+    "resolve_variables",
+    "VariableResolutionError",
     # Runtime models
     "Workflow",
     "Node",
