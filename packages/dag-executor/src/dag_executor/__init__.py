@@ -1,4 +1,5 @@
 """DAG executor public API."""
+import asyncio
 from typing import Any, Dict, Optional
 
 # Runtime models (execution tracking)
@@ -29,6 +30,9 @@ from dag_executor.graph import topological_sort_with_layers, CycleDetectedError
 # Variable substitution
 from dag_executor.variables import resolve_variables, VariableResolutionError
 
+# Executor
+from dag_executor.executor import WorkflowExecutor, WorkflowResult
+
 __all__ = [
     "load_workflow",
     "load_workflow_from_string",
@@ -40,6 +44,9 @@ __all__ = [
     # Variable substitution
     "resolve_variables",
     "VariableResolutionError",
+    # Executor
+    "WorkflowExecutor",
+    "WorkflowResult",
     # Runtime models
     "Workflow",
     "Node",
@@ -77,37 +84,51 @@ def load_workflow(path: str) -> WorkflowDef:
     return _load_workflow_impl(path)
 
 
-def execute_workflow(workflow: Workflow, context: Optional[Dict[str, Any]] = None) -> Workflow:
+def execute_workflow(
+    workflow_def: WorkflowDef,
+    inputs: Optional[Dict[str, Any]] = None,
+    concurrency_limit: int = 10
+) -> WorkflowResult:
     """Execute a workflow from start to completion.
-    
+
     Args:
-        workflow: Workflow to execute
-        context: Optional execution context variables
-        
+        workflow_def: Workflow definition to execute
+        inputs: Workflow input values
+        concurrency_limit: Maximum concurrent node executions
+
     Returns:
-        Updated workflow with execution results
-        
+        WorkflowResult with execution status and node results
+
     Raises:
         RuntimeError: If workflow execution fails
     """
-    raise NotImplementedError("execute_workflow not yet implemented")
+    executor = WorkflowExecutor()
+    return asyncio.run(executor.execute(workflow_def, inputs or {}, concurrency_limit))
 
 
-def resume_workflow(workflow: Workflow, context: Optional[Dict[str, Any]] = None) -> Workflow:
+def resume_workflow(
+    workflow_def: WorkflowDef,
+    checkpoint: Dict[str, Any],
+    inputs: Optional[Dict[str, Any]] = None,
+    concurrency_limit: int = 10
+) -> WorkflowResult:
     """Resume a paused or failed workflow from its last state.
-    
+
     Args:
-        workflow: Workflow to resume (must have existing state)
-        context: Optional execution context variables
-        
+        workflow_def: Workflow definition to resume
+        checkpoint: Saved execution state (node_results, node_outputs, etc.)
+        inputs: Workflow input values
+        concurrency_limit: Maximum concurrent node executions
+
     Returns:
-        Updated workflow with execution results
-        
+        WorkflowResult with execution status and node results
+
     Raises:
-        ValueError: If workflow has no previous state to resume from
+        ValueError: If checkpoint is invalid
         RuntimeError: If workflow resumption fails
     """
-    raise NotImplementedError("resume_workflow not yet implemented")
+    # TODO: Implement resume logic - load checkpoint, skip completed nodes
+    raise NotImplementedError("resume_workflow not yet fully implemented")
 
 
 def main() -> None:
