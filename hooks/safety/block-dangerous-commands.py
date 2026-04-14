@@ -27,6 +27,6 @@ if __name__ == "__main__":
         data = json.load(sys.stdin)
         command = data.get("tool_input", {}).get("command", "")
         result = check_command(command)
-    except:
+    except Exception:
         result = {"decision": "approve"}
     print(json.dumps(result))

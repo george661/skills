@@ -80,8 +80,8 @@ def load_memory_context(task_context=None):
         lines.append("[END MEMORY CONTEXT]")
         return "\n".join(lines)
 
-    except Exception as e:
-        print(f"[WARN] AgentDB unavailable - continuing without memory context", file=sys.stderr)
+    except Exception:
+        print("[WARN] AgentDB unavailable - continuing without memory context", file=sys.stderr)
         return ""
 
 

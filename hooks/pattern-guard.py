@@ -24,7 +24,7 @@ from pathlib import Path
 # Import agentdb client for async usage logging
 try:
     sys.path.insert(0, str(Path(__file__).parent))
-    from agentdb_client import agentdb_request, get_namespace
+    from agentdb_client import agentdb_request
     AGENTDB_AVAILABLE = True
 except ImportError:
     AGENTDB_AVAILABLE = False
@@ -61,7 +61,7 @@ def match_anti_patterns(command, patterns):
     matches = []
     for pattern in patterns:
         task_type = pattern.get('task_type', '')
-        approach = pattern.get('approach', '')
+        pattern.get('approach', '')
         success_rate = pattern.get('success_rate', 1.0)
 
         # Build regex from task_type keywords (strip anti-pattern- prefix)

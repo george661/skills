@@ -24,7 +24,7 @@ def main():
     # Read hook input from stdin
     try:
         input_data = json.loads(sys.stdin.read()) if not sys.stdin.isatty() else {}
-    except:
+    except Exception:
         input_data = {}
 
     tool_input = input_data.get('tool_input', {})
@@ -47,7 +47,7 @@ def main():
                 'size': stat.st_size,
                 'is_directory': os.path.isdir(file_path)
             }
-        except:
+        except Exception:
             context = {'exists': True}
     else:
         context = {
@@ -95,7 +95,7 @@ def main():
                 },
                 namespace=namespace
             )
-        except:
+        except Exception:
             pass  # Don't block on AgentDB failures
 
     # Output success with context
