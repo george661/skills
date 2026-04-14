@@ -33,6 +33,9 @@ from dag_executor.variables import resolve_variables, VariableResolutionError
 # Executor
 from dag_executor.executor import WorkflowExecutor, WorkflowResult
 
+# Events
+from dag_executor.events import EventType, WorkflowEvent, EventEmitter
+
 # Checkpoint store
 from dag_executor.checkpoint import CheckpointStore, CheckpointMetadata, NodeCheckpoint
 
@@ -50,6 +53,10 @@ __all__ = [
     # Executor
     "WorkflowExecutor",
     "WorkflowResult",
+    # Events
+    "EventType",
+    "WorkflowEvent",
+    "EventEmitter",
     # Checkpoint store
     "CheckpointStore",
     "CheckpointMetadata",
@@ -115,7 +122,10 @@ def execute_workflow(
     """
     executor = WorkflowExecutor()
     return asyncio.run(
-        executor.execute(workflow_def, inputs or {}, concurrency_limit, checkpoint_store, run_id)
+        executor.execute(
+            workflow_def, inputs or {}, concurrency_limit,
+            event_emitter=None, checkpoint_store=checkpoint_store, run_id=run_id
+        )
     )
 
 
@@ -158,7 +168,10 @@ def resume_workflow(
     # from cache instead of re-executed
     executor = WorkflowExecutor()
     return asyncio.run(
-        executor.execute(workflow_def, inputs, concurrency_limit, checkpoint_store, run_id)
+        executor.execute(
+            workflow_def, inputs, concurrency_limit,
+            event_emitter=None, checkpoint_store=checkpoint_store, run_id=run_id
+        )
     )
 
 

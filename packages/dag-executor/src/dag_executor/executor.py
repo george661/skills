@@ -5,7 +5,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
 from simpleeval import SimpleEval  # type: ignore
 
@@ -18,9 +18,8 @@ from dag_executor.schema import (
 )
 from dag_executor.variables import resolve_variables
 
-# TYPE_CHECKING import to avoid circular dependency
-from typing import TYPE_CHECKING
 if TYPE_CHECKING:
+    from dag_executor.events import EventEmitter
     from dag_executor.checkpoint import CheckpointStore, CheckpointMetadata
 
 
@@ -80,6 +79,7 @@ class WorkflowExecutor:
         workflow_def: WorkflowDef,
         inputs: Dict[str, Any],
         concurrency_limit: int = 10,
+        event_emitter: Optional["EventEmitter"] = None,
         checkpoint_store: Optional["CheckpointStore"] = None,
         run_id: Optional[str] = None
     ) -> WorkflowResult:
@@ -89,18 +89,31 @@ class WorkflowExecutor:
             workflow_def: Workflow definition to execute
             inputs: Workflow input values
             concurrency_limit: Maximum concurrent node executions
+            event_emitter: Optional event emitter for workflow monitoring
             checkpoint_store: Optional checkpoint store for state persistence
             run_id: Optional run identifier (generated if not provided)
 
         Returns:
             WorkflowResult with execution status and node results
         """
+        from dag_executor.events import EventType, WorkflowEvent
+
         # Generate run_id if not provided
         if run_id is None:
             run_id = str(uuid.uuid4())
 
-        # Capture workflow start time once (reused in both initial and final metadata saves)
-        started_at = datetime.now(timezone.utc).isoformat()
+        # Capture workflow start time once (reused in both event emission and checkpoint metadata)
+        workflow_started_at = datetime.now(timezone.utc)
+        started_at = workflow_started_at.isoformat()
+
+        # Emit WORKFLOW_STARTED event
+        if event_emitter:
+            event_emitter.emit(WorkflowEvent(
+                event_type=EventType.WORKFLOW_STARTED,
+                workflow_id=workflow_def.name,
+                status=WorkflowStatus.RUNNING,
+                timestamp=workflow_started_at
+            ))
 
         # Save initial checkpoint metadata if checkpoint_store provided
         if checkpoint_store:
@@ -125,10 +138,10 @@ class WorkflowExecutor:
 
         # Get topologically sorted layers
         layers = topological_sort_with_layers(workflow_def.nodes)
-        
+
         # Build node map for quick lookup
         nodes_map = {node.id: node for node in workflow_def.nodes}
-        
+
         # Execute layers sequentially, nodes within layer in parallel
         for layer in layers:
             if ctx.stopped:
@@ -140,16 +153,25 @@ class WorkflowExecutor:
                             error="Workflow stopped due to upstream failure"
                         )
                         ctx.node_statuses[node_id] = NodeStatus.SKIPPED
+                        # Emit NODE_SKIPPED event
+                        if event_emitter:
+                            event_emitter.emit(WorkflowEvent(
+                                event_type=EventType.NODE_SKIPPED,
+                                workflow_id=workflow_def.name,
+                                node_id=node_id,
+                                status=NodeStatus.SKIPPED,
+                                timestamp=datetime.now(timezone.utc)
+                            ))
                 continue
-            
+
             await self._execute_layer(
-                layer, nodes_map, ctx, workflow_def.name, checkpoint_store, run_id
+                layer, nodes_map, ctx, event_emitter, workflow_def.name, checkpoint_store, run_id
             )
 
             # Check if any node triggered a stop
             if ctx.stopped:
                 continue
-        
+
         # Shut down shared thread pool
         pool.shutdown(wait=False)
 
@@ -158,6 +180,29 @@ class WorkflowExecutor:
 
         # Extract workflow outputs
         outputs = self._extract_outputs(workflow_def, ctx)
+
+        # Calculate workflow duration
+        workflow_completed_at = datetime.now(timezone.utc)
+        workflow_duration_ms = int((workflow_completed_at - workflow_started_at).total_seconds() * 1000)
+
+        # Emit WORKFLOW_COMPLETED or WORKFLOW_FAILED event
+        if event_emitter:
+            if final_status == WorkflowStatus.COMPLETED:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.WORKFLOW_COMPLETED,
+                    workflow_id=workflow_def.name,
+                    status=final_status,
+                    duration_ms=workflow_duration_ms,
+                    timestamp=workflow_completed_at
+                ))
+            else:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.WORKFLOW_FAILED,
+                    workflow_id=workflow_def.name,
+                    status=final_status,
+                    duration_ms=workflow_duration_ms,
+                    timestamp=workflow_completed_at
+                ))
 
         # Save final checkpoint metadata
         if checkpoint_store:
@@ -182,9 +227,10 @@ class WorkflowExecutor:
         layer_node_ids: List[str],
         nodes_map: Dict[str, NodeDef],
         ctx: ExecutionContext,
-        workflow_name: str,
-        checkpoint_store: Optional["CheckpointStore"],
-        run_id: str
+        event_emitter: Optional["EventEmitter"] = None,
+        workflow_name: str = "",
+        checkpoint_store: Optional["CheckpointStore"] = None,
+        run_id: str = ""
     ) -> None:
         """Execute all nodes in a layer concurrently.
 
@@ -192,7 +238,8 @@ class WorkflowExecutor:
             layer_node_ids: Node IDs in this layer
             nodes_map: Map of node_id -> NodeDef
             ctx: Execution context
-            workflow_name: Workflow name for checkpointing
+            event_emitter: Optional event emitter for workflow monitoring
+            workflow_name: Workflow name for event emission and checkpointing
             checkpoint_store: Optional checkpoint store
             run_id: Run identifier for checkpointing
         """
@@ -201,7 +248,7 @@ class WorkflowExecutor:
         for node_id in layer_node_ids:
             node_def = nodes_map[node_id]
             task = self._execute_node(
-                node_def, ctx, nodes_map, workflow_name, checkpoint_store, run_id
+                node_def, ctx, nodes_map, event_emitter, workflow_name, checkpoint_store, run_id
             )
             tasks.append(task)
 
@@ -213,9 +260,10 @@ class WorkflowExecutor:
         node_def: NodeDef,
         ctx: ExecutionContext,
         nodes_map: Dict[str, NodeDef],
-        workflow_name: str,
-        checkpoint_store: Optional["CheckpointStore"],
-        run_id: str
+        event_emitter: Optional["EventEmitter"] = None,
+        workflow_name: str = "",
+        checkpoint_store: Optional["CheckpointStore"] = None,
+        run_id: str = ""
     ) -> None:
         """Execute a single node with all pre/post checks.
 
@@ -223,10 +271,13 @@ class WorkflowExecutor:
             node_def: Node definition to execute
             ctx: Execution context
             nodes_map: Map of node_id -> NodeDef (for failure handling)
-            workflow_name: Workflow name for checkpointing
+            event_emitter: Optional event emitter for workflow monitoring
+            workflow_name: Workflow name for event emission and checkpointing
             checkpoint_store: Optional checkpoint store
             run_id: Run identifier for checkpointing
         """
+        from dag_executor.events import EventType, WorkflowEvent
+
         node_id = node_def.id
 
         # Check if checkpointing is enabled for this node (respect node-level checkpoint flag)
@@ -266,8 +317,17 @@ class WorkflowExecutor:
                 error="Marked for skipping"
             )
             ctx.node_statuses[node_id] = NodeStatus.SKIPPED
+            # Emit NODE_SKIPPED event
+            if event_emitter:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.NODE_SKIPPED,
+                    workflow_id=workflow_name,
+                    node_id=node_id,
+                    status=NodeStatus.SKIPPED,
+                    timestamp=datetime.now(timezone.utc)
+                ))
             return
-        
+
         # Evaluate when condition
         self._last_when_error: Optional[str] = None
         if not self._evaluate_when(node_def, ctx):
@@ -277,8 +337,17 @@ class WorkflowExecutor:
                 error=error,
             )
             ctx.node_statuses[node_id] = NodeStatus.SKIPPED
+            # Emit NODE_SKIPPED event
+            if event_emitter:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.NODE_SKIPPED,
+                    workflow_id=workflow_name,
+                    node_id=node_id,
+                    status=NodeStatus.SKIPPED,
+                    timestamp=datetime.now(timezone.utc)
+                ))
             return
-        
+
         # Check trigger rule
         if not self._check_trigger_rule(node_def, ctx):
             ctx.node_results[node_id] = NodeResult(
@@ -286,11 +355,32 @@ class WorkflowExecutor:
                 error="Trigger rule not satisfied"
             )
             ctx.node_statuses[node_id] = NodeStatus.SKIPPED
+            # Emit NODE_SKIPPED event
+            if event_emitter:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.NODE_SKIPPED,
+                    workflow_id=workflow_name,
+                    node_id=node_id,
+                    status=NodeStatus.SKIPPED,
+                    timestamp=datetime.now(timezone.utc)
+                ))
             return
-        
+
         # Mark as running
         ctx.node_statuses[node_id] = NodeStatus.RUNNING
         started_at = datetime.now(timezone.utc)
+
+        # Emit NODE_STARTED event
+        if event_emitter:
+            event_emitter.emit(WorkflowEvent(
+                event_type=EventType.NODE_STARTED,
+                workflow_id=workflow_name,
+                node_id=node_id,
+                status=NodeStatus.RUNNING,
+                model=node_def.model.value if node_def.model else None,
+                dispatch=node_def.dispatch.value if node_def.dispatch else None,
+                timestamp=started_at
+            ))
         
         try:
             # Resolve variables in node definition
@@ -341,7 +431,10 @@ class WorkflowExecutor:
         completed_at = datetime.now(timezone.utc)
         result.started_at = started_at
         result.completed_at = completed_at
-        
+
+        # Calculate duration
+        duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+
         # Check output size
         if result.output:
             output_size = len(json.dumps(result.output))
@@ -349,7 +442,7 @@ class WorkflowExecutor:
                 # Truncate output
                 result.output = {"_truncated": True, "_size_bytes": output_size}
                 result.error = (result.error or "") + f" (Output truncated: {output_size} bytes)"
-        
+
         # Store result
         ctx.node_results[node_id] = result
         ctx.node_statuses[node_id] = result.status
@@ -357,6 +450,32 @@ class WorkflowExecutor:
         # Store output for downstream variable resolution
         if result.status == NodeStatus.COMPLETED and result.output:
             ctx.node_outputs[node_id] = result.output
+
+        # Emit NODE_COMPLETED or NODE_FAILED event
+        if event_emitter:
+            if result.status == NodeStatus.COMPLETED:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.NODE_COMPLETED,
+                    workflow_id=workflow_name,
+                    node_id=node_id,
+                    status=NodeStatus.COMPLETED,
+                    duration_ms=duration_ms,
+                    model=node_def.model.value if node_def.model else None,
+                    dispatch=node_def.dispatch.value if node_def.dispatch else None,
+                    timestamp=completed_at
+                ))
+            elif result.status == NodeStatus.FAILED:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.NODE_FAILED,
+                    workflow_id=workflow_name,
+                    node_id=node_id,
+                    status=NodeStatus.FAILED,
+                    duration_ms=duration_ms,
+                    model=node_def.model.value if node_def.model else None,
+                    dispatch=node_def.dispatch.value if node_def.dispatch else None,
+                    metadata={"error": result.error} if result.error else {},
+                    timestamp=completed_at
+                ))
 
         # Save checkpoint after successful execution
         if enable_checkpoint and checkpoint_store and result.status == NodeStatus.COMPLETED:
