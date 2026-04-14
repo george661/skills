@@ -34,3 +34,4 @@ env/
 .ruff_cache/
 .coverage
 htmlcov/
+.agent-context.json

@@ -1,0 +1,12 @@
+name: Duplicate IDs
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: node1
+    name: First
+    type: bash
+    script: echo 1
+  - id: node1
+    name: Second
+    type: bash
+    script: echo 2

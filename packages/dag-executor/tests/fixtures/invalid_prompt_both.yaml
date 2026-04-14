@@ -1,0 +1,10 @@
+name: Prompt Mutual Exclusivity
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: prompt1
+    name: Invalid Prompt Node
+    type: prompt
+    prompt: "Direct prompt"
+    prompt_file: "/path/to/file.md"
+    model: sonnet

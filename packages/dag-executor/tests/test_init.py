@@ -37,12 +37,12 @@ class TestPublicAPIExports:
 
 
 class TestLoadWorkflow:
-    """Test load_workflow placeholder behavior."""
-    
-    def test_not_implemented(self) -> None:
-        """Verify load_workflow raises NotImplementedError."""
-        with pytest.raises(NotImplementedError, match="load_workflow not yet implemented"):
-            load_workflow("/tmp/test.yaml")
+    """Test load_workflow public API."""
+
+    def test_file_not_found(self) -> None:
+        """Verify load_workflow raises FileNotFoundError for missing files."""
+        with pytest.raises(FileNotFoundError):
+            load_workflow("/tmp/nonexistent_workflow.yaml")
 
 
 class TestExecuteWorkflow:

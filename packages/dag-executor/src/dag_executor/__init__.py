@@ -1,34 +1,68 @@
 """DAG executor public API."""
 from typing import Any, Dict, Optional
 
+# Runtime models (execution tracking)
 from dag_executor.schema import Workflow, Node, NodeStatus, WorkflowStatus, NodeResult
+
+# Definition models (YAML parsing)
+from dag_executor.schema import (
+    WorkflowDef,
+    NodeDef,
+    WorkflowConfig,
+    InputDef,
+    OutputDef,
+    TriggerRule,
+    ModelTier,
+    DispatchMode,
+    OnFailure,
+    OutputFormat,
+    RetryConfig,
+)
+
+# Parser functions
+from dag_executor.parser import load_workflow as _load_workflow_impl
+from dag_executor.parser import load_workflow_from_string
 
 __all__ = [
     "load_workflow",
+    "load_workflow_from_string",
     "execute_workflow",
     "resume_workflow",
+    # Runtime models
     "Workflow",
     "Node",
     "NodeStatus",
     "WorkflowStatus",
     "NodeResult",
+    # Definition models
+    "WorkflowDef",
+    "NodeDef",
+    "WorkflowConfig",
+    "InputDef",
+    "OutputDef",
+    "TriggerRule",
+    "ModelTier",
+    "DispatchMode",
+    "OnFailure",
+    "OutputFormat",
+    "RetryConfig",
 ]
 
 
-def load_workflow(path: str) -> Workflow:
+def load_workflow(path: str) -> WorkflowDef:
     """Load a workflow definition from a YAML file.
-    
+
     Args:
         path: Path to workflow YAML file
-        
+
     Returns:
-        Parsed Workflow object
-        
+        Parsed WorkflowDef object
+
     Raises:
         FileNotFoundError: If the workflow file does not exist
         ValueError: If the workflow definition is invalid
     """
-    raise NotImplementedError("load_workflow not yet implemented")
+    return _load_workflow_impl(path)
 
 
 def execute_workflow(workflow: Workflow, context: Optional[Dict[str, Any]] = None) -> Workflow:
