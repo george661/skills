@@ -123,17 +123,87 @@ def test_load_returns_completed_node_outputs(
     assert checkpoints["node2"].output == {"result": "test-output"}
 
 
-def test_resume_skips_completed_nodes():
-    """Test that resume populates ExecutionContext so completed nodes are skipped."""
-    # This test will be implemented when integrating with executor
-    # For now, we test that load_all_nodes returns the expected structure
-    pass
+def test_resume_skips_completed_nodes(checkpoint_store: CheckpointStore, tmp_path: Path):
+    """Test that resume detects checkpoints and skips completed nodes."""
+    from unittest.mock import patch, MagicMock
+    from dag_executor import execute_workflow, resume_workflow, WorkflowDef, WorkflowConfig
+    from dag_executor.runners.base import BaseRunner, RunnerContext
+
+    # Create a multi-node workflow: node1 -> node2
+    node1 = NodeDef(id="node1", name="Node 1", type="bash", script="echo step1")
+    node2 = NodeDef(id="node2", name="Node 2", type="bash", script="echo step2", depends_on=["node1"])
+    workflow_def = WorkflowDef(
+        name="test-resume",
+        config=WorkflowConfig(checkpoint_prefix="test"),
+        nodes=[node1, node2]
+    )
+
+    # Mock runner that tracks execution calls
+    execution_log = []
+
+    class TrackingRunner(BaseRunner):
+        def run(self, ctx: RunnerContext) -> NodeResult:
+            execution_log.append(ctx.node_def.id)
+            return NodeResult(status=NodeStatus.COMPLETED, output={"result": f"output-{ctx.node_def.id}"})
+
+    # 1. Execute full workflow with checkpointing
+    import uuid
+    run_id = str(uuid.uuid4())
+    with patch("dag_executor.executor.get_runner", return_value=TrackingRunner):
+        result1 = execute_workflow(workflow_def, {}, checkpoint_store=checkpoint_store, run_id=run_id)
+
+    assert result1.status.value == "completed"
+    assert execution_log == ["node1", "node2"]
+    execution_log.clear()
+
+    # 2. Resume with same run_id - both nodes should be skipped (cache hit)
+    with patch("dag_executor.executor.get_runner", return_value=TrackingRunner):
+        result2 = resume_workflow("test-resume", run_id, checkpoint_store, workflow_def)
+
+    assert result2.status.value == "completed"
+    # Verify nodes were NOT re-executed (cache hit)
+    assert len(execution_log) == 0, f"Expected no re-execution, but got: {execution_log}"
 
 
-def test_resume_restores_outputs_for_downstream():
+def test_resume_restores_outputs_for_downstream(checkpoint_store: CheckpointStore, tmp_path: Path):
     """Test that restored outputs are available for downstream variable substitution."""
-    # This test will be implemented when integrating with executor
-    pass
+    from unittest.mock import patch, MagicMock
+    from dag_executor import execute_workflow, resume_workflow, WorkflowDef, WorkflowConfig
+    from dag_executor.runners.base import BaseRunner, RunnerContext
+
+    # Create workflow with variable substitution: node1 -> node2 (uses $node1.result)
+    node1 = NodeDef(id="node1", name="Node 1", type="bash", script="echo upstream")
+    node2 = NodeDef(id="node2", name="Node 2", type="bash", script="echo $node1.result", depends_on=["node1"])
+    workflow_def = WorkflowDef(
+        name="test-restore-outputs",
+        config=WorkflowConfig(checkpoint_prefix="test"),
+        nodes=[node1, node2]
+    )
+
+    # Mock runner that returns structured output
+    class OutputRunner(BaseRunner):
+        def run(self, ctx: RunnerContext) -> NodeResult:
+            if ctx.node_def.id == "node1":
+                return NodeResult(status=NodeStatus.COMPLETED, output={"result": "upstream-value"})
+            # node2 should receive resolved variables from node1's cached output
+            return NodeResult(status=NodeStatus.COMPLETED, output={"script": ctx.node_def.script})
+
+    # 1. Execute full workflow
+    import uuid
+    run_id = str(uuid.uuid4())
+    with patch("dag_executor.executor.get_runner", return_value=OutputRunner):
+        result1 = execute_workflow(workflow_def, {}, checkpoint_store=checkpoint_store, run_id=run_id)
+
+    assert result1.status.value == "completed"
+    assert result1.node_results["node1"].output["result"] == "upstream-value"
+
+    # 2. Resume workflow - node2 should access node1's restored output
+    with patch("dag_executor.executor.get_runner", return_value=OutputRunner):
+        result2 = resume_workflow("test-restore-outputs", run_id, checkpoint_store, workflow_def)
+
+    assert result2.status.value == "completed"
+    # Verify node1's output was restored and available
+    assert result2.node_results["node1"].output["result"] == "upstream-value"
 
 
 def test_content_cache_hit_skips_execution(

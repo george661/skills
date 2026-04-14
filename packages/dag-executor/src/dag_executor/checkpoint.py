@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class NodeCheckpoint(BaseModel):
     """Checkpoint data for a single node execution.
-    
+
     Attributes:
         node_id: Unique node identifier
         status: Final execution status
@@ -26,6 +26,8 @@ class NodeCheckpoint(BaseModel):
         completed_at: ISO timestamp when node completed
         content_hash: SHA256 hash of node definition + dependency outputs
     """
+    model_config = {"extra": "forbid"}
+
     node_id: str
     status: NodeStatus
     output: Dict[str, Any] = Field(default_factory=dict)
@@ -37,7 +39,7 @@ class NodeCheckpoint(BaseModel):
 
 class CheckpointMetadata(BaseModel):
     """Metadata for a workflow run checkpoint.
-    
+
     Attributes:
         workflow_name: Name of the workflow
         run_id: Unique run identifier
@@ -45,6 +47,8 @@ class CheckpointMetadata(BaseModel):
         inputs: Workflow input values
         status: Current workflow status
     """
+    model_config = {"extra": "forbid"}
+
     workflow_name: str
     run_id: str
     started_at: str

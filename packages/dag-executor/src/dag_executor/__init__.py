@@ -153,9 +153,6 @@ def resume_workflow(
     if inputs is None:
         inputs = metadata.inputs
 
-    # Load all completed node checkpoints
-    node_checkpoints = checkpoint_store.load_all_nodes(workflow_name, run_id)
-
     # The executor will use checkpoint_store.check_cache() to skip completed nodes
     # by matching content hashes - completed nodes with matching hashes will be restored
     # from cache instead of re-executed

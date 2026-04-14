@@ -99,17 +99,21 @@ class WorkflowExecutor:
         if run_id is None:
             run_id = str(uuid.uuid4())
 
+        # Capture workflow start time once (reused in both initial and final metadata saves)
+        started_at = datetime.now(timezone.utc).isoformat()
+
         # Save initial checkpoint metadata if checkpoint_store provided
         if checkpoint_store:
             from dag_executor.checkpoint import CheckpointMetadata
             metadata = CheckpointMetadata(
                 workflow_name=workflow_def.name,
                 run_id=run_id,
-                started_at=datetime.now(timezone.utc).isoformat(),
+                started_at=started_at,
                 inputs=inputs,
                 status="running"
             )
             checkpoint_store.save_metadata(workflow_def.name, run_id, metadata)
+
         # Initialize execution context with shared pool and semaphore
         pool = ThreadPoolExecutor(max_workers=concurrency_limit)
         ctx = ExecutionContext(
@@ -161,7 +165,7 @@ class WorkflowExecutor:
             final_metadata = CheckpointMetadata(
                 workflow_name=workflow_def.name,
                 run_id=run_id,
-                started_at=datetime.now(timezone.utc).isoformat(),
+                started_at=started_at,
                 inputs=inputs,
                 status=final_status.value
             )
