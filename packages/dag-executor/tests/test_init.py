@@ -2,10 +2,14 @@
 import pytest
 from dag_executor import (
     Node,
+    NodeDef,
     NodeResult,
     NodeStatus,
     Workflow,
+    WorkflowDef,
+    WorkflowConfig,
     WorkflowStatus,
+    WorkflowResult,
     execute_workflow,
     load_workflow,
     resume_workflow,
@@ -46,24 +50,43 @@ class TestLoadWorkflow:
 
 
 class TestExecuteWorkflow:
-    """Test execute_workflow placeholder behavior."""
-    
-    def test_not_implemented(self) -> None:
-        """Verify execute_workflow raises NotImplementedError."""
-        node = Node(id="node1", name="Test", runner="bash")
-        workflow = Workflow(id="wf1", name="Test", nodes=[node])
-        
-        with pytest.raises(NotImplementedError, match="execute_workflow not yet implemented"):
-            execute_workflow(workflow)
+    """Test execute_workflow behavior."""
+
+    def test_executes_simple_workflow(self) -> None:
+        """Verify execute_workflow executes a simple workflow successfully."""
+        from unittest.mock import patch
+        from dag_executor.runners.base import BaseRunner, RunnerContext
+
+        node = NodeDef(id="node1", name="Test", type="bash", script="echo test")
+        workflow_def = WorkflowDef(
+            name="Test",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=[node]
+        )
+
+        # Mock the runner
+        class MockRunner(BaseRunner):
+            def run(self, ctx: RunnerContext) -> NodeResult:
+                return NodeResult(status=NodeStatus.COMPLETED, output={"result": "ok"})
+
+        with patch("dag_executor.executor.get_runner", return_value=MockRunner):
+            result = execute_workflow(workflow_def, {})
+
+        assert isinstance(result, WorkflowResult)
+        assert result.status == WorkflowStatus.COMPLETED
 
 
 class TestResumeWorkflow:
     """Test resume_workflow placeholder behavior."""
-    
+
     def test_not_implemented(self) -> None:
         """Verify resume_workflow raises NotImplementedError."""
-        node = Node(id="node1", name="Test", runner="bash")
-        workflow = Workflow(id="wf1", name="Test", nodes=[node])
-        
-        with pytest.raises(NotImplementedError, match="resume_workflow not yet implemented"):
-            resume_workflow(workflow)
+        node = NodeDef(id="node1", name="Test", type="bash", script="echo test")
+        workflow_def = WorkflowDef(
+            name="Test",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=[node]
+        )
+
+        with pytest.raises(NotImplementedError, match="resume_workflow not yet fully implemented"):
+            resume_workflow(workflow_def, {})
