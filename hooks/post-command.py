@@ -23,7 +23,7 @@ def main():
     # Read hook input from stdin
     try:
         input_data = json.loads(sys.stdin.read()) if not sys.stdin.isatty() else {}
-    except:
+    except Exception:
         input_data = {}
 
     command = input_data.get('tool_input', {}).get('command', '')
@@ -81,7 +81,7 @@ def main():
                 }],
                 namespace=namespace
             )
-        except:
+        except Exception:
             pass  # Don't block on AgentDB failures
 
     # Output success

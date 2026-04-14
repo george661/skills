@@ -10,10 +10,9 @@ Design Reference:
 """
 
 import json
-import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -211,9 +210,9 @@ def main():
     """Main hook entry point."""
     # Read hook input (may be empty on session start)
     try:
-        input_data = json.loads(sys.stdin.read()) if not sys.stdin.isatty() else {}
+        json.loads(sys.stdin.read()) if not sys.stdin.isatty() else {}
     except Exception:
-        input_data = {}
+        pass
 
     # Load tenant configuration
     tenant_vars = load_tenant_config()

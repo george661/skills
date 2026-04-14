@@ -144,7 +144,7 @@ def _extract_infra_requirements(plan_text: str) -> str:
             ' table_arn and "${table_arn}/index/*" for GSI queries'
         )
 
-    return "\n".join(f"- {l}" for l in lines) + "\n" if lines else ""
+    return "\n".join(f"- {line}" for line in lines) + "\n" if lines else ""
 
 
 def enrich_prompt(command_name, args):
@@ -674,7 +674,7 @@ Write this same block to /tmp/validate-{issue_key}-evidence.txt.
                     if os.path.isdir(journeys_dir):
                         journeys = sorted(os.listdir(journeys_dir))
                         extra += (
-                            f"\nACTUAL tests/journeys/ DOMAINS:\n"
+                            "\nACTUAL tests/journeys/ DOMAINS:\n"
                             + "\n".join(f"  tests/journeys/{j}" for j in journeys) + "\n"
                         )
                 except Exception:

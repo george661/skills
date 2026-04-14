@@ -5,7 +5,6 @@ Run during install/update to avoid filesystem scanning on session start.
 """
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 

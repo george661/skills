@@ -7,7 +7,6 @@ This allows other hooks to import the parser using:
 """
 
 import os
-import sys
 import importlib.util
 
 # Load testing-md-parser.py (with hyphens) and re-export its functions

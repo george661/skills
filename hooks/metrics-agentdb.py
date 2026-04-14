@@ -26,7 +26,6 @@ from typing import Optional, Dict, Any, Tuple
 # Import AgentDB client
 try:
     from agentdb_client import (
-        agentdb_request,
         store_pattern,
         store_episode,
         get_credentials,
@@ -208,7 +207,7 @@ def extract_session_metrics(session_file: Path) -> Dict[str, Any]:
                         result = entry.get('result', {})
                         if isinstance(result, dict) and result.get('error'):
                             errors += 1
-                except:
+                except Exception:
                     continue
     except Exception as e:
         return {'error': str(e)}

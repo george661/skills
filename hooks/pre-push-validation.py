@@ -369,13 +369,13 @@ def format_block_message(
 
             # Detect timeout vs actual failure
             if 'timed out' in output.lower():
-                lines.append(f"  Reason: TIMEOUT - command exceeded time limit")
-                lines.append(f"  Action: Run the command manually to check if it passes outside the hook")
+                lines.append("  Reason: TIMEOUT - command exceeded time limit")
+                lines.append("  Action: Run the command manually to check if it passes outside the hook")
             else:
-                lines.append(f"  Reason: Command exited with non-zero status")
+                lines.append("  Reason: Command exited with non-zero status")
 
             # Show truncated output (last 20 meaningful lines)
-            output_lines = [l for l in output.split('\n') if l.strip()]
+            output_lines = [line for line in output.split('\n') if line.strip()]
             if output_lines:
                 # For test failures, tail is usually more useful than head
                 shown = output_lines[-20:] if len(output_lines) > 20 else output_lines
@@ -400,19 +400,19 @@ def format_block_message(
             step_name = result['step']
             if 'timed out' in result.get('output', '').lower():
                 lines.append(f"  1. Run manually: {command}")
-                lines.append(f"     (the hook has a per-step timeout; your command may just be slow)")
+                lines.append("     (the hook has a per-step timeout; your command may just be slow)")
             elif 'test' in step_name.lower() or 'test' in command.lower():
                 lines.append(f"  1. Run: {command}")
-                lines.append(f"     Fix failing tests, then retry push")
+                lines.append("     Fix failing tests, then retry push")
             elif 'lint' in step_name.lower() or 'lint' in command.lower():
                 lines.append(f"  1. Run: {command} --fix  (or equivalent)")
-                lines.append(f"     Then commit the fixes and retry push")
+                lines.append("     Then commit the fixes and retry push")
             elif 'format' in step_name.lower() or 'format' in command.lower():
                 lines.append(f"  1. Run: {command}")
-                lines.append(f"     Commit any formatting changes and retry push")
+                lines.append("     Commit any formatting changes and retry push")
             else:
                 lines.append(f"  1. Run: {command}")
-                lines.append(f"     Fix errors and retry push")
+                lines.append("     Fix errors and retry push")
 
     return '\n'.join(lines)
 

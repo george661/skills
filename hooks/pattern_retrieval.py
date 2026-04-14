@@ -145,7 +145,7 @@ def retrieve_for_command(command: str, context: Dict[str, Any]) -> Dict[str, Any
             - episodes: List of relevant episodes
             - recommendations: List of recommendation strings
     """
-    issue_key = context.get('issue_key', '')
+    context.get('issue_key', '')
     issue_type = context.get('issue_type', '')
     repo = context.get('repo', '')
     namespace = context.get('namespace')
