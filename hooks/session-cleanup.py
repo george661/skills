@@ -183,7 +183,7 @@ def cleanup_memory_keys(client: AgentDBClient, namespace: str, issue_key: str):
         # Delete PR key if it exists
         try:
             client.delete_memory(namespace=namespace, key=f"pr-{issue_key}")
-        except:
+        except Exception:
             pass  # PR key might not exist
 
         print(f"Cleared memory keys for {issue_key}", file=sys.stderr)

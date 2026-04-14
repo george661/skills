@@ -9,8 +9,6 @@ Staleness: alerts older than 5 minutes are ignored.
 """
 
 import json
-import os
-import sys
 import time
 from pathlib import Path
 from typing import Any, Dict
@@ -42,7 +40,7 @@ def check_alerts() -> Dict[str, Any]:
 
     # Parse ISO timestamp to epoch
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         if timestamp.endswith("Z"):
             timestamp = timestamp[:-1] + "+00:00"

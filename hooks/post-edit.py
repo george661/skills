@@ -24,12 +24,12 @@ def main():
     # Read hook input from stdin
     try:
         input_data = json.loads(sys.stdin.read()) if not sys.stdin.isatty() else {}
-    except:
+    except Exception:
         input_data = {}
 
     tool_input = input_data.get('tool_input', {})
     file_path = tool_input.get('file_path') or tool_input.get('path', '')
-    tool_result = input_data.get('tool_result', {})
+    input_data.get('tool_result', {})
 
     if not file_path:
         print(json.dumps({"continue": True}))
@@ -47,7 +47,7 @@ def main():
                 'size': stat.st_size,
                 'modified': datetime.fromtimestamp(stat.st_mtime).isoformat()
             }
-        except:
+        except Exception:
             pass
 
     # Log edit metrics
@@ -90,7 +90,7 @@ def main():
                 }],
                 namespace=namespace
             )
-        except:
+        except Exception:
             pass  # Don't block on AgentDB failures
 
     # Output success

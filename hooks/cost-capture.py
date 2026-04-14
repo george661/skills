@@ -15,11 +15,10 @@ import sys
 import os
 from datetime import datetime
 from pathlib import Path
-from glob import glob
 
 # Import AgentDB client for central storage
 try:
-    from agentdb_client import store_pattern_async, agentdb_request
+    from agentdb_client import store_pattern_async
     AGENTDB_AVAILABLE = True
 except ImportError:
     AGENTDB_AVAILABLE = False
@@ -135,9 +134,9 @@ def extract_session_cost(session_file: Path) -> dict:
                             total_cache_read += usage.get('cache_read_input_tokens', 0)
                             total_cache_write += usage.get('cache_creation_input_tokens', 0)
                             total_cost += calculate_cost(usage, model_used)
-                except:
+                except Exception:
                     continue
-    except Exception as e:
+    except Exception:
         return {}
 
     return {

@@ -54,7 +54,7 @@ def test_pre_command_hook():
     )
     assert result.returncode == 0, f"Hook error: {result.stderr}"
     output = json.loads(result.stdout)
-    assert output.get('continue') == True, f"Expected continue=True, got {output}"
+    assert output.get('continue'), f"Expected continue=True, got {output}"
     print("✓ pre-command.py works with workflow command")
 
 
@@ -70,7 +70,7 @@ def test_pre_command_non_workflow():
     )
     assert result.returncode == 0
     output = json.loads(result.stdout)
-    assert output.get('continue') == True
+    assert output.get('continue')
     # Should NOT have pattern retrieval output for non-workflow commands
     assert '<retrieved-patterns' not in result.stderr
     print("✓ pre-command.py skips pattern retrieval for non-workflow commands")
@@ -86,7 +86,7 @@ def test_session_start_hook():
     )
     assert result.returncode == 0, f"Hook error: {result.stderr}"
     output = json.loads(result.stdout)
-    assert output.get('continue') == True, f"Expected continue=True, got {output}"
+    assert output.get('continue'), f"Expected continue=True, got {output}"
     print("✓ session-start-workflow-prompt.py works")
 
 

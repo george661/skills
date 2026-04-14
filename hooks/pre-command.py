@@ -37,7 +37,7 @@ def main():
     # Read hook input from stdin
     try:
         input_data = json.loads(sys.stdin.read()) if not sys.stdin.isatty() else {}
-    except:
+    except Exception:
         input_data = {}
 
     command = input_data.get('tool_input', {}).get('command', '')
@@ -108,7 +108,7 @@ def main():
     try:
         with open(os.path.join(log_dir, 'pre-command.jsonl'), 'a') as f:
             f.write(json.dumps(log_entry) + '\n')
-    except:
+    except Exception:
         pass
 
     # Async sync to AgentDB (fire and forget)
@@ -125,7 +125,7 @@ def main():
                 },
                 namespace=namespace
             )
-        except:
+        except Exception:
             pass  # Don't block on AgentDB failures
 
     # Output success - allow command to proceed (even dangerous ones - just warn)

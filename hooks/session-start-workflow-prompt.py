@@ -79,9 +79,9 @@ def set_resource_markers(tenant_vars):
 def main():
     # Read hook input (may be empty on session start)
     try:
-        input_data = json.loads(sys.stdin.read()) if not sys.stdin.isatty() else {}
-    except:
-        input_data = {}
+        json.loads(sys.stdin.read()) if not sys.stdin.isatty() else {}
+    except Exception:
+        pass
 
     # Load tenant configuration (cached)
     tenant_vars = load_tenant_config()

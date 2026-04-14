@@ -47,7 +47,7 @@ def get_namespace() -> str:
     if not namespace:
         # Try to infer from PROJECT_ROOT
         project_root = os.environ.get('PROJECT_ROOT', os.getcwd())
-        project_lower = project_root.lower()
+        project_root.lower()
 
         # Use TENANT_NAMESPACE from env, fall back to TENANT_PROJECT lowercase
         namespace = os.environ.get('TENANT_NAMESPACE', os.environ.get('TENANT_PROJECT', 'default')).lower()
