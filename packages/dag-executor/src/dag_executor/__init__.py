@@ -203,6 +203,5 @@ def resume_workflow(
 
 def main() -> None:
     """CLI entry point for dag-exec command."""
-    import sys
-    print("dag-exec CLI not yet implemented", file=sys.stderr)
-    sys.exit(1)
+    from dag_executor.cli import main as cli_main
+    cli_main()
