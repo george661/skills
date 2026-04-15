@@ -14,16 +14,12 @@ Usage:
   checkpoint.py list <issue>
   checkpoint.py clear <issue> [phase]
   checkpoint.py status
-  checkpoint.py history <issue> [--brief]
-  checkpoint.py inspect <issue> <step>
-  checkpoint.py replay <issue> <from-step> [--override=key=value ...]
 """
 
 import json
 import sys
 import os
-import hashlib
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -383,196 +379,6 @@ def status() -> Dict[str, Any]:
     return info
 
 
-# ---------------------------------------------------------------------------
-# Replay, History, and Inspect commands
-# ---------------------------------------------------------------------------
-
-def history_checkpoints(issue: str, brief: bool = False) -> Dict[str, Any]:
-    """List all checkpoints for a run with metadata and content hashes.
-
-    Args:
-        issue: Issue identifier (e.g., GW-4986)
-        brief: If True, omit full data from output
-
-    Returns:
-        Dict with issue, checkpoints list, and total count
-    """
-    if not AGENTDB_AVAILABLE:
-        return {'error': 'AgentDB unavailable - history requires AgentDB'}
-
-    try:
-        phases = _agentdb_list(issue)
-        if phases is None:
-            return {'error': 'AgentDB unavailable - could not retrieve history'}
-
-        checkpoints = []
-        for phase_data in phases:
-            phase_name = phase_data.get('phase', '')
-            timestamp = phase_data.get('timestamp', '')
-            data = phase_data.get('data', {})
-
-            # Calculate age
-            age_hours = 0.0
-            if timestamp:
-                try:
-                    ts_dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                    age_hours = (datetime.now(timezone.utc) - ts_dt).total_seconds() / 3600
-                except (ValueError, AttributeError):
-                    pass
-
-            # Calculate content hash
-            content_str = json.dumps(data, sort_keys=True)
-            content_hash = hashlib.sha256(content_str.encode()).hexdigest()[:16]
-
-            # Determine status
-            status = data.get('status', 'unknown')
-            if status not in ['pass', 'fail', 'running']:
-                # Infer status from data presence
-                status = 'pass' if data else 'unknown'
-
-            checkpoint_info = {
-                'phase': phase_name,
-                'timestamp': timestamp,
-                'age_hours': round(age_hours, 2),
-                'status': status,
-                'content_hash': content_hash,
-                'data_keys': list(data.keys()) if not brief else None,
-            }
-
-            if not brief:
-                checkpoint_info['data'] = data
-
-            checkpoints.append(checkpoint_info)
-
-        # Sort by timestamp descending (newest first)
-        checkpoints.sort(key=lambda x: x['timestamp'], reverse=True)
-
-        return {
-            'issue': issue,
-            'checkpoints': checkpoints,
-            'total': len(checkpoints),
-        }
-    except Exception as e:
-        return {'error': f'Failed to retrieve history: {str(e)}'}
-
-
-def inspect_checkpoint(issue: str, step: str) -> Dict[str, Any]:
-    """Dump the full state snapshot at a given checkpoint.
-
-    Args:
-        issue: Issue identifier
-        step: Phase/step name to inspect
-
-    Returns:
-        Dict with full checkpoint data and metadata
-    """
-    if not AGENTDB_AVAILABLE:
-        return {'error': 'AgentDB unavailable - inspect requires AgentDB'}
-
-    try:
-        checkpoint = _agentdb_load(issue, step)
-        if not checkpoint:
-            return {'error': f'Checkpoint not found for issue={issue}, step={step}'}
-
-        data = checkpoint.get('data', {})
-        timestamp = checkpoint.get('timestamp', '')
-
-        # Calculate content hash
-        content_str = json.dumps(data, sort_keys=True)
-        content_hash = hashlib.sha256(content_str.encode()).hexdigest()
-
-        # Calculate data size
-        data_size = len(content_str.encode())
-
-        return {
-            'issue': issue,
-            'phase': step,
-            'data': data,
-            'timestamp': timestamp,
-            'content_hash': content_hash,
-            'data_size_bytes': data_size,
-            'resumable': True,
-        }
-    except Exception as e:
-        return {'error': f'Failed to inspect checkpoint: {str(e)}'}
-
-
-def replay_checkpoint(issue: str, from_step: str, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Replay workflow from a checkpoint with optional overrides.
-
-    Creates a new run-id with ~replay~ suffix, loads the checkpoint state,
-    applies any overrides, and saves as a new checkpoint. Marks all phases
-    after from_step as cleared for re-execution.
-
-    Args:
-        issue: Issue identifier
-        from_step: Phase name to replay from
-        overrides: Optional dict of key-value pairs to merge into loaded state
-
-    Returns:
-        Dict with new_run_id, parent_run_id, replayed_from, and phases_cleared
-    """
-    if not AGENTDB_AVAILABLE:
-        return {'error': 'AgentDB unavailable - replay requires AgentDB'}
-
-    try:
-        # Load checkpoint at from_step
-        checkpoint = _agentdb_load(issue, from_step)
-        if not checkpoint:
-            return {'error': f'Checkpoint not found for issue={issue}, step={from_step}'}
-
-        # Get all phases to identify which ones come after from_step
-        all_phases = _agentdb_list(issue)
-        if not all_phases:
-            all_phases = []
-
-        # Load the data
-        data = checkpoint.get('data', {}).copy()
-
-        # Apply overrides if provided
-        if overrides:
-            data.update(overrides)
-
-        # Generate new run-id with replay timestamp
-        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
-        new_run_id = f"{issue}~replay~{timestamp}"
-
-        # Find phases that come after from_step (to be cleared)
-        phases_to_clear = []
-        found_from_step = False
-        for phase_data in sorted(all_phases, key=lambda x: x.get('timestamp', '')):
-            if found_from_step:
-                phases_to_clear.append(phase_data.get('phase', ''))
-            if phase_data.get('phase') == from_step:
-                found_from_step = True
-
-        # Add metadata about the replay
-        replay_metadata = {
-            'parent_run_id': issue,
-            'replayed_from': from_step,
-            'replay_timestamp': datetime.now(timezone.utc).isoformat(),
-            'phases_cleared': phases_to_clear,
-        }
-        data['_replay_metadata'] = replay_metadata
-
-        # Save the new checkpoint under the new run-id
-        # This is non-destructive - original checkpoints are not modified
-        saved = _agentdb_save(new_run_id, from_step, data)
-        if not saved:
-            return {'error': 'Failed to save replay checkpoint'}
-
-        return {
-            'success': True,
-            'new_run_id': new_run_id,
-            'parent_run_id': issue,
-            'replayed_from': from_step,
-            'phases_cleared': phases_to_clear,
-            'overrides_applied': list(overrides.keys()) if overrides else [],
-        }
-    except Exception as e:
-        return {'error': f'Failed to replay checkpoint: {str(e)}'}
-
-
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({'error': 'Usage: checkpoint.py <command> [args]'}))
@@ -613,42 +419,6 @@ def main():
 
         elif command == 'status':
             result = status()
-
-        elif command == 'history':
-            if len(sys.argv) < 3:
-                print(json.dumps({'error': 'Usage: checkpoint.py history <issue> [--brief]'}))
-                sys.exit(1)
-            issue = sys.argv[2]
-            brief = '--brief' in sys.argv
-            result = history_checkpoints(issue, brief=brief)
-
-        elif command == 'inspect':
-            if len(sys.argv) < 4:
-                print(json.dumps({'error': 'Usage: checkpoint.py inspect <issue> <step>'}))
-                sys.exit(1)
-            issue, step = sys.argv[2], sys.argv[3]
-            result = inspect_checkpoint(issue, step)
-
-        elif command == 'replay':
-            if len(sys.argv) < 4:
-                print(json.dumps({'error': 'Usage: checkpoint.py replay <issue> <from-step> [--override key=value ...]'}))
-                sys.exit(1)
-            issue, from_step = sys.argv[2], sys.argv[3]
-
-            # Parse --override arguments
-            overrides = {}
-            for arg in sys.argv[4:]:
-                if arg.startswith('--override='):
-                    kv = arg.replace('--override=', '')
-                    if '=' in kv:
-                        key, value = kv.split('=', 1)
-                        # Try to parse as JSON, fall back to string
-                        try:
-                            overrides[key] = json.loads(value)
-                        except json.JSONDecodeError:
-                            overrides[key] = value
-
-            result = replay_checkpoint(issue, from_step, overrides if overrides else None)
 
         else:
             result = {'error': f'Unknown command: {command}'}

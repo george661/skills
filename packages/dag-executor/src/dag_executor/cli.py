@@ -1,7 +1,9 @@
 """CLI entry point for DAG executor."""
 import argparse
 import json
+import shutil
 import sys
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from dag_executor import (
@@ -10,6 +12,7 @@ from dag_executor import (
     resume_workflow,
     topological_sort_with_layers,
     CheckpointStore,
+    CheckpointMetadata,
     WorkflowResult,
     WorkflowEvent,
     NodeStatus,
@@ -17,6 +20,8 @@ from dag_executor import (
     EventEmitter,
     StreamMode,
 )
+
+SUBCOMMANDS = {"replay", "history", "inspect"}
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -229,13 +234,201 @@ def print_summary(result: WorkflowResult) -> None:
     print()
 
 
+def _flat_node_order(nodes: List[Any]) -> List[str]:
+    """Return a flat topological node order from workflow nodes."""
+    layers = topological_sort_with_layers(nodes)
+    order: List[str] = []
+    for layer in layers:
+        order.extend(layer)
+    return order
+
+
+def run_history(argv: List[str]) -> None:
+    """Run the ``history`` subcommand.
+
+    ``dag-exec history workflow.yaml [--run-id RUN_ID]``
+    """
+    parser = argparse.ArgumentParser(prog="dag-exec history")
+    parser.add_argument("workflow", help="Path to workflow YAML file")
+    parser.add_argument("--run-id", help="Show node checkpoints for a specific run")
+    parser.add_argument("--checkpoint-dir", help="Override checkpoint directory")
+    args = parser.parse_args(argv)
+
+    workflow_def = load_workflow(args.workflow)
+    checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
+    store = CheckpointStore(checkpoint_dir)
+
+    if args.run_id:
+        # Show node checkpoints for a specific run
+        nodes = store.load_all_nodes(workflow_def.name, args.run_id)
+        node_list = []
+        for node_id, cp in sorted(nodes.items()):
+            node_list.append({
+                "node_id": node_id,
+                "status": cp.status.value,
+                "content_hash": cp.content_hash,
+                "started_at": cp.started_at,
+                "completed_at": cp.completed_at,
+            })
+        print(json.dumps({"workflow_name": workflow_def.name, "run_id": args.run_id, "nodes": node_list}, indent=2))
+    else:
+        # List all runs
+        run_ids = store.list_runs(workflow_def.name)
+        runs = []
+        for rid in run_ids:
+            meta = store.load_metadata(workflow_def.name, rid)
+            nodes = store.load_all_nodes(workflow_def.name, rid)
+            runs.append({
+                "run_id": rid,
+                "status": meta.status if meta else "unknown",
+                "started_at": meta.started_at if meta else "",
+                "node_count": len(nodes),
+            })
+        print(json.dumps({"workflow_name": workflow_def.name, "runs": runs}, indent=2))
+
+
+def run_inspect(argv: List[str]) -> None:
+    """Run the ``inspect`` subcommand.
+
+    ``dag-exec inspect workflow.yaml --run-id RUN_ID [--node NODE_ID]``
+    """
+    parser = argparse.ArgumentParser(prog="dag-exec inspect")
+    parser.add_argument("workflow", help="Path to workflow YAML file")
+    parser.add_argument("--run-id", required=True, help="Run ID to inspect")
+    parser.add_argument("--node", help="Specific node ID to inspect")
+    parser.add_argument("--checkpoint-dir", help="Override checkpoint directory")
+    args = parser.parse_args(argv)
+
+    workflow_def = load_workflow(args.workflow)
+    checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
+    store = CheckpointStore(checkpoint_dir)
+
+    meta = store.load_metadata(workflow_def.name, args.run_id)
+    if not meta:
+        print(json.dumps({"error": f"No metadata found for run '{args.run_id}'"}), file=sys.stderr)
+        sys.exit(1)
+
+    if args.node:
+        # Dump full NodeCheckpoint for the specific node
+        cp = store.load_node(workflow_def.name, args.run_id, args.node)
+        if not cp:
+            print(json.dumps({"error": f"No checkpoint for node '{args.node}'"}), file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(cp.model_dump(), indent=2))
+    else:
+        # Dump metadata + all node summaries
+        nodes = store.load_all_nodes(workflow_def.name, args.run_id)
+        node_summaries = []
+        for node_id, cp in sorted(nodes.items()):
+            node_summaries.append({
+                "node_id": node_id,
+                "status": cp.status.value,
+                "content_hash": cp.content_hash,
+            })
+        output = meta.model_dump()
+        output["nodes"] = node_summaries
+        print(json.dumps(output, indent=2))
+
+
+def run_replay(argv: List[str]) -> None:
+    """Run the ``replay`` subcommand.
+
+    ``dag-exec replay workflow.yaml --run-id RUN_ID --from-node NODE_ID [--with-override k=v ...]``
+    """
+    parser = argparse.ArgumentParser(prog="dag-exec replay")
+    parser.add_argument("workflow", help="Path to workflow YAML file")
+    parser.add_argument("--run-id", required=True, help="Run ID to replay from")
+    parser.add_argument("--from-node", required=True, help="Node ID to replay from")
+    parser.add_argument("--with-override", action="append", default=[], help="key=value overrides")
+    parser.add_argument("--checkpoint-dir", help="Override checkpoint directory")
+    args = parser.parse_args(argv)
+
+    workflow_def = load_workflow(args.workflow)
+    checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
+    store = CheckpointStore(checkpoint_dir)
+
+    # 1. Load existing metadata
+    meta = store.load_metadata(workflow_def.name, args.run_id)
+    if not meta:
+        print(json.dumps({"error": f"No metadata found for run '{args.run_id}'"}), file=sys.stderr)
+        sys.exit(1)
+
+    # 2. Compute topological node order
+    node_order = _flat_node_order(workflow_def.nodes)
+
+    # 3. Generate new run_id
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    new_run_id = f"{args.run_id}-replay-{ts}"
+
+    # 4. Copy the run checkpoint directory to the new run_id directory
+    original_dir = store._get_run_dir(workflow_def.name, args.run_id)
+    new_dir = store._get_run_dir(workflow_def.name, new_run_id)
+    shutil.copytree(str(original_dir), str(new_dir))
+
+    # 5. Clear nodes after --from-node
+    cleared = store.clear_nodes_after(workflow_def.name, new_run_id, args.from_node, node_order)
+
+    # 6. Update metadata with new run_id and status
+    new_meta = CheckpointMetadata(
+        workflow_name=meta.workflow_name,
+        run_id=new_run_id,
+        started_at=meta.started_at,
+        inputs=meta.inputs.copy(),
+        status="running",
+    )
+
+    # 7. Apply overrides
+    for override in args.with_override:
+        if "=" in override:
+            key, value = override.split("=", 1)
+            try:
+                new_meta.inputs[key] = json.loads(value)
+            except json.JSONDecodeError:
+                new_meta.inputs[key] = value
+
+    # 8. Save updated metadata
+    store.save_metadata(workflow_def.name, new_run_id, new_meta)
+
+    # 9. Execute via resume_workflow
+    result = resume_workflow(
+        workflow_name=workflow_def.name,
+        run_id=new_run_id,
+        checkpoint_store=store,
+        workflow_def=workflow_def,
+        inputs=new_meta.inputs,
+    )
+
+    # 10. Print summary
+    summary = {
+        "new_run_id": new_run_id,
+        "parent_run_id": args.run_id,
+        "replayed_from": args.from_node,
+        "nodes_cleared": cleared,
+        "status": result.status.value,
+        "nodes_executed": len(result.node_results),
+    }
+    print(json.dumps(summary, indent=2))
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     """Main CLI entry point.
-    
+
     Args:
         argv: Argument list (defaults to sys.argv[1:])
     """
     try:
+        if argv is None:
+            argv = sys.argv[1:]
+
+        if argv and argv[0] in SUBCOMMANDS:
+            subcmd = argv[0]
+            if subcmd == "history":
+                return run_history(argv[1:])
+            elif subcmd == "inspect":
+                return run_inspect(argv[1:])
+            elif subcmd == "replay":
+                return run_replay(argv[1:])
+
         args = parse_args(argv)
         
         # Dry-run mode
