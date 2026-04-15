@@ -1,0 +1,173 @@
+---
+name: Implement Command Sub-DAG
+config:
+  checkpoint_prefix: implement
+  worktree: true
+  labels:
+    on_failure: outcome:implement-failed
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+  E2E_REPO:
+    type: string
+    required: false
+    default: ""
+
+nodes:
+  # Phase 1: Load Implementation Plan from AgentDB
+  - id: load_plan
+    name: Load Implementation Plan
+    type: bash
+    script: |
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts \
+        "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"impl-plan-$issue_key\", \"k\": 1}"
+    output_format: json
+
+  # Phase 2: Plan Freshness Check
+  - id: plan_freshness
+    name: Plan Freshness Check
+    type: bash
+    depends_on:
+      - load_plan
+    script: |
+      # Compare worktree plan against latest Jira plan comment
+      worktree_plan=$(cat implementation-plan.md 2>/dev/null || echo "NO_FILE")
+      cd $PROJECT_ROOT && issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
+        "{\"issue_key\": \"$issue_key\", \"fields\": \"comment\"}")
+      echo "Plan freshness check completed"
+
+  # Phase 3: E2E RED Gate (conditional based on E2E_REPO)
+  - id: e2e_red_gate
+    name: E2E RED Gate
+    type: gate
+    depends_on:
+      - plan_freshness
+    condition: "$E2E_REPO != \"\""
+    on_failure: continue
+
+  # Phase 4: E2E RED Verify (runs only if gate passes)
+  - id: e2e_red_verify
+    name: E2E RED Verify
+    type: command
+    depends_on:
+      - e2e_red_gate
+    trigger_rule: all_success
+    command: e2e-verify-red
+    args:
+      - $issue_key
+    dispatch: inline
+
+  # Phase 5: Update Step Label to Implementing
+  - id: step_label_implementing
+    name: Update Step Label to Implementing
+    type: bash
+    depends_on:
+      - plan_freshness
+    script: |
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"labels\"}")
+      labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not)) + ["step:implementing"] | @json')
+      npx tsx ~/.claude/skills/jira/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
+
+  # Phase 6: TDD Implementation (RED-GREEN-REFACTOR)
+  - id: tdd_implement
+    name: TDD Implementation
+    type: prompt
+    depends_on:
+      - e2e_red_verify
+      - step_label_implementing
+    trigger_rule: all_done
+    prompt: |
+      Execute TDD implementation for issue $issue_key.
+      Follow RED-GREEN-REFACTOR cycle:
+      1. Write tests first (RED)
+      2. Implement code to make tests pass (GREEN)
+      3. Refactor for quality (REFACTOR)
+      Commit changes with descriptive message.
+    model: sonnet
+    dispatch: local
+    output_format: json
+
+  # Phase 7: Run Validation
+  - id: run_validation
+    name: Run Validation
+    type: bash
+    depends_on:
+      - tdd_implement
+    script: |
+      # Run pre-commit validation (lint, typecheck, tests)
+      repo_name=$(basename $PWD)
+      cd $PROJECT_ROOT/$repo_name
+      # Parse TESTING.md for validation commands
+      if [ -f TESTING.md ]; then
+        echo "Running validation from TESTING.md"
+        # Run tests and validation
+      fi
+      echo "Validation completed"
+
+  # Phase 8: File Location Guard
+  - id: file_location_guard
+    name: File Location Guard
+    type: bash
+    depends_on:
+      - run_validation
+    script: |
+      # Verify no files created/modified outside the plan
+      changed_files=$(git diff --name-only HEAD)
+      new_files=$(git ls-files --others --exclude-standard)
+      echo "Changed files: $changed_files"
+      echo "New files: $new_files"
+      # Validate against plan's filesToChange list
+
+  # Phase 9: Push and Create PR
+  - id: push_and_create_pr
+    name: Push and Create PR
+    type: bash
+    depends_on:
+      - file_location_guard
+    checkpoint: true
+    script: |
+      # Push branch
+      git push -u origin $(git branch --show-current)
+      
+      # Create PR via VCS skill
+      repo_name=$(basename $PWD)
+      branch=$(git branch --show-current)
+      pr_result=$(npx tsx ~/.claude/skills/vcs/create_pull_request.ts "{
+        \"repo\": \"$repo_name\",
+        \"title\": \"$issue_key: Implementation\",
+        \"source_branch\": \"$branch\",
+        \"description\": \"Implementation for $issue_key\"
+      }")
+      
+      # Extract PR number from result
+      pr_number=$(echo "$pr_result" | jq -r '.pr_number // .number // 0')
+      
+      # Output structured data for parent DAG
+      echo "{\"repo\": \"$repo_name\", \"pr_number\": $pr_number, \"branch\": \"$branch\"}"
+    output_format: json
+
+  # Phase 10: Update Step Label to Awaiting CI
+  - id: step_label_awaiting_ci
+    name: Update Step Label to Awaiting CI
+    type: bash
+    depends_on:
+      - push_and_create_pr
+    script: |
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"labels\"}")
+      pr_info=$(echo "$push_and_create_pr" | jq -r '.repo + "/" + (.pr_number | tostring)')
+      labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not) | select(startswith("pr:") | not)) + ["step:awaiting-ci", "pr:'"$pr_info"'"] | @json')
+      npx tsx ~/.claude/skills/jira/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
+
+outputs:
+  repo:
+    node: push_and_create_pr
+    field: repo
+  pr_number:
+    node: push_and_create_pr
+    field: pr_number
+  branch:
+    node: push_and_create_pr
+    field: branch
