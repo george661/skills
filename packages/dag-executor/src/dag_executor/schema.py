@@ -90,12 +90,45 @@ class OutputFormat(str, Enum):
     YAML = "yaml"
 
 
+class ReducerStrategy(str, Enum):
+    """Strategy for merging outputs from multiple nodes into workflow state."""
+    OVERWRITE = "overwrite"  # Replace current with new (default)
+    APPEND = "append"  # Append to list
+    EXTEND = "extend"  # Extend list with list
+    MAX = "max"  # Take maximum value
+    MIN = "min"  # Take minimum value
+    MERGE_DICT = "merge_dict"  # Merge dict values
+    CUSTOM = "custom"  # Use custom function
+
+
 class RetryConfig(BaseModel):
     """Configuration for node retry behavior."""
     model_config = {"extra": "forbid"}
-    
+
     max_attempts: int = Field(..., gt=0, description="Maximum retry attempts (must be > 0)")
     delay_ms: int = Field(default=0, ge=0, description="Delay between retries in milliseconds")
+
+
+class ReducerDef(BaseModel):
+    """State reducer definition for merging outputs from multiple nodes.
+
+    The dict key in WorkflowDef.state is the state key name.
+    This model only defines the merge strategy and optional custom function.
+    """
+    model_config = {"extra": "forbid"}
+
+    strategy: ReducerStrategy = Field(..., description="Reducer strategy to use")
+    function: Optional[str] = Field(
+        default=None,
+        description="Dotted path to custom reducer function (required for strategy=custom)"
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Validate strategy-function requirements."""
+        if self.strategy == ReducerStrategy.CUSTOM and self.function is None:
+            raise ValueError("function field is required when strategy=custom")
+        if self.strategy != ReducerStrategy.CUSTOM and self.function is not None:
+            raise ValueError("function field is only allowed when strategy=custom")
 
 
 class InputDef(BaseModel):
@@ -247,9 +280,13 @@ class WorkflowConfig(BaseModel):
 class WorkflowDef(BaseModel):
     """Complete workflow definition for YAML parsing."""
     model_config = {"extra": "forbid"}
-    
+
     name: str = Field(..., description="Workflow name")
     config: WorkflowConfig = Field(..., description="Workflow configuration")
     inputs: Dict[str, InputDef] = Field(default_factory=dict, description="Input definitions")
     nodes: List[NodeDef] = Field(..., min_length=1, description="Workflow nodes (at least one required)")
     outputs: Dict[str, OutputDef] = Field(default_factory=dict, description="Output definitions")
+    state: Dict[str, ReducerDef] = Field(
+        default_factory=dict,
+        description="State reducer definitions (key = state key name)"
+    )

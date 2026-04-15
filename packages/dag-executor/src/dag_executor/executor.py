@@ -1,6 +1,7 @@
 """Core DAG workflow executor with layer-parallel execution."""
 import asyncio
 import json
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 from simpleeval import SimpleEval  # type: ignore
 
 from dag_executor.graph import topological_sort_with_layers
+from dag_executor.reducers import ReducerRegistry
 from dag_executor.runners import get_runner
 from dag_executor.runners.base import RunnerContext
 from dag_executor.schema import (
@@ -26,12 +28,14 @@ if TYPE_CHECKING:
 @dataclass
 class ExecutionContext:
     """Tracks execution state across the workflow.
-    
+
     Attributes:
         node_outputs: Map of node_id -> output dict from completed nodes
         node_statuses: Map of node_id -> current NodeStatus
         node_results: Map of node_id -> full NodeResult
         workflow_inputs: Global workflow inputs
+        workflow_state: Shared mutable state merged via reducers
+        _state_lock: Lock for thread-safe workflow_state mutations
         concurrency_limit: Max concurrent node executions
         stopped: Set to True when workflow should halt (on_failure=stop)
         skipped_nodes: Set of node IDs marked for skipping
@@ -40,6 +44,8 @@ class ExecutionContext:
     node_statuses: Dict[str, NodeStatus] = field(default_factory=dict)
     node_results: Dict[str, NodeResult] = field(default_factory=dict)
     workflow_inputs: Dict[str, Any] = field(default_factory=dict)
+    workflow_state: Dict[str, Any] = field(default_factory=dict)
+    _state_lock: threading.Lock = field(default_factory=threading.Lock)
     concurrency_limit: int = 10
     stopped: bool = False
     skipped_nodes: Set[str] = field(default_factory=set)
@@ -165,7 +171,7 @@ class WorkflowExecutor:
                 continue
 
             await self._execute_layer(
-                layer, nodes_map, ctx, event_emitter, workflow_def.name, checkpoint_store, run_id
+                layer, nodes_map, ctx, workflow_def, event_emitter, checkpoint_store, run_id
             )
 
             # Check if any node triggered a stop
@@ -227,8 +233,8 @@ class WorkflowExecutor:
         layer_node_ids: List[str],
         nodes_map: Dict[str, NodeDef],
         ctx: ExecutionContext,
+        workflow_def: WorkflowDef,
         event_emitter: Optional["EventEmitter"] = None,
-        workflow_name: str = "",
         checkpoint_store: Optional["CheckpointStore"] = None,
         run_id: str = ""
     ) -> None:
@@ -238,8 +244,8 @@ class WorkflowExecutor:
             layer_node_ids: Node IDs in this layer
             nodes_map: Map of node_id -> NodeDef
             ctx: Execution context
+            workflow_def: Workflow definition (for reducer application)
             event_emitter: Optional event emitter for workflow monitoring
-            workflow_name: Workflow name for event emission and checkpointing
             checkpoint_store: Optional checkpoint store
             run_id: Run identifier for checkpointing
         """
@@ -248,7 +254,7 @@ class WorkflowExecutor:
         for node_id in layer_node_ids:
             node_def = nodes_map[node_id]
             task = self._execute_node(
-                node_def, ctx, nodes_map, event_emitter, workflow_name, checkpoint_store, run_id
+                node_def, ctx, nodes_map, workflow_def, event_emitter, checkpoint_store, run_id
             )
             tasks.append(task)
 
@@ -260,8 +266,8 @@ class WorkflowExecutor:
         node_def: NodeDef,
         ctx: ExecutionContext,
         nodes_map: Dict[str, NodeDef],
+        workflow_def: WorkflowDef,
         event_emitter: Optional["EventEmitter"] = None,
-        workflow_name: str = "",
         checkpoint_store: Optional["CheckpointStore"] = None,
         run_id: str = ""
     ) -> None:
@@ -271,8 +277,8 @@ class WorkflowExecutor:
             node_def: Node definition to execute
             ctx: Execution context
             nodes_map: Map of node_id -> NodeDef (for failure handling)
+            workflow_def: Workflow definition (for reducer application)
             event_emitter: Optional event emitter for workflow monitoring
-            workflow_name: Workflow name for event emission and checkpointing
             checkpoint_store: Optional checkpoint store
             run_id: Run identifier for checkpointing
         """
@@ -293,7 +299,7 @@ class WorkflowExecutor:
 
             # Compute content hash and check cache
             content_hash = checkpoint_store.compute_content_hash(node_def, dependency_outputs)
-            cached = checkpoint_store.check_cache(workflow_name, run_id, node_id, content_hash)
+            cached = checkpoint_store.check_cache(workflow_def.name, run_id, node_id, content_hash)
 
             if cached and cached.status == NodeStatus.COMPLETED:
                 # Cache hit - restore result and skip execution
@@ -321,7 +327,7 @@ class WorkflowExecutor:
             if event_emitter:
                 event_emitter.emit(WorkflowEvent(
                     event_type=EventType.NODE_SKIPPED,
-                    workflow_id=workflow_name,
+                    workflow_id=workflow_def.name,
                     node_id=node_id,
                     status=NodeStatus.SKIPPED,
                     timestamp=datetime.now(timezone.utc)
@@ -341,7 +347,7 @@ class WorkflowExecutor:
             if event_emitter:
                 event_emitter.emit(WorkflowEvent(
                     event_type=EventType.NODE_SKIPPED,
-                    workflow_id=workflow_name,
+                    workflow_id=workflow_def.name,
                     node_id=node_id,
                     status=NodeStatus.SKIPPED,
                     timestamp=datetime.now(timezone.utc)
@@ -359,7 +365,7 @@ class WorkflowExecutor:
             if event_emitter:
                 event_emitter.emit(WorkflowEvent(
                     event_type=EventType.NODE_SKIPPED,
-                    workflow_id=workflow_name,
+                    workflow_id=workflow_def.name,
                     node_id=node_id,
                     status=NodeStatus.SKIPPED,
                     timestamp=datetime.now(timezone.utc)
@@ -374,7 +380,7 @@ class WorkflowExecutor:
         if event_emitter:
             event_emitter.emit(WorkflowEvent(
                 event_type=EventType.NODE_STARTED,
-                workflow_id=workflow_name,
+                workflow_id=workflow_def.name,
                 node_id=node_id,
                 status=NodeStatus.RUNNING,
                 model=node_def.model.value if node_def.model else None,
@@ -451,12 +457,29 @@ class WorkflowExecutor:
         if result.status == NodeStatus.COMPLETED and result.output:
             ctx.node_outputs[node_id] = result.output
 
+            # Apply reducers to merge outputs into workflow_state
+            if workflow_def.state and isinstance(result.output, dict):
+                reducer_registry = ReducerRegistry()
+                for output_key, output_value in result.output.items():
+                    if output_key in workflow_def.state:
+                        reducer_def = workflow_def.state[output_key]
+                        # Thread-safe mutation of workflow_state
+                        with ctx._state_lock:
+                            current = ctx.workflow_state.get(output_key)
+                            merged = reducer_registry.apply(
+                                reducer_def.strategy,
+                                current,
+                                output_value,
+                                custom_function=reducer_def.function
+                            )
+                            ctx.workflow_state[output_key] = merged
+
         # Emit NODE_COMPLETED or NODE_FAILED event
         if event_emitter:
             if result.status == NodeStatus.COMPLETED:
                 event_emitter.emit(WorkflowEvent(
                     event_type=EventType.NODE_COMPLETED,
-                    workflow_id=workflow_name,
+                    workflow_id=workflow_def.name,
                     node_id=node_id,
                     status=NodeStatus.COMPLETED,
                     duration_ms=duration_ms,
@@ -467,7 +490,7 @@ class WorkflowExecutor:
             elif result.status == NodeStatus.FAILED:
                 event_emitter.emit(WorkflowEvent(
                     event_type=EventType.NODE_FAILED,
-                    workflow_id=workflow_name,
+                    workflow_id=workflow_def.name,
                     node_id=node_id,
                     status=NodeStatus.FAILED,
                     duration_ms=duration_ms,
@@ -485,7 +508,7 @@ class WorkflowExecutor:
                 if dep_id in ctx.node_outputs:
                     dependency_outputs[dep_id] = ctx.node_outputs[dep_id]
             content_hash = checkpoint_store.compute_content_hash(node_def, dependency_outputs)
-            checkpoint_store.save_node(workflow_name, run_id, node_id, result, content_hash)
+            checkpoint_store.save_node(workflow_def.name, run_id, node_id, result, content_hash)
 
         # Handle failure
         if result.status == NodeStatus.FAILED:
@@ -700,22 +723,27 @@ class WorkflowExecutor:
         workflow_def: WorkflowDef,
         ctx: ExecutionContext
     ) -> Dict[str, Any]:
-        """Extract workflow outputs from node results.
-        
+        """Extract workflow outputs from node results and workflow state.
+
         Args:
             workflow_def: Workflow definition
             ctx: Execution context
-        
+
         Returns:
             Workflow outputs dict
         """
         outputs = {}
-        
+
+        # First, extract outputs from workflow_state (reducer-merged values)
+        # These have priority since they're the aggregated results
+        outputs.update(ctx.workflow_state)
+
+        # Then, extract node-specific outputs defined in workflow outputs
         for output_name, output_def in workflow_def.outputs.items():
             source_node = output_def.node
             if source_node in ctx.node_outputs:
                 node_output = ctx.node_outputs[source_node]
-                
+
                 if output_def.field:
                     # Extract specific field
                     if isinstance(node_output, dict) and output_def.field in node_output:
@@ -723,5 +751,5 @@ class WorkflowExecutor:
                 else:
                     # Use entire output
                     outputs[output_name] = node_output
-        
+
         return outputs

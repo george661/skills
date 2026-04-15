@@ -2,11 +2,15 @@
 from datetime import datetime
 
 import pytest
+from pydantic import ValidationError
 from dag_executor.schema import (
     Node,
     NodeResult,
     NodeStatus,
+    ReducerDef,
+    ReducerStrategy,
     Workflow,
+    WorkflowDef,
     WorkflowStatus,
 )
 
@@ -163,3 +167,106 @@ class TestWorkflow:
             status=WorkflowStatus.RUNNING
         )
         assert workflow.status == WorkflowStatus.RUNNING
+
+
+class TestReducerStrategy:
+    """Test ReducerStrategy enum."""
+
+    def test_enum_values(self) -> None:
+        """Verify all expected reducer strategy enum values exist."""
+        assert ReducerStrategy.OVERWRITE == "overwrite"
+        assert ReducerStrategy.APPEND == "append"
+        assert ReducerStrategy.EXTEND == "extend"
+        assert ReducerStrategy.MAX == "max"
+        assert ReducerStrategy.MIN == "min"
+        assert ReducerStrategy.MERGE_DICT == "merge_dict"
+        assert ReducerStrategy.CUSTOM == "custom"
+
+
+class TestReducerDef:
+    """Test ReducerDef model."""
+
+    def test_create_with_builtin_strategy(self) -> None:
+        """Test creating ReducerDef with built-in strategy."""
+        reducer = ReducerDef(strategy=ReducerStrategy.APPEND)
+        assert reducer.strategy == ReducerStrategy.APPEND
+        assert reducer.function is None
+
+    def test_create_with_custom_strategy(self) -> None:
+        """Test creating ReducerDef with custom strategy and function."""
+        reducer = ReducerDef(
+            strategy=ReducerStrategy.CUSTOM,
+            function="mypackage.reducers.custom_merge"
+        )
+        assert reducer.strategy == ReducerStrategy.CUSTOM
+        assert reducer.function == "mypackage.reducers.custom_merge"
+
+    def test_custom_strategy_requires_function(self) -> None:
+        """Test that custom strategy without function raises error."""
+        with pytest.raises(ValidationError) as exc_info:
+            ReducerDef(strategy=ReducerStrategy.CUSTOM)
+        assert "function" in str(exc_info.value).lower()
+
+    def test_builtin_strategy_rejects_function(self) -> None:
+        """Test that built-in strategy with function raises error."""
+        with pytest.raises(ValidationError) as exc_info:
+            ReducerDef(
+                strategy=ReducerStrategy.APPEND,
+                function="mypackage.reducers.custom_merge"
+            )
+        assert "function" in str(exc_info.value).lower()
+
+    def test_extra_fields_forbidden(self) -> None:
+        """Test that extra fields are rejected."""
+        with pytest.raises(ValidationError):
+            ReducerDef(strategy=ReducerStrategy.APPEND, extra_field="not_allowed")  # type: ignore
+
+
+class TestWorkflowDefWithState:
+    """Test WorkflowDef with state reducers."""
+
+    def test_workflow_def_without_state(self) -> None:
+        """Test WorkflowDef backward compatibility (no state field)."""
+        from dag_executor.schema import NodeDef, WorkflowConfig, ModelTier
+
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=[
+                NodeDef(
+                    id="node1",
+                    name="Test Node",
+                    type="prompt",
+                    prompt="test",
+                    model=ModelTier.SONNET
+                )
+            ]
+        )
+        assert workflow_def.state == {}
+
+    def test_workflow_def_with_state_reducers(self) -> None:
+        """Test WorkflowDef with state reducer declarations."""
+        from dag_executor.schema import NodeDef, WorkflowConfig, ModelTier
+
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=[
+                NodeDef(
+                    id="node1",
+                    name="Test Node",
+                    type="prompt",
+                    prompt="test",
+                    model=ModelTier.SONNET
+                )
+            ],
+            state={
+                "findings": ReducerDef(strategy=ReducerStrategy.APPEND),
+                "severity": ReducerDef(strategy=ReducerStrategy.MAX),
+                "metadata": ReducerDef(strategy=ReducerStrategy.MERGE_DICT),
+            }
+        )
+        assert "findings" in workflow_def.state
+        assert workflow_def.state["findings"].strategy == ReducerStrategy.APPEND
+        assert "severity" in workflow_def.state
+        assert workflow_def.state["severity"].strategy == ReducerStrategy.MAX
