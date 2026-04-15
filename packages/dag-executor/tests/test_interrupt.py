@@ -5,8 +5,9 @@ import json
 
 from dag_executor import (
     load_workflow, execute_workflow, resume_workflow,
-    NodeStatus, WorkflowStatus, InterruptConfig, CheckpointStore, EventEmitter
+    NodeStatus, WorkflowStatus, CheckpointStore, EventEmitter
 )
+from dag_executor.schema import InterruptConfig
 from dag_executor.events import EventType
 
 

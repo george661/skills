@@ -21,7 +21,6 @@ from dag_executor.schema import (
     OnFailure,
     OutputFormat,
     RetryConfig,
-    InterruptConfig,
 )
 
 # Parser functions
@@ -35,7 +34,7 @@ from dag_executor.graph import topological_sort_with_layers, CycleDetectedError
 from dag_executor.variables import resolve_variables, VariableResolutionError
 
 # Executor
-from dag_executor.executor import WorkflowExecutor, WorkflowResult
+from dag_executor.executor import WorkflowExecutor, WorkflowResult, NodeSummary
 
 # Events
 from dag_executor.events import EventType, WorkflowEvent, EventEmitter
@@ -60,6 +59,7 @@ __all__ = [
     # Executor
     "WorkflowExecutor",
     "WorkflowResult",
+    "NodeSummary",
     # Events
     "EventType",
     "WorkflowEvent",
@@ -93,7 +93,6 @@ __all__ = [
     "OnFailure",
     "OutputFormat",
     "RetryConfig",
-    "InterruptConfig",
 ]
 
 

@@ -30,15 +30,13 @@ class InterruptRunner(BaseRunner):
         channels = ctx.node_def.channels or ["terminal"]
 
         # Check if already resumed (resume value present in workflow inputs)
-        # We only treat this as a resume if the key exists AND has a non-empty value
-        # AND it wasn't part of the original workflow inputs (it was injected via resume_values)
-        # To detect this, we check if there's an interrupt checkpoint that indicates we're resuming
-        # For simplicity, we'll check if the value is a string (resume values are typically strings)
+        # We only treat this as a resume if the key exists - checking for key presence only
+        # The resume value can be any type (str, bool, int, dict, etc.)
+        # A None value means the key wasn't injected via resume_values
         if resume_key in ctx.workflow_inputs:
             resume_value = ctx.workflow_inputs[resume_key]
-            # Only treat as resumed if value is explicitly provided (not None, not False, not empty)
-            # and is a non-empty string (typical resume pattern)
-            if isinstance(resume_value, str) and resume_value:
+            # Only treat as resumed if value is not None (None indicates key wasn't injected)
+            if resume_value is not None:
                 # Resume value provided - complete the node
                 return NodeResult(
                     status=NodeStatus.COMPLETED,
@@ -54,19 +52,32 @@ class InterruptRunner(BaseRunner):
         condition = ctx.node_def.condition
 
         if condition:
-            # Evaluate condition
-            should_interrupt = self._evaluate_condition(condition, ctx)
+            try:
+                # Evaluate condition
+                should_interrupt = self._evaluate_condition(condition, ctx)
 
-            if not should_interrupt:
-                # Auto-approve (condition is false)
+                if not should_interrupt:
+                    # Auto-approve (condition is false)
+                    return NodeResult(
+                        status=NodeStatus.COMPLETED,
+                        output={
+                            "message": message,
+                            "resume_key": resume_key,
+                            "auto_approved": True,
+                            "condition": condition
+                        }
+                    )
+            except NameNotDefined as e:
+                # Match GateRunner: return FAILED on undefined variable
                 return NodeResult(
-                    status=NodeStatus.COMPLETED,
-                    output={
-                        "message": message,
-                        "resume_key": resume_key,
-                        "auto_approved": True,
-                        "condition": condition
-                    }
+                    status=NodeStatus.FAILED,
+                    error=f"Undefined variable in interrupt condition: {str(e)}"
+                )
+            except Exception as e:
+                # Match GateRunner: return FAILED on any evaluation error
+                return NodeResult(
+                    status=NodeStatus.FAILED,
+                    error=f"Interrupt condition evaluation failed: {str(e)}"
                 )
 
         # Interrupt workflow
@@ -118,9 +129,6 @@ class InterruptRunner(BaseRunner):
 
             return bool(result)
 
-        except NameNotDefined:
-            # If variable not defined, treat as false (auto-approve)
-            return False
-        except Exception:
-            # Any evaluation error: treat as false (auto-approve)
-            return False
+        except (NameNotDefined, Exception):
+            # Re-raise errors to be handled by caller (matching GateRunner pattern)
+            raise

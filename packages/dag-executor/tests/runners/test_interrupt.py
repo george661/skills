@@ -1,7 +1,7 @@
 """Unit tests for InterruptRunner."""
 import pytest
 
-from dag_executor.schema import NodeDef, NodeStatus, InterruptConfig
+from dag_executor.schema import NodeDef, NodeStatus
 from dag_executor.runners.interrupt import InterruptRunner
 from dag_executor.runners.base import RunnerContext
 

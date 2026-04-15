@@ -26,6 +26,14 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class NodeSummary:
+    """Summary of node execution state for WorkflowResult.nodes."""
+    id: str
+    status: NodeStatus
+    result: Optional[NodeResult] = None
+
+
+@dataclass
 class ExecutionContext:
     """Tracks execution state across the workflow.
 
@@ -75,12 +83,11 @@ class WorkflowResult:
         self._node_statuses = node_statuses or {}
 
     @property
-    def nodes(self) -> List[Any]:
-        """Convert node_results to list of node-like objects for compatibility."""
-        from types import SimpleNamespace
-        node_list: List[Any] = []
+    def nodes(self) -> List[NodeSummary]:
+        """Convert node_results to list of typed node summaries."""
+        node_list: List[NodeSummary] = []
         for node_id, result in self.node_results.items():
-            node = SimpleNamespace(
+            node = NodeSummary(
                 id=node_id,
                 status=result.status,
                 result=result
@@ -89,7 +96,7 @@ class WorkflowResult:
         # Add nodes that don't have results yet (still pending)
         for node_id, status in self._node_statuses.items():
             if node_id not in self.node_results:
-                node = SimpleNamespace(
+                node = NodeSummary(
                     id=node_id,
                     status=status,
                     result=None
