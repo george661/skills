@@ -1,0 +1,9 @@
+name: interrupt_basic
+config:
+  checkpoint_prefix: .dag-checkpoints
+nodes:
+  - id: request_approval
+    name: Request Approval
+    type: interrupt
+    message: "Please approve this workflow"
+    resume_key: "approval_decision"

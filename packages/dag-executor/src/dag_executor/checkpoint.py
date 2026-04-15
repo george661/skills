@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -54,6 +54,29 @@ class CheckpointMetadata(BaseModel):
     started_at: str
     inputs: Dict[str, Any] = Field(default_factory=dict)
     status: str
+
+
+class InterruptCheckpoint(BaseModel):
+    """Checkpoint data for an interrupt (human-in-the-loop pause).
+
+    Attributes:
+        node_id: ID of the interrupt node
+        message: Message to display to the user
+        resume_key: Key to inject resume value into workflow inputs
+        channels: Channels to surface interrupt on
+        timeout: Optional timeout in seconds
+        workflow_state: Snapshot of workflow state at interrupt
+        pending_nodes: List of node IDs that haven't executed yet
+    """
+    model_config = {"extra": "forbid"}
+
+    node_id: str
+    message: str
+    resume_key: str
+    channels: List[str] = Field(default_factory=lambda: ["terminal"])
+    timeout: Optional[int] = None
+    workflow_state: Dict[str, Any] = Field(default_factory=dict)
+    pending_nodes: List[str] = Field(default_factory=list)
 
 
 class CheckpointStore:
@@ -280,13 +303,13 @@ class CheckpointStore:
         content_hash: str
     ) -> Optional[NodeCheckpoint]:
         """Check if a cached result exists for the given content hash.
-        
+
         Args:
             workflow_name: Name of the workflow
             run_id: Unique run identifier
             node_id: Node identifier
             content_hash: Content-addressed hash to check
-        
+
         Returns:
             NodeCheckpoint if cache hit, None if cache miss
         """
@@ -294,3 +317,48 @@ class CheckpointStore:
         if checkpoint and checkpoint.content_hash == content_hash:
             return checkpoint
         return None
+
+    def save_interrupt(
+        self,
+        workflow_name: str,
+        run_id: str,
+        interrupt: InterruptCheckpoint
+    ) -> None:
+        """Save interrupt checkpoint.
+
+        Args:
+            workflow_name: Name of the workflow
+            run_id: Unique run identifier
+            interrupt: Interrupt checkpoint to save
+        """
+        run_dir = self._get_run_dir(workflow_name, run_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        interrupt_path = run_dir / "interrupt.json"
+        interrupt_path.write_text(interrupt.model_dump_json(indent=2))
+        interrupt_path.chmod(0o600)
+
+    def load_interrupt(
+        self,
+        workflow_name: str,
+        run_id: str
+    ) -> Optional[InterruptCheckpoint]:
+        """Load interrupt checkpoint.
+
+        Args:
+            workflow_name: Name of the workflow
+            run_id: Unique run identifier
+
+        Returns:
+            InterruptCheckpoint if found, None if missing or corrupted
+        """
+        interrupt_path = self._get_run_dir(workflow_name, run_id) / "interrupt.json"
+        if not interrupt_path.exists():
+            return None
+
+        try:
+            data = json.loads(interrupt_path.read_text())
+            return InterruptCheckpoint.model_validate(data)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Corrupted interrupt checkpoint at {interrupt_path}: {e}")
+            return None

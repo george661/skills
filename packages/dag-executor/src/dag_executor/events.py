@@ -18,10 +18,12 @@ class EventType(str, Enum):
     WORKFLOW_STARTED = "workflow_started"
     WORKFLOW_COMPLETED = "workflow_completed"
     WORKFLOW_FAILED = "workflow_failed"
+    WORKFLOW_INTERRUPTED = "workflow_interrupted"
     NODE_STARTED = "node_started"
     NODE_COMPLETED = "node_completed"
     NODE_FAILED = "node_failed"
     NODE_SKIPPED = "node_skipped"
+    NODE_INTERRUPTED = "node_interrupted"
 
 
 class WorkflowEvent(BaseModel):
