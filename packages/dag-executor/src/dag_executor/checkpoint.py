@@ -318,6 +318,66 @@ class CheckpointStore:
             return checkpoint
         return None
 
+    def list_runs(self, workflow_name: str) -> List[str]:
+        """Scan checkpoint prefix for directories matching a workflow name.
+
+        Looks for directories named ``{workflow_name}-*`` under
+        ``checkpoint_prefix`` and extracts the run IDs.
+
+        Args:
+            workflow_name: Name of the workflow to list runs for
+
+        Returns:
+            Sorted list of run ID strings
+        """
+        if not self.checkpoint_prefix.exists():
+            return []
+
+        prefix = f"{workflow_name}-"
+        run_ids: List[str] = []
+        for entry in self.checkpoint_prefix.iterdir():
+            if entry.is_dir() and entry.name.startswith(prefix):
+                run_id = entry.name[len(prefix):]
+                if run_id:
+                    run_ids.append(run_id)
+        return sorted(run_ids)
+
+    def clear_nodes_after(
+        self,
+        workflow_name: str,
+        run_id: str,
+        after_node_id: str,
+        node_order: List[str],
+    ) -> List[str]:
+        """Delete node checkpoint files after a given position in execution order.
+
+        Args:
+            workflow_name: Name of the workflow
+            run_id: Run identifier
+            after_node_id: Node ID to start clearing *after*
+            node_order: Ordered list of node IDs representing execution order
+
+        Returns:
+            List of node IDs whose checkpoint files were deleted
+        """
+        try:
+            pos = node_order.index(after_node_id)
+        except ValueError:
+            logger.warning(
+                "Node '%s' not found in node_order; nothing cleared", after_node_id
+            )
+            return []
+
+        nodes_to_clear = node_order[pos + 1:]
+        nodes_dir = self._get_nodes_dir(workflow_name, run_id)
+        cleared: List[str] = []
+        for node_id in nodes_to_clear:
+            node_path = nodes_dir / f"{node_id}.json"
+            if node_path.exists():
+                node_path.unlink()
+                cleared.append(node_id)
+        return cleared
+
     def save_interrupt(
         self,
         workflow_name: str,
