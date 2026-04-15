@@ -19,6 +19,7 @@ class RunnerContext:
         resolved_inputs: Variables already resolved by the executor
         node_outputs: Output from upstream nodes (keyed by node ID)
         workflow_inputs: Global workflow inputs
+        workflow_id: The workflow identifier (workflow_def.name)
         skills_dir: Root directory for skill path validation
         max_output_bytes: Maximum output size limit (default 10MB)
         progress_callback: Optional callback for emitting progress events during execution
@@ -28,6 +29,7 @@ class RunnerContext:
     resolved_inputs: Dict[str, Any] = field(default_factory=dict)
     node_outputs: Dict[str, Any] = field(default_factory=dict)
     workflow_inputs: Dict[str, Any] = field(default_factory=dict)
+    workflow_id: str = ""
     skills_dir: Optional[Path] = None
     max_output_bytes: int = 10 * 1024 * 1024  # 10MB
     progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None

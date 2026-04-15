@@ -114,12 +114,15 @@ class EventEmitter:
         with self._lock:
             self._listeners.append(listener)
 
-    def subscribe(self, listener: Callable[[WorkflowEvent], None], mode: StreamMode) -> None:
+    def subscribe(self, listener: Callable[[WorkflowEvent], None], mode: StreamMode) -> Callable[[], None]:
         """Subscribe to events with filtering based on stream mode.
 
         Args:
             listener: Callback function that receives WorkflowEvent objects
             mode: Stream mode controlling which events are delivered
+
+        Returns:
+            Unsubscribe callable that removes the listener when called
         """
         # Define state update event types (lifecycle events only)
         state_update_types = {
@@ -142,10 +145,18 @@ class EventEmitter:
                     listener(event)
             with self._lock:
                 self._listeners.append(filtered_listener)
+            # Return unsubscribe callable that removes the wrapper
+            def unsubscribe() -> None:
+                self.remove_listener(filtered_listener)
+            return unsubscribe
         else:
             # ALL and DEBUG modes receive everything
             with self._lock:
                 self._listeners.append(listener)
+            # Return unsubscribe callable that removes the original listener
+            def unsubscribe() -> None:
+                self.remove_listener(listener)
+            return unsubscribe
     
     def remove_listener(self, listener: Callable[[WorkflowEvent], None]) -> None:
         """Remove an event listener.

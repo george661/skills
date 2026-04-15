@@ -67,13 +67,16 @@ class PromptRunner(BaseRunner):
                         from dag_executor.events import EventType, WorkflowEvent
                         ctx.event_emitter.emit(WorkflowEvent(
                             event_type=EventType.NODE_STREAM_TOKEN,
-                            workflow_id="",  # Will be set by executor context
+                            workflow_id=ctx.workflow_id,
                             node_id=ctx.node_def.id,
                             metadata={"token": line.rstrip('\n')},
                             timestamp=datetime.now(timezone.utc)
                         ))
 
             # Wait for process completion with timeout
+            # NOTE: Timeout only applies after stdout draining completes. If the process generates
+            # more output than the pipe buffer can hold without being consumed, the timeout countdown
+            # does not begin until the for-loop above finishes reading all output.
             timeout = ctx.node_def.timeout or 600  # Default 10 min timeout for LLM
             try:
                 returncode = process.wait(timeout=timeout)

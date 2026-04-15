@@ -494,6 +494,7 @@ class WorkflowExecutor:
                 resolved_inputs=resolved_inputs,
                 node_outputs=ctx.node_outputs,
                 workflow_inputs=ctx.workflow_inputs,
+                workflow_id=workflow_def.name,
                 max_output_bytes=10 * 1024 * 1024,
                 progress_callback=progress_callback,
                 event_emitter=event_emitter
