@@ -465,3 +465,219 @@ class TestWorkflowExecutor:
         assert all(r.status == NodeStatus.COMPLETED for r in result.node_results.values())
         # Concurrency limit must be enforced: at most 2 running at any time
         assert max_observed <= 2, f"Expected max 2 concurrent, observed {max_observed}"
+
+
+class TestReducerIntegration:
+    """Test reducer integration in workflow execution."""
+
+    def test_append_reducer_parallel_nodes(self) -> None:
+        """Test append reducer with 2 parallel nodes writing to same state key."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        nodes = [
+            NodeDef(id="review1", name="Review 1", type="bash", script="echo review1"),
+            NodeDef(id="review2", name="Review 2", type="bash", script="echo review2"),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "findings": ReducerDef(strategy=ReducerStrategy.APPEND)
+            }
+        )
+
+        # Mock runners to return findings (using node_id to make unique values)
+        def mock_get_runner(node_type):
+            original_class = create_mock_runner_class(NodeResult(status=NodeStatus.COMPLETED))
+
+            class FindingRunner(original_class):
+                def run(self, ctx: RunnerContext) -> NodeResult:
+                    # Use node_id from context to generate unique finding
+                    node_id = ctx.node_def.id
+                    return NodeResult(
+                        status=NodeStatus.COMPLETED,
+                        output={"findings": f"finding_from_{node_id}"}
+                    )
+
+            return FindingRunner
+
+        with patch("dag_executor.executor.get_runner", side_effect=mock_get_runner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}))
+
+        assert result.status == WorkflowStatus.COMPLETED
+        assert "findings" in result.outputs
+        # Both findings should be in the list (order may vary due to parallelism)
+        findings = result.outputs["findings"]
+        assert isinstance(findings, list)
+        assert len(findings) == 2
+        assert set(findings) == {"finding_from_review1", "finding_from_review2"}
+
+    def test_max_reducer_parallel_nodes(self) -> None:
+        """Test max reducer with parallel nodes writing numeric values."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        nodes = [
+            NodeDef(id="scanner1", name="Scanner 1", type="bash", script="echo scanner1"),
+            NodeDef(id="scanner2", name="Scanner 2", type="bash", script="echo scanner2"),
+            NodeDef(id="scanner3", name="Scanner 3", type="bash", script="echo scanner3"),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "severity": ReducerDef(strategy=ReducerStrategy.MAX)
+            }
+        )
+
+        # Mock runners to return different severities (mapped by node_id)
+        severities = {"scanner1": 3, "scanner2": 8, "scanner3": 5}
+
+        def mock_get_runner(node_type):
+            original_class = create_mock_runner_class(NodeResult(status=NodeStatus.COMPLETED))
+
+            class SeverityRunner(original_class):
+                def run(self, ctx: RunnerContext) -> NodeResult:
+                    node_id = ctx.node_def.id
+                    return NodeResult(
+                        status=NodeStatus.COMPLETED,
+                        output={"severity": severities[node_id]}
+                    )
+
+            return SeverityRunner
+
+        with patch("dag_executor.executor.get_runner", side_effect=mock_get_runner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}))
+
+        assert result.status == WorkflowStatus.COMPLETED
+        assert "severity" in result.outputs
+        assert result.outputs["severity"] == 8  # max of [3, 8, 5]
+
+    def test_merge_dict_reducer(self) -> None:
+        """Test merge_dict reducer with parallel nodes."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        nodes = [
+            NodeDef(id="collector1", name="Collector 1", type="bash", script="echo c1"),
+            NodeDef(id="collector2", name="Collector 2", type="bash", script="echo c2"),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "metadata": ReducerDef(strategy=ReducerStrategy.MERGE_DICT)
+            }
+        )
+
+        # Mock runners to return different metadata (using node_id for unique keys)
+        def mock_get_runner(node_type):
+            original_class = create_mock_runner_class(NodeResult(status=NodeStatus.COMPLETED))
+
+            class MetadataRunner(original_class):
+                def run(self, ctx: RunnerContext) -> NodeResult:
+                    node_id = ctx.node_def.id
+                    return NodeResult(
+                        status=NodeStatus.COMPLETED,
+                        output={"metadata": {f"key_{node_id}": f"value_{node_id}"}}
+                    )
+
+            return MetadataRunner
+
+        with patch("dag_executor.executor.get_runner", side_effect=mock_get_runner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}))
+
+        assert result.status == WorkflowStatus.COMPLETED
+        assert "metadata" in result.outputs
+        metadata = result.outputs["metadata"]
+        assert isinstance(metadata, dict)
+        assert len(metadata) == 2
+        assert "key_collector1" in metadata
+        assert "key_collector2" in metadata
+
+    def test_concurrency_stress_append_reducer(self) -> None:
+        """Test concurrency safety with 5 parallel nodes writing to same state key."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        # Create 5 parallel nodes
+        nodes = [
+            NodeDef(id=f"node{i}", name=f"Node {i}", type="bash", script=f"echo node{i}")
+            for i in range(5)
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "items": ReducerDef(strategy=ReducerStrategy.APPEND)
+            }
+        )
+
+        # Mock runners to return items (using node_id for unique values)
+        def mock_get_runner(node_type):
+            original_class = create_mock_runner_class(NodeResult(status=NodeStatus.COMPLETED))
+
+            class ItemRunner(original_class):
+                def run(self, ctx: RunnerContext) -> NodeResult:
+                    node_id = ctx.node_def.id
+                    # Add small random delay to increase chance of races
+                    import random
+                    time.sleep(random.uniform(0.001, 0.005))
+                    return NodeResult(
+                        status=NodeStatus.COMPLETED,
+                        output={"items": f"item_{node_id}"}
+                    )
+
+            return ItemRunner
+
+        with patch("dag_executor.executor.get_runner", side_effect=mock_get_runner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}))
+
+        assert result.status == WorkflowStatus.COMPLETED
+        assert "items" in result.outputs
+        items = result.outputs["items"]
+        assert isinstance(items, list)
+        # All 5 items should be present (no race condition losses)
+        assert len(items) == 5
+        # Verify all unique items are present
+        expected_items = {f"item_node{i}" for i in range(5)}
+        assert set(items) == expected_items
+
+    def test_backward_compatibility_no_reducers(self) -> None:
+        """Test that workflows without state/reducers still work identically."""
+        # Diamond: A -> B,C -> D (same as test_full_dag_execution)
+        nodes = [
+            NodeDef(id="A", name="Node A", type="bash", script="echo A"),
+            NodeDef(id="B", name="Node B", type="bash", script="echo B", depends_on=["A"]),
+            NodeDef(id="C", name="Node C", type="bash", script="echo C", depends_on=["A"]),
+            NodeDef(id="D", name="Node D", type="bash", script="echo D", depends_on=["B", "C"]),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes
+            # No state field - backward compatible
+        )
+
+        # Mock get_runner to return completed results
+        def mock_get_runner(node_type):
+            return create_mock_runner_class(
+                NodeResult(status=NodeStatus.COMPLETED, output={"value": "done"})
+            )
+
+        with patch("dag_executor.executor.get_runner", side_effect=mock_get_runner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}))
+
+        assert result.status == WorkflowStatus.COMPLETED
+        assert len(result.node_results) == 4
+        assert all(r.status == NodeStatus.COMPLETED for r in result.node_results.values())
+        # workflow_state should be empty
+        # Check via outputs - if state was used, it would be in outputs
+        # Since no state reducers, outputs should be empty (no explicit outputs defined)
+        assert result.outputs == {}
