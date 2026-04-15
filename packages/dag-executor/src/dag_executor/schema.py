@@ -208,6 +208,22 @@ class InterruptConfig(BaseModel):
     timeout: Optional[int] = Field(default=None, description="Optional timeout in seconds")
 
 
+class EdgeDef(BaseModel):
+    """Conditional edge definition for dynamic routing."""
+    model_config = {"extra": "forbid"}
+
+    target: str = Field(..., description="Target node ID")
+    condition: Optional[str] = Field(default=None, description="simpleeval condition expression")
+    default: bool = Field(default=False, description="Default fallback edge")
+
+    def model_post_init(self, __context: Any) -> None:
+        """Validate condition-default mutual exclusivity."""
+        if self.condition is not None and self.default is True:
+            raise ValueError("condition and default are mutually exclusive")
+        if self.condition is None and self.default is False:
+            raise ValueError("Edge must have either condition or default=True")
+
+
 class NodeDef(BaseModel):
     """Node definition for workflow YAML."""
     model_config = {"extra": "forbid"}
@@ -255,6 +271,9 @@ class NodeDef(BaseModel):
     channels: Optional[List[str]] = Field(default=None, description="Interrupt channels (for type=interrupt)")
     # timeout already defined above in common fields
 
+    # Conditional edges
+    edges: Optional[List["EdgeDef"]] = Field(default=None, description="Conditional edges for dynamic routing")
+
     def model_post_init(self, __context: Any) -> None:
         """Validate type-specific required fields."""
         if self.type == "skill":
@@ -281,6 +300,12 @@ class NodeDef(BaseModel):
                 raise ValueError("message field is required for type=interrupt")
             if self.resume_key is None:
                 raise ValueError("resume_key field is required for type=interrupt")
+
+        # Validate edges if present
+        if self.edges is not None:
+            default_count = sum(1 for edge in self.edges if edge.default)
+            if default_count != 1:
+                raise ValueError("Exactly one edge must have default=True")
 
 
 class LabelsConfig(BaseModel):
@@ -312,3 +337,7 @@ class WorkflowDef(BaseModel):
         default_factory=dict,
         description="State reducer definitions (key = state key name)"
     )
+
+
+# Rebuild models to resolve forward references
+NodeDef.model_rebuild()

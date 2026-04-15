@@ -95,3 +95,85 @@ class TestTopologicalSortWithLayers:
         nodes = []
         layers = topological_sort_with_layers(nodes)
         assert layers == []
+
+
+class TestConditionalEdges:
+    """Test topological sort with conditional edges."""
+
+    def test_node_with_conditional_edges_all_targets_in_correct_layers(self) -> None:
+        """Node with conditional edges to 3 targets: all targets ordered after source."""
+        from dag_executor.schema import EdgeDef, ModelTier
+
+        nodes = [
+            NodeDef(
+                id="review",
+                name="Review",
+                type="prompt",
+                prompt="Review code",
+                model=ModelTier.OPUS,
+                edges=[
+                    EdgeDef(target="approve", condition='review.verdict == "approve"'),
+                    EdgeDef(target="revise", condition='review.verdict == "revise"'),
+                    EdgeDef(target="escalate", default=True)
+                ]
+            ),
+            NodeDef(id="approve", name="Approve", type="bash", script="echo approved"),
+            NodeDef(id="revise", name="Revise", type="bash", script="echo revise"),
+            NodeDef(id="escalate", name="Escalate", type="bash", script="echo escalate"),
+        ]
+        layers = topological_sort_with_layers(nodes)
+
+        # Review should be in first layer
+        assert "review" in layers[0]
+        # All edge targets (approve, revise, escalate) should be in second layer
+        assert set(layers[1]) == {"approve", "revise", "escalate"}
+
+    def test_conditional_edges_with_depends_on(self) -> None:
+        """Node with both depends_on and edges works correctly."""
+        from dag_executor.schema import EdgeDef, ModelTier
+
+        nodes = [
+            NodeDef(id="setup", name="Setup", type="bash", script="echo setup"),
+            NodeDef(
+                id="review",
+                name="Review",
+                type="prompt",
+                prompt="Review",
+                model=ModelTier.OPUS,
+                depends_on=["setup"],
+                edges=[
+                    EdgeDef(target="pass", condition='review.ok'),
+                    EdgeDef(target="fail", default=True)
+                ]
+            ),
+            NodeDef(id="pass", name="Pass", type="bash", script="echo pass"),
+            NodeDef(id="fail", name="Fail", type="bash", script="echo fail"),
+        ]
+        layers = topological_sort_with_layers(nodes)
+
+        assert layers[0] == ["setup"]
+        assert layers[1] == ["review"]
+        assert set(layers[2]) == {"pass", "fail"}
+
+    def test_conditional_edge_target_nonexistent(self) -> None:
+        """Conditional edge pointing to non-existent target raises ValueError."""
+        from dag_executor.schema import EdgeDef, ModelTier
+
+        nodes = [
+            NodeDef(
+                id="review",
+                name="Review",
+                type="prompt",
+                prompt="Review",
+                model=ModelTier.OPUS,
+                edges=[
+                    EdgeDef(target="nonexistent", condition='review.ok'),
+                    EdgeDef(target="escalate", default=True)
+                ]
+            ),
+            NodeDef(id="escalate", name="Escalate", type="bash", script="echo escalate"),
+        ]
+
+        with pytest.raises(ValueError) as exc_info:
+            topological_sort_with_layers(nodes)
+        assert "nonexistent" in str(exc_info.value)
