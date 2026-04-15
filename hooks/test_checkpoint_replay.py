@@ -6,9 +6,7 @@ TDD tests for the new checkpoint.py CLI subcommands.
 """
 
 import unittest
-import json
-from unittest.mock import patch, MagicMock
-from datetime import datetime, timezone
+from unittest.mock import patch
 
 
 class TestHistoryCommand(unittest.TestCase):
@@ -169,7 +167,7 @@ class TestReplayCommand(unittest.TestCase):
             {'phase': 'validation', 'timestamp': '2026-04-15T10:00:00Z', 'data': {}},
         ]
 
-        result = replay_checkpoint('GW-4986', 'validation', overrides={'status': 'retry', 'new_field': 'value'})
+        replay_checkpoint('GW-4986', 'validation', overrides={'status': 'retry', 'new_field': 'value'})
 
         # Verify save was called with merged data
         call_args = mock_save.call_args
