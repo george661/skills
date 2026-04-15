@@ -1,0 +1,33 @@
+name: review-branching
+config:
+  checkpoint_prefix: test
+  worktree: false
+
+nodes:
+  - id: review
+    name: Code Review
+    type: bash
+    script: 'echo ''{"verdict": "approve"}'''
+    output_format: json
+    edges:
+      - target: merge
+        condition: review.verdict == "approve"
+      - target: fix_pr
+        condition: review.verdict == "revise"
+      - target: escalate
+        default: true
+
+  - id: merge
+    name: Merge PR
+    type: bash
+    script: echo "Merging PR"
+
+  - id: fix_pr
+    name: Fix PR
+    type: bash
+    script: echo "Fixing PR"
+
+  - id: escalate
+    name: Escalate to Human
+    type: bash
+    script: echo "Escalating"
