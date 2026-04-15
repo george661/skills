@@ -1,6 +1,5 @@
 """Tests for checkpoint replay, history, and inspect functionality."""
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -8,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from dag_executor.checkpoint import CheckpointMetadata, CheckpointStore, NodeCheckpoint
-from dag_executor.cli import main, run_history, run_inspect, run_replay
+from dag_executor.checkpoint import CheckpointMetadata, CheckpointStore
+from dag_executor.cli import main
 from dag_executor.schema import NodeDef, NodeResult, NodeStatus, WorkflowConfig, WorkflowDef, WorkflowStatus
 from dag_executor.executor import WorkflowResult
 
