@@ -34,11 +34,21 @@ def topological_sort_with_layers(nodes: List[NodeDef]) -> List[List[str]]:
 
     # Count in-degrees and build reverse adjacency (dep -> nodes that depend on it)
     for node in nodes:
+        # Handle depends_on dependencies
         for dep in node.depends_on:
             if dep not in node_map:
                 raise ValueError(f"Node '{node.id}' depends on non-existent node '{dep}'")
             in_degree[node.id] += 1
             dependents[dep].append(node.id)
+
+        # Handle conditional edge targets (source -> target dependency)
+        if node.edges is not None:
+            for edge in node.edges:
+                if edge.target not in node_map:
+                    raise ValueError(f"Node '{node.id}' has edge to non-existent target '{edge.target}'")
+                # Edge target depends on the source node (for ordering)
+                in_degree[edge.target] += 1
+                dependents[node.id].append(edge.target)
     
     # Initialize queue with nodes that have no dependencies
     queue: deque[str] = deque()
