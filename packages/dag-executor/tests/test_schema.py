@@ -270,3 +270,124 @@ class TestWorkflowDefWithState:
         assert workflow_def.state["findings"].strategy == ReducerStrategy.APPEND
         assert "severity" in workflow_def.state
         assert workflow_def.state["severity"].strategy == ReducerStrategy.MAX
+
+
+class TestEdgeDef:
+    """Test EdgeDef model for conditional edges."""
+
+    def test_create_conditional_edge(self) -> None:
+        """Test creating edge with condition."""
+        from dag_executor.schema import EdgeDef
+
+        edge = EdgeDef(target="approve", condition='$review.verdict == "approve"')
+        assert edge.target == "approve"
+        assert edge.condition == '$review.verdict == "approve"'
+        assert edge.default is False
+
+    def test_create_default_edge(self) -> None:
+        """Test creating default fallback edge."""
+        from dag_executor.schema import EdgeDef
+
+        edge = EdgeDef(target="escalate", default=True)
+        assert edge.target == "escalate"
+        assert edge.condition is None
+        assert edge.default is True
+
+    def test_condition_and_default_mutually_exclusive(self) -> None:
+        """Test that edge cannot have both condition and default=True."""
+        from dag_executor.schema import EdgeDef
+
+        with pytest.raises(ValidationError) as exc_info:
+            EdgeDef(target="node1", condition='$x > 5', default=True)
+        assert "condition and default are mutually exclusive" in str(exc_info.value).lower()
+
+    def test_edge_requires_condition_or_default(self) -> None:
+        """Test that edge must have either condition or default=True."""
+        from dag_executor.schema import EdgeDef
+
+        # Edge with default=False and no condition should fail
+        with pytest.raises(ValidationError) as exc_info:
+            EdgeDef(target="node1", default=False)
+        assert "must have either condition or default" in str(exc_info.value).lower()
+
+    def test_extra_fields_forbidden(self) -> None:
+        """Test that extra fields are rejected."""
+        from dag_executor.schema import EdgeDef
+
+        with pytest.raises(ValidationError):
+            EdgeDef(target="node1", condition="true", extra_field="not_allowed")  # type: ignore
+
+
+class TestNodeDefWithEdges:
+    """Test NodeDef with conditional edges."""
+
+    def test_node_with_valid_edges(self) -> None:
+        """Test node with valid edges (conditions + default)."""
+        from dag_executor.schema import NodeDef, EdgeDef, ModelTier
+
+        node = NodeDef(
+            id="review",
+            name="Code Review",
+            type="prompt",
+            prompt="Review this code",
+            model=ModelTier.OPUS,
+            edges=[
+                EdgeDef(target="approve", condition='$review.verdict == "approve"'),
+                EdgeDef(target="revise", condition='$review.verdict == "revise"'),
+                EdgeDef(target="escalate", default=True)
+            ]
+        )
+        assert len(node.edges) == 3
+        assert node.edges[2].default is True
+
+    def test_node_edges_missing_default(self) -> None:
+        """Test that node with edges must have exactly one default edge."""
+        from dag_executor.schema import NodeDef, EdgeDef, ModelTier
+
+        with pytest.raises(ValidationError) as exc_info:
+            NodeDef(
+                id="review",
+                name="Review",
+                type="prompt",
+                prompt="test",
+                model=ModelTier.OPUS,
+                edges=[
+                    EdgeDef(target="approve", condition='$x == 1'),
+                    EdgeDef(target="reject", condition='$x == 2')
+                ]
+            )
+        assert "exactly one edge must have default=true" in str(exc_info.value).lower()
+
+    def test_node_edges_multiple_defaults(self) -> None:
+        """Test that node cannot have multiple default edges."""
+        from dag_executor.schema import NodeDef, EdgeDef, ModelTier
+
+        with pytest.raises(ValidationError) as exc_info:
+            NodeDef(
+                id="review",
+                name="Review",
+                type="prompt",
+                prompt="test",
+                model=ModelTier.OPUS,
+                edges=[
+                    EdgeDef(target="approve", condition='$x == 1'),
+                    EdgeDef(target="reject", default=True),
+                    EdgeDef(target="escalate", default=True)
+                ]
+            )
+        assert "exactly one edge must have default=true" in str(exc_info.value).lower()
+
+    def test_node_without_edges_backward_compatible(self) -> None:
+        """Test that nodes without edges field work unchanged."""
+        from dag_executor.schema import NodeDef, ModelTier
+
+        node = NodeDef(
+            id="test",
+            name="Test",
+            type="prompt",
+            prompt="test",
+            model=ModelTier.SONNET,
+            depends_on=["upstream"]
+        )
+        assert node.edges is None
+        assert node.depends_on == ["upstream"]
