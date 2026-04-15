@@ -1,10 +1,6 @@
 """Tests for CLI entry point."""
-import json
-import sys
-from io import StringIO
 from pathlib import Path
-from typing import List, Optional
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 from dag_executor.cli import parse_args, main, run_dry_run, run_visualize

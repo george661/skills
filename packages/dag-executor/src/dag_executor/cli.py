@@ -11,6 +11,8 @@ from dag_executor import (
     topological_sort_with_layers,
     CheckpointStore,
     WorkflowResult,
+    NodeStatus,
+    WorkflowStatus,
 )
 
 
@@ -196,7 +198,7 @@ def print_summary(result: WorkflowResult) -> None:
 
     # Print node statuses
     for node_summary in result.nodes:
-        status_symbol = "✓" if node_summary.status.value == "COMPLETED" else "✗"
+        status_symbol = "✓" if node_summary.status == NodeStatus.COMPLETED else "✗"
         print(f"  {status_symbol} {node_summary.id}: {node_summary.status.value}")
     print()
 
@@ -276,7 +278,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         print_summary(result)
         
         # Exit with appropriate code
-        if result.status.value == "completed":
+        if result.status == WorkflowStatus.COMPLETED:
             print("Workflow completed successfully")
             sys.exit(0)
         else:
@@ -293,6 +295,4 @@ def main(argv: Optional[List[str]] = None) -> None:
     
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
         sys.exit(1)
