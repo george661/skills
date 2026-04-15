@@ -11,8 +11,11 @@ from dag_executor import (
     topological_sort_with_layers,
     CheckpointStore,
     WorkflowResult,
+    WorkflowEvent,
     NodeStatus,
     WorkflowStatus,
+    EventEmitter,
+    StreamMode,
 )
 
 
@@ -80,7 +83,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--checkpoint-dir",
         help="Override checkpoint directory (defaults to workflow config)",
     )
-    
+
+    parser.add_argument(
+        "--stream",
+        nargs="?",
+        const="all",
+        choices=["all", "state_updates"],
+        help="Stream execution events to stderr (default: all)",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -152,6 +163,12 @@ def run_dry_run(workflow_path: str) -> None:
             node = node_map[node_id]
             deps = f" (depends on: {', '.join(node.depends_on)})" if node.depends_on else ""
             print(f"  - {node.id}: {node.name}{deps}")
+            if node.edges:
+                for edge in node.edges:
+                    if edge.condition:
+                        print(f"      -> {edge.target} (when: {edge.condition})")
+                    elif edge.default:
+                        print(f"      -> {edge.target} (default)")
     print()
 
 
@@ -172,12 +189,21 @@ def run_visualize(workflow_path: str) -> None:
         label = node.name or node.id
         print(f"    {node.id}[{label}]")
     
-    # Output edges
+    # Output dependency edges
     for node in workflow_def.nodes:
         if node.depends_on:
             for dep in node.depends_on:
                 print(f"    {dep} --> {node.id}")
-    
+
+    # Output conditional edges
+    for node in workflow_def.nodes:
+        if node.edges:
+            for edge in node.edges:
+                if edge.condition:
+                    print(f"    {node.id} -->|{edge.condition}| {edge.target}")
+                elif edge.default:
+                    print(f"    {node.id} -->|default| {edge.target}")
+
     print("```")
 
 
@@ -224,10 +250,23 @@ def main(argv: Optional[List[str]] = None) -> None:
         
         # Load workflow
         workflow_def = load_workflow(args.workflow)
-        
+
         # Parse inputs
         inputs = parse_inputs(args.inputs)
-        
+
+        # Setup event emitter if streaming requested
+        event_emitter = None
+        if args.stream:
+            event_emitter = EventEmitter()
+            mode = StreamMode.STATE_UPDATES if args.stream == "state_updates" else StreamMode.ALL
+
+            def _print_event(event: WorkflowEvent) -> None:
+                ts = event.timestamp.strftime("%H:%M:%S")
+                node = f" [{event.node_id}]" if event.node_id else ""
+                print(f"[{ts}]{node} {event.event_type.value}", file=sys.stderr)
+
+            event_emitter.subscribe(_print_event, mode)
+
         # Setup checkpoint store if needed
         checkpoint_store = None
         checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
@@ -263,6 +302,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 inputs=inputs if inputs else None,
                 resume_values=resume_values,
                 concurrency_limit=args.concurrency,
+                event_emitter=event_emitter,
             )
         else:
             # Normal execution
@@ -272,6 +312,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 inputs=inputs,
                 concurrency_limit=args.concurrency,
                 checkpoint_store=checkpoint_store,
+                event_emitter=event_emitter,
             )
         
         # Print summary

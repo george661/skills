@@ -1,10 +1,10 @@
 """Tests for CLI entry point."""
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 from dag_executor.cli import parse_args, main, run_dry_run, run_visualize
-from dag_executor.schema import WorkflowDef, WorkflowConfig, NodeDef, WorkflowStatus, NodeStatus, NodeResult
+from dag_executor.schema import WorkflowDef, WorkflowConfig, NodeDef, EdgeDef, WorkflowStatus, NodeStatus, NodeResult
 from dag_executor.executor import WorkflowResult
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -230,3 +230,84 @@ class TestMainIntegration:
             mock_resume.assert_called_once()
             captured = capsys.readouterr()
             assert "Resuming workflow" in captured.out
+
+
+class TestStreamFlag:
+    """Test --stream flag."""
+
+    def test_parse_stream_flag_default(self) -> None:
+        """--stream without value defaults to 'all'."""
+        args = parse_args(["workflow.yaml", "--stream"])
+        assert args.stream == "all"
+
+    def test_parse_stream_state_updates(self) -> None:
+        """--stream state_updates parses correctly."""
+        args = parse_args(["workflow.yaml", "--stream", "state_updates"])
+        assert args.stream == "state_updates"
+
+    def test_stream_creates_event_emitter(self, capsys) -> None:
+        """--stream creates an EventEmitter and passes it to execute_workflow."""
+        with patch("sys.argv", ["dag-exec", str(FIXTURES_DIR / "valid_workflow.yaml"), "--stream"]), \
+             patch("dag_executor.cli.load_workflow") as mock_load, \
+             patch("dag_executor.cli.execute_workflow") as mock_exec:
+
+            workflow_def = WorkflowDef(
+                name="test",
+                config=WorkflowConfig(checkpoint_prefix="test"),
+                nodes=[NodeDef(id="A", name="Node A", type="bash", script="echo A")],
+            )
+            mock_load.return_value = workflow_def
+            mock_exec.return_value = WorkflowResult(
+                status=WorkflowStatus.COMPLETED,
+                node_results={"A": NodeResult(status=NodeStatus.COMPLETED, output={"result": "test"})},
+                run_id="test-run",
+            )
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+            assert exc_info.value.code == 0
+            # Verify event_emitter was passed (not None)
+            call_kwargs = mock_exec.call_args
+            assert call_kwargs.kwargs.get("event_emitter") is not None
+
+
+class TestConditionalEdges:
+    """Test conditional edge rendering in dry-run and visualize."""
+
+    def _workflow_with_edges(self) -> WorkflowDef:
+        return WorkflowDef(
+            name="test",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=[
+                NodeDef(
+                    id="A", name="Node A", type="bash", script="echo A",
+                    edges=[
+                        EdgeDef(target="B", condition="status == 'ok'"),
+                        EdgeDef(target="C", default=True),
+                    ],
+                ),
+                NodeDef(id="B", name="Node B", type="bash", script="echo B", depends_on=["A"]),
+                NodeDef(id="C", name="Node C", type="bash", script="echo C", depends_on=["A"]),
+            ],
+        )
+
+    def test_dry_run_shows_conditional_edges(self, capsys) -> None:
+        """Dry-run displays conditional edges with conditions."""
+        with patch("dag_executor.cli.load_workflow") as mock_load:
+            mock_load.return_value = self._workflow_with_edges()
+            run_dry_run("workflow.yaml")
+
+            captured = capsys.readouterr()
+            assert "-> B (when: status == 'ok')" in captured.out
+            assert "-> C (default)" in captured.out
+
+    def test_visualize_shows_conditional_edges(self, capsys) -> None:
+        """Visualize renders conditional edges in mermaid syntax."""
+        with patch("dag_executor.cli.load_workflow") as mock_load:
+            mock_load.return_value = self._workflow_with_edges()
+            run_visualize("workflow.yaml")
+
+            captured = capsys.readouterr()
+            assert "A -->|status == 'ok'| B" in captured.out
+            assert "A -->|default| C" in captured.out
