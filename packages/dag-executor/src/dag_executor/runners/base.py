@@ -2,15 +2,18 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 from dag_executor.schema import NodeDef, NodeResult
+
+if TYPE_CHECKING:
+    from dag_executor.events import EventEmitter
 
 
 @dataclass
 class RunnerContext:
     """Context for runner execution.
-    
+
     Attributes:
         node_def: The node definition from the workflow YAML
         resolved_inputs: Variables already resolved by the executor
@@ -18,6 +21,8 @@ class RunnerContext:
         workflow_inputs: Global workflow inputs
         skills_dir: Root directory for skill path validation
         max_output_bytes: Maximum output size limit (default 10MB)
+        progress_callback: Optional callback for emitting progress events during execution
+        event_emitter: Optional event emitter for streaming token events
     """
     node_def: NodeDef
     resolved_inputs: Dict[str, Any] = field(default_factory=dict)
@@ -25,6 +30,8 @@ class RunnerContext:
     workflow_inputs: Dict[str, Any] = field(default_factory=dict)
     skills_dir: Optional[Path] = None
     max_output_bytes: int = 10 * 1024 * 1024  # 10MB
+    progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
+    event_emitter: Optional["EventEmitter"] = None
 
 
 class BaseRunner(ABC):

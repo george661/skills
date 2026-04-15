@@ -24,6 +24,21 @@ class EventType(str, Enum):
     NODE_FAILED = "node_failed"
     NODE_SKIPPED = "node_skipped"
     NODE_INTERRUPTED = "node_interrupted"
+    NODE_STREAM_TOKEN = "node_stream_token"
+    NODE_PROGRESS = "node_progress"
+
+
+class StreamMode(str, Enum):
+    """Stream filtering modes for event subscribers.
+
+    Controls what events a subscriber receives:
+    - ALL: All events (lifecycle, stream tokens, progress)
+    - STATE_UPDATES: Only lifecycle events (started/completed/failed/skipped/interrupted)
+    - DEBUG: Everything including internal state (superset of ALL, reserved for future use)
+    """
+    ALL = "all"
+    STATE_UPDATES = "state_updates"
+    DEBUG = "debug"
 
 
 class WorkflowEvent(BaseModel):
@@ -88,13 +103,49 @@ class EventEmitter:
             self._log_file.parent.mkdir(parents=True, exist_ok=True)
     
     def add_listener(self, listener: Callable[[WorkflowEvent], None]) -> None:
-        """Add an event listener.
-        
+        """Add an event listener (unfiltered, backward compatible).
+
+        This method provides backward compatibility and receives all events.
+        For filtered event streams, use subscribe() instead.
+
         Args:
             listener: Callback function that receives WorkflowEvent objects
         """
         with self._lock:
             self._listeners.append(listener)
+
+    def subscribe(self, listener: Callable[[WorkflowEvent], None], mode: StreamMode) -> None:
+        """Subscribe to events with filtering based on stream mode.
+
+        Args:
+            listener: Callback function that receives WorkflowEvent objects
+            mode: Stream mode controlling which events are delivered
+        """
+        # Define state update event types (lifecycle events only)
+        state_update_types = {
+            EventType.WORKFLOW_STARTED,
+            EventType.WORKFLOW_COMPLETED,
+            EventType.WORKFLOW_FAILED,
+            EventType.WORKFLOW_INTERRUPTED,
+            EventType.NODE_STARTED,
+            EventType.NODE_COMPLETED,
+            EventType.NODE_FAILED,
+            EventType.NODE_SKIPPED,
+            EventType.NODE_INTERRUPTED,
+        }
+
+        # Create filtered listener wrapper based on mode
+        if mode == StreamMode.STATE_UPDATES:
+            # Only pass through lifecycle events
+            def filtered_listener(event: WorkflowEvent) -> None:
+                if event.event_type in state_update_types:
+                    listener(event)
+            with self._lock:
+                self._listeners.append(filtered_listener)
+        else:
+            # ALL and DEBUG modes receive everything
+            with self._lock:
+                self._listeners.append(listener)
     
     def remove_listener(self, listener: Callable[[WorkflowEvent], None]) -> None:
         """Remove an event listener.

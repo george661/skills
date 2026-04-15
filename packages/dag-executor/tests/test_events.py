@@ -9,6 +9,7 @@ import pytest
 from dag_executor.events import (
     EventEmitter,
     EventType,
+    StreamMode,
     WorkflowEvent,
 )
 from dag_executor.schema import NodeStatus, WorkflowStatus
@@ -16,7 +17,7 @@ from dag_executor.schema import NodeStatus, WorkflowStatus
 
 class TestEventType:
     """Test EventType enum."""
-    
+
     def test_enum_values(self) -> None:
         """Verify all expected enum values exist."""
         assert EventType.WORKFLOW_STARTED == "workflow_started"
@@ -25,6 +26,21 @@ class TestEventType:
         assert EventType.NODE_STARTED == "node_started"
         assert EventType.NODE_COMPLETED == "node_completed"
         assert EventType.NODE_FAILED == "node_failed"
+
+    def test_new_streaming_event_types(self) -> None:
+        """Verify new streaming event types exist."""
+        assert EventType.NODE_STREAM_TOKEN == "node_stream_token"
+        assert EventType.NODE_PROGRESS == "node_progress"
+
+
+class TestStreamMode:
+    """Test StreamMode enum."""
+
+    def test_stream_mode_values(self) -> None:
+        """Verify all stream mode values exist."""
+        assert StreamMode.ALL == "all"
+        assert StreamMode.STATE_UPDATES == "state_updates"
+        assert StreamMode.DEBUG == "debug"
 
 
 class TestWorkflowEvent:
@@ -247,3 +263,162 @@ class TestEventEmitter:
             t.join()
         
         assert len(events_received) == 10
+
+    def test_subscribe_with_all_mode(self) -> None:
+        """Test subscribe with ALL mode receives all events."""
+        emitter = EventEmitter()
+        events_received: List[WorkflowEvent] = []
+
+        def listener(event: WorkflowEvent) -> None:
+            events_received.append(event)
+
+        emitter.subscribe(listener, StreamMode.ALL)
+
+        # Emit various event types
+        emitter.emit(WorkflowEvent(
+            event_type=EventType.NODE_STARTED,
+            workflow_id="wf-1",
+            timestamp=datetime.now()
+        ))
+        emitter.emit(WorkflowEvent(
+            event_type=EventType.NODE_STREAM_TOKEN,
+            workflow_id="wf-1",
+            node_id="node-1",
+            metadata={"token": "hello"},
+            timestamp=datetime.now()
+        ))
+        emitter.emit(WorkflowEvent(
+            event_type=EventType.NODE_PROGRESS,
+            workflow_id="wf-1",
+            node_id="node-1",
+            metadata={"message": "50% complete", "percent": 50},
+            timestamp=datetime.now()
+        ))
+
+        # ALL mode should receive everything
+        assert len(events_received) == 3
+
+    def test_subscribe_with_state_updates_mode(self) -> None:
+        """Test subscribe with STATE_UPDATES mode filters out stream tokens and progress."""
+        emitter = EventEmitter()
+        events_received: List[WorkflowEvent] = []
+
+        def listener(event: WorkflowEvent) -> None:
+            events_received.append(event)
+
+        emitter.subscribe(listener, StreamMode.STATE_UPDATES)
+
+        # Emit various event types
+        emitter.emit(WorkflowEvent(
+            event_type=EventType.NODE_STARTED,
+            workflow_id="wf-1",
+            node_id="node-1",
+            timestamp=datetime.now()
+        ))
+        emitter.emit(WorkflowEvent(
+            event_type=EventType.NODE_STREAM_TOKEN,
+            workflow_id="wf-1",
+            node_id="node-1",
+            metadata={"token": "hello"},
+            timestamp=datetime.now()
+        ))
+        emitter.emit(WorkflowEvent(
+            event_type=EventType.NODE_PROGRESS,
+            workflow_id="wf-1",
+            node_id="node-1",
+            metadata={"message": "50% complete"},
+            timestamp=datetime.now()
+        ))
+        emitter.emit(WorkflowEvent(
+            event_type=EventType.NODE_COMPLETED,
+            workflow_id="wf-1",
+            node_id="node-1",
+            status=NodeStatus.COMPLETED,
+            timestamp=datetime.now()
+        ))
+
+        # STATE_UPDATES mode should filter out stream tokens and progress
+        assert len(events_received) == 2
+        assert events_received[0].event_type == EventType.NODE_STARTED
+        assert events_received[1].event_type == EventType.NODE_COMPLETED
+
+    def test_subscribe_with_debug_mode(self) -> None:
+        """Test subscribe with DEBUG mode receives everything (superset of ALL)."""
+        emitter = EventEmitter()
+        events_received: List[WorkflowEvent] = []
+
+        def listener(event: WorkflowEvent) -> None:
+            events_received.append(event)
+
+        emitter.subscribe(listener, StreamMode.DEBUG)
+
+        # Emit various event types
+        emitter.emit(WorkflowEvent(
+            event_type=EventType.NODE_STARTED,
+            workflow_id="wf-1",
+            timestamp=datetime.now()
+        ))
+        emitter.emit(WorkflowEvent(
+            event_type=EventType.NODE_STREAM_TOKEN,
+            workflow_id="wf-1",
+            node_id="node-1",
+            metadata={"token": "hello"},
+            timestamp=datetime.now()
+        ))
+
+        # DEBUG mode should receive everything (same as ALL for now)
+        assert len(events_received) == 2
+
+    def test_add_listener_backward_compatibility(self) -> None:
+        """Test that add_listener still works and receives all events (backward compat)."""
+        emitter = EventEmitter()
+        events_received: List[WorkflowEvent] = []
+
+        def listener(event: WorkflowEvent) -> None:
+            events_received.append(event)
+
+        # Use old add_listener API
+        emitter.add_listener(listener)
+
+        # Emit various event types
+        emitter.emit(WorkflowEvent(
+            event_type=EventType.NODE_STARTED,
+            workflow_id="wf-1",
+            timestamp=datetime.now()
+        ))
+        emitter.emit(WorkflowEvent(
+            event_type=EventType.NODE_STREAM_TOKEN,
+            workflow_id="wf-1",
+            node_id="node-1",
+            metadata={"token": "hello"},
+            timestamp=datetime.now()
+        ))
+
+        # add_listener should receive everything (unfiltered)
+        assert len(events_received) == 2
+
+    def test_new_event_types_serialization(self) -> None:
+        """Test that new event types can be serialized to JSON."""
+        # Test NODE_STREAM_TOKEN
+        token_event = WorkflowEvent(
+            event_type=EventType.NODE_STREAM_TOKEN,
+            workflow_id="wf-123",
+            node_id="node-1",
+            metadata={"token": "hello world"},
+            timestamp=datetime(2026, 4, 14, 12, 0, 0)
+        )
+        json_str = token_event.model_dump_json()
+        assert "node_stream_token" in json_str
+        assert "hello world" in json_str
+
+        # Test NODE_PROGRESS
+        progress_event = WorkflowEvent(
+            event_type=EventType.NODE_PROGRESS,
+            workflow_id="wf-123",
+            node_id="node-1",
+            metadata={"message": "Processing file 3/10", "current": 3, "total": 10},
+            timestamp=datetime(2026, 4, 14, 12, 0, 0)
+        )
+        json_str = progress_event.model_dump_json()
+        assert "node_progress" in json_str
+        assert "Processing file 3/10" in json_str

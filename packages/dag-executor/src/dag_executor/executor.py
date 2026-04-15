@@ -474,14 +474,29 @@ class WorkflowExecutor:
                 raise RuntimeError(f"No runner registered for node type: {node_def.type}")
             
             runner = runner_class()
-            
+
+            # Create progress callback that emits NODE_PROGRESS events
+            progress_callback = None
+            if event_emitter:
+                def progress_callback(message: str, metadata: Dict[str, Any]) -> None:
+                    from dag_executor.events import EventType, WorkflowEvent
+                    event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.NODE_PROGRESS,
+                        workflow_id=workflow_def.name,
+                        node_id=node_def.id,
+                        metadata={"message": message, **metadata},
+                        timestamp=datetime.now(timezone.utc)
+                    ))
+
             # Create runner context
             runner_ctx = RunnerContext(
                 node_def=node_def,
                 resolved_inputs=resolved_inputs,
                 node_outputs=ctx.node_outputs,
                 workflow_inputs=ctx.workflow_inputs,
-                max_output_bytes=10 * 1024 * 1024
+                max_output_bytes=10 * 1024 * 1024,
+                progress_callback=progress_callback,
+                event_emitter=event_emitter
             )
             
             # Get timeout for this node
