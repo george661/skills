@@ -35,3 +35,4 @@ env/
 .coverage
 htmlcov/
 .agent-context.json
+.dag-checkpoints/

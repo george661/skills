@@ -1,5 +1,6 @@
 """Prompt runner for LLM invocation nodes."""
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dag_executor.schema import NodeResult, NodeStatus
@@ -40,32 +41,71 @@ class PromptRunner(BaseRunner):
             # Prompt file - pass file path as argument
             cmd.extend(["--file", node.prompt_file])
         
-        # Execute CLI
+        # Execute CLI with streaming support
         try:
-            result = subprocess.run(
+            # Use Popen for line-by-line streaming
+            process = subprocess.Popen(
                 cmd,
-                input=prompt_input,
-                capture_output=True,
-                text=True,
-                timeout=ctx.node_def.timeout or 600  # Default 10 min timeout for LLM
+                stdin=subprocess.PIPE if prompt_input else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
             )
-            
-            if result.returncode != 0:
+
+            # Write input if provided
+            if prompt_input and process.stdin:
+                process.stdin.write(prompt_input)
+                process.stdin.close()
+
+            # Stream output line by line
+            output_lines = []
+            if process.stdout:
+                for line in process.stdout:
+                    output_lines.append(line)
+                    # Emit stream token event if emitter is available
+                    if ctx.event_emitter:
+                        from dag_executor.events import EventType, WorkflowEvent
+                        ctx.event_emitter.emit(WorkflowEvent(
+                            event_type=EventType.NODE_STREAM_TOKEN,
+                            workflow_id=ctx.workflow_id,
+                            node_id=ctx.node_def.id,
+                            metadata={"token": line.rstrip('\n')},
+                            timestamp=datetime.now(timezone.utc)
+                        ))
+
+            # Wait for process completion with timeout
+            # NOTE: Timeout only applies after stdout draining completes. If the process generates
+            # more output than the pipe buffer can hold without being consumed, the timeout countdown
+            # does not begin until the for-loop above finishes reading all output.
+            timeout = ctx.node_def.timeout or 600  # Default 10 min timeout for LLM
+            try:
+                returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # Kill process on timeout
+                process.kill()
+                process.wait()
                 return NodeResult(
                     status=NodeStatus.FAILED,
-                    error=result.stderr or f"CLI exited with code {result.returncode}"
+                    error=f"Prompt execution timed out after {timeout} seconds"
                 )
-            
+
+            # Collect stderr
+            stderr = process.stderr.read() if process.stderr else ""
+
+            if returncode != 0:
+                return NodeResult(
+                    status=NodeStatus.FAILED,
+                    error=stderr or f"CLI exited with code {returncode}"
+                )
+
+            # Combine all output lines
+            full_output = "".join(output_lines)
+
             return NodeResult(
                 status=NodeStatus.COMPLETED,
-                output={"response": result.stdout}
+                output={"response": full_output}
             )
-            
-        except subprocess.TimeoutExpired:
-            return NodeResult(
-                status=NodeStatus.FAILED,
-                error=f"Prompt execution timed out after {ctx.node_def.timeout} seconds"
-            )
+
         except Exception as e:
             return NodeResult(
                 status=NodeStatus.FAILED,
