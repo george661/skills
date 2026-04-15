@@ -819,3 +819,110 @@ class TestConditionalEdges:
         assert result.node_results["success"].status == NodeStatus.COMPLETED
         # failure should be skipped
         assert result.node_results["failure"].status == NodeStatus.SKIPPED
+
+
+class TestProgressCallbackWiring:
+    """Test that progress callback and event emitter are wired to runner context."""
+
+    def test_progress_callback_emits_node_progress_events(self) -> None:
+        """Test that progress callback creates NODE_PROGRESS events."""
+        from dag_executor.events import EventEmitter, EventType
+        from dag_executor.runners.base import RunnerContext
+
+        # Track progress events
+        progress_events = []
+
+        def track_progress(event):
+            if event.event_type == EventType.NODE_PROGRESS:
+                progress_events.append(event)
+
+        emitter = EventEmitter()
+        emitter.add_listener(track_progress)
+
+        # Create a custom runner that uses the progress callback
+        class ProgressRunner:
+            def run(self, ctx: RunnerContext) -> NodeResult:
+                # Simulate progress reporting
+                if ctx.progress_callback:
+                    ctx.progress_callback("Processing item 1/3", {"current": 1, "total": 3})
+                    ctx.progress_callback("Processing item 2/3", {"current": 2, "total": 3})
+                    ctx.progress_callback("Processing item 3/3", {"current": 3, "total": 3})
+                return NodeResult(status=NodeStatus.COMPLETED, output={"result": "done"})
+
+        node = NodeDef(id="test-node", name="Test Node", type="custom", script="")
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=[node]
+        )
+
+        # Mock get_runner to return our custom runner
+        with patch("dag_executor.executor.get_runner", return_value=ProgressRunner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}, event_emitter=emitter))
+
+        # Verify progress events were emitted
+        assert len(progress_events) == 3
+        assert progress_events[0].metadata["message"] == "Processing item 1/3"
+        assert progress_events[0].metadata["current"] == 1
+        assert progress_events[0].metadata["total"] == 3
+        assert progress_events[1].metadata["current"] == 2
+        assert progress_events[2].metadata["current"] == 3
+
+    def test_event_emitter_passed_to_runner_context(self) -> None:
+        """Test that event emitter is passed to runner context."""
+        from dag_executor.events import EventEmitter
+        from dag_executor.runners.base import RunnerContext
+
+        # Track if event emitter was passed
+        emitter_passed = []
+
+        class EmitterCheckRunner:
+            def run(self, ctx: RunnerContext) -> NodeResult:
+                emitter_passed.append(ctx.event_emitter is not None)
+                return NodeResult(status=NodeStatus.COMPLETED)
+
+        node = NodeDef(id="test-node", name="Test Node", type="custom", script="")
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=[node]
+        )
+
+        emitter = EventEmitter()
+
+        # Mock get_runner
+        with patch("dag_executor.executor.get_runner", return_value=EmitterCheckRunner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}, event_emitter=emitter))
+
+        # Verify emitter was passed
+        assert len(emitter_passed) == 1
+        assert emitter_passed[0] is True
+
+    def test_no_progress_callback_when_no_emitter(self) -> None:
+        """Test that progress callback is None when no event emitter is provided."""
+        from dag_executor.runners.base import RunnerContext
+
+        callback_is_none = []
+
+        class CallbackCheckRunner:
+            def run(self, ctx: RunnerContext) -> NodeResult:
+                callback_is_none.append(ctx.progress_callback is None)
+                return NodeResult(status=NodeStatus.COMPLETED)
+
+        node = NodeDef(id="test-node", name="Test Node", type="custom", script="")
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=[node]
+        )
+
+        # Execute without event emitter
+        with patch("dag_executor.executor.get_runner", return_value=CallbackCheckRunner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}))
+
+        # Verify callback was None
+        assert len(callback_is_none) == 1
+        assert callback_is_none[0] is True

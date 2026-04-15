@@ -37,7 +37,7 @@ from dag_executor.variables import resolve_variables, VariableResolutionError
 from dag_executor.executor import WorkflowExecutor, WorkflowResult, NodeSummary
 
 # Events
-from dag_executor.events import EventType, WorkflowEvent, EventEmitter
+from dag_executor.events import EventType, WorkflowEvent, EventEmitter, StreamMode
 
 # Label management
 from dag_executor.labels import LabelManager, LabelCallback
@@ -64,6 +64,7 @@ __all__ = [
     "EventType",
     "WorkflowEvent",
     "EventEmitter",
+    "StreamMode",
     # Label management
     "LabelManager",
     "LabelCallback",
