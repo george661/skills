@@ -681,3 +681,141 @@ class TestReducerIntegration:
         # Check via outputs - if state was used, it would be in outputs
         # Since no state reducers, outputs should be empty (no explicit outputs defined)
         assert result.outputs == {}
+
+
+class TestConditionalEdges:
+    """Test conditional edge evaluation in executor."""
+
+    def test_conditional_edges_approve_branch(self) -> None:
+        """Review node with edges: approve verdict routes to approve branch."""
+        from dag_executor.schema import EdgeDef, ModelTier
+
+        nodes = [
+            NodeDef(
+                id="review",
+                name="Review",
+                type="bash",
+                script="echo review",
+                edges=[
+                    EdgeDef(target="approve", condition='review.verdict == "approve"'),
+                    EdgeDef(target="revise", condition='review.verdict == "revise"'),
+                    EdgeDef(target="escalate", default=True)
+                ]
+            ),
+            NodeDef(id="approve", name="Approve", type="bash", script="echo approve"),
+            NodeDef(id="revise", name="Revise", type="bash", script="echo revise"),
+            NodeDef(id="escalate", name="Escalate", type="bash", script="echo escalate"),
+        ]
+
+        workflow_def = WorkflowDef(
+            name="test-conditional-edges",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes
+        )
+
+        # Mock runners: review outputs verdict=approve
+        def mock_get_runner(node_type):
+            return create_mock_runner_class(
+                NodeResult(status=NodeStatus.COMPLETED, output={"verdict": "approve"})
+            )
+
+        with patch("dag_executor.executor.get_runner", side_effect=mock_get_runner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}))
+
+        assert result.status == WorkflowStatus.COMPLETED
+        # review and approve should have executed
+        assert result.node_results["review"].status == NodeStatus.COMPLETED
+        assert result.node_results["approve"].status == NodeStatus.COMPLETED
+        # revise and escalate should have been skipped
+        assert result.node_results["revise"].status == NodeStatus.SKIPPED
+        assert result.node_results["escalate"].status == NodeStatus.SKIPPED
+
+    def test_conditional_edges_default_fallback(self) -> None:
+        """When no condition matches, default edge fires."""
+        from dag_executor.schema import EdgeDef
+
+        nodes = [
+            NodeDef(
+                id="gate",
+                name="Gate",
+                type="bash",
+                script="echo gate",
+                edges=[
+                    EdgeDef(target="path_a", condition='gate.value == "A"'),
+                    EdgeDef(target="path_b", condition='gate.value == "B"'),
+                    EdgeDef(target="default_path", default=True)
+                ]
+            ),
+            NodeDef(id="path_a", name="Path A", type="bash", script="echo a"),
+            NodeDef(id="path_b", name="Path B", type="bash", script="echo b"),
+            NodeDef(id="default_path", name="Default", type="bash", script="echo default"),
+        ]
+
+        workflow_def = WorkflowDef(
+            name="test-default-edge",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes
+        )
+
+        # Mock runner: gate outputs value=C (no matching condition)
+        def mock_get_runner(node_type):
+            return create_mock_runner_class(
+                NodeResult(status=NodeStatus.COMPLETED, output={"value": "C"})
+            )
+
+        with patch("dag_executor.executor.get_runner", side_effect=mock_get_runner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}))
+
+        assert result.status == WorkflowStatus.COMPLETED
+        assert result.node_results["gate"].status == NodeStatus.COMPLETED
+        # path_a and path_b skipped, default_path executed
+        assert result.node_results["path_a"].status == NodeStatus.SKIPPED
+        assert result.node_results["path_b"].status == NodeStatus.SKIPPED
+        assert result.node_results["default_path"].status == NodeStatus.COMPLETED
+
+    def test_conditional_edges_with_depends_on(self) -> None:
+        """Node with both depends_on and edges works correctly."""
+        from dag_executor.schema import EdgeDef
+
+        nodes = [
+            NodeDef(id="setup", name="Setup", type="bash", script="echo setup"),
+            NodeDef(
+                id="check",
+                name="Check",
+                type="bash",
+                script="echo check",
+                depends_on=["setup"],
+                edges=[
+                    EdgeDef(target="success", condition='check.ok == True'),
+                    EdgeDef(target="failure", default=True)
+                ]
+            ),
+            NodeDef(id="success", name="Success", type="bash", script="echo success"),
+            NodeDef(id="failure", name="Failure", type="bash", script="echo failure"),
+        ]
+
+        workflow_def = WorkflowDef(
+            name="test-edges-with-depends",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes
+        )
+
+        # Mock runners: check outputs ok=true
+        def mock_get_runner(node_type):
+            return create_mock_runner_class(
+                NodeResult(status=NodeStatus.COMPLETED, output={"ok": True})
+            )
+
+        with patch("dag_executor.executor.get_runner", side_effect=mock_get_runner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}))
+
+        assert result.status == WorkflowStatus.COMPLETED
+        # setup, check, success should execute
+        assert result.node_results["setup"].status == NodeStatus.COMPLETED
+        assert result.node_results["check"].status == NodeStatus.COMPLETED
+        assert result.node_results["success"].status == NodeStatus.COMPLETED
+        # failure should be skipped
+        assert result.node_results["failure"].status == NodeStatus.SKIPPED

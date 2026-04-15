@@ -533,6 +533,10 @@ class WorkflowExecutor:
         if result.status == NodeStatus.COMPLETED and result.output:
             ctx.node_outputs[node_id] = result.output
 
+            # Evaluate conditional edges to determine which branch to take
+            if node_def.edges is not None:
+                self._evaluate_edges(node_def, ctx)
+
             # Apply reducers to merge outputs into workflow_state
             if workflow_def.state and isinstance(result.output, dict):
                 reducer_registry = ReducerRegistry()
@@ -639,27 +643,27 @@ class WorkflowExecutor:
         ctx: ExecutionContext
     ) -> bool:
         """Evaluate when condition for a node.
-        
+
         Args:
             node_def: Node definition
             ctx: Execution context
-        
+
         Returns:
             True if node should execute, False to skip
         """
         if node_def.when is None:
             return True
-        
+
         # Handle string literals
         when_expr = node_def.when.strip()
         if when_expr.lower() in ("true", "1"):
             return True
         if when_expr.lower() in ("false", "0", ""):
             return False
-        
+
         # Prepare evaluation context with workflow inputs and node outputs
         eval_context = {**ctx.workflow_inputs}
-        
+
         # Flatten node outputs into context
         for node_id, output in ctx.node_outputs.items():
             if isinstance(output, dict):
@@ -667,7 +671,7 @@ class WorkflowExecutor:
                     eval_context[f"{node_id}.{key}"] = value
             else:
                 eval_context[node_id] = output
-        
+
         # Evaluate expression
         evaluator = SimpleEval(names=eval_context)
         try:
@@ -677,7 +681,66 @@ class WorkflowExecutor:
             # Store error context so callers can see why the node was skipped
             self._last_when_error = f"when condition '{when_expr}' failed: {e}"
             return False
-    
+
+    def _evaluate_edges(
+        self,
+        node_def: NodeDef,
+        ctx: ExecutionContext
+    ) -> None:
+        """Evaluate conditional edges and mark non-matching branches for skipping.
+
+        Args:
+            node_def: Node definition with edges
+            ctx: Execution context
+        """
+        from types import SimpleNamespace
+
+        if node_def.edges is None:
+            return
+
+        # Prepare evaluation context with workflow inputs
+        eval_context = {**ctx.workflow_inputs}
+
+        # Add node outputs as objects for dot notation access
+        for node_id, output in ctx.node_outputs.items():
+            if isinstance(output, dict):
+                # Convert dict to SimpleNamespace for dot access (e.g., review.verdict)
+                eval_context[node_id] = SimpleNamespace(**output)
+            else:
+                eval_context[node_id] = output
+
+        # Find first matching edge (first truthy condition wins)
+        matching_target = None
+        default_target = None
+
+        for edge in node_def.edges:
+            if edge.default:
+                # Store default edge as fallback
+                default_target = edge.target
+                continue
+
+            # Evaluate condition
+            if edge.condition:
+                evaluator = SimpleEval(names=eval_context)
+                try:
+                    result = evaluator.eval(edge.condition)
+                    if result:
+                        matching_target = edge.target
+                        break  # First match wins
+                except Exception:
+                    # Condition evaluation failed, try next edge
+                    continue
+
+        # Use default if no condition matched
+        if matching_target is None and default_target is not None:
+            matching_target = default_target
+
+        # Mark all non-matching edge targets for skipping
+        if matching_target:
+            for edge in node_def.edges:
+                if edge.target != matching_target:
+                    ctx.skipped_nodes.add(edge.target)
+
     def _check_trigger_rule(
         self,
         node_def: NodeDef,

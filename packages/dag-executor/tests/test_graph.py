@@ -112,8 +112,8 @@ class TestConditionalEdges:
                 prompt="Review code",
                 model=ModelTier.OPUS,
                 edges=[
-                    EdgeDef(target="approve", condition='$review.verdict == "approve"'),
-                    EdgeDef(target="revise", condition='$review.verdict == "revise"'),
+                    EdgeDef(target="approve", condition='review.verdict == "approve"'),
+                    EdgeDef(target="revise", condition='review.verdict == "revise"'),
                     EdgeDef(target="escalate", default=True)
                 ]
             ),
@@ -142,7 +142,7 @@ class TestConditionalEdges:
                 model=ModelTier.OPUS,
                 depends_on=["setup"],
                 edges=[
-                    EdgeDef(target="pass", condition='$review.ok'),
+                    EdgeDef(target="pass", condition='review.ok'),
                     EdgeDef(target="fail", default=True)
                 ]
             ),
@@ -167,7 +167,7 @@ class TestConditionalEdges:
                 prompt="Review",
                 model=ModelTier.OPUS,
                 edges=[
-                    EdgeDef(target="nonexistent", condition='$review.ok'),
+                    EdgeDef(target="nonexistent", condition='review.ok'),
                     EdgeDef(target="escalate", default=True)
                 ]
             ),

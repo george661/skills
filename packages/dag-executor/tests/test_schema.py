@@ -279,9 +279,9 @@ class TestEdgeDef:
         """Test creating edge with condition."""
         from dag_executor.schema import EdgeDef
 
-        edge = EdgeDef(target="approve", condition='$review.verdict == "approve"')
+        edge = EdgeDef(target="approve", condition='review.verdict == "approve"')
         assert edge.target == "approve"
-        assert edge.condition == '$review.verdict == "approve"'
+        assert edge.condition == 'review.verdict == "approve"'
         assert edge.default is False
 
     def test_create_default_edge(self) -> None:
@@ -298,7 +298,7 @@ class TestEdgeDef:
         from dag_executor.schema import EdgeDef
 
         with pytest.raises(ValidationError) as exc_info:
-            EdgeDef(target="node1", condition='$x > 5', default=True)
+            EdgeDef(target="node1", condition='x > 5', default=True)
         assert "condition and default are mutually exclusive" in str(exc_info.value).lower()
 
     def test_edge_requires_condition_or_default(self) -> None:
@@ -332,8 +332,8 @@ class TestNodeDefWithEdges:
             prompt="Review this code",
             model=ModelTier.OPUS,
             edges=[
-                EdgeDef(target="approve", condition='$review.verdict == "approve"'),
-                EdgeDef(target="revise", condition='$review.verdict == "revise"'),
+                EdgeDef(target="approve", condition='review.verdict == "approve"'),
+                EdgeDef(target="revise", condition='review.verdict == "revise"'),
                 EdgeDef(target="escalate", default=True)
             ]
         )
@@ -352,8 +352,8 @@ class TestNodeDefWithEdges:
                 prompt="test",
                 model=ModelTier.OPUS,
                 edges=[
-                    EdgeDef(target="approve", condition='$x == 1'),
-                    EdgeDef(target="reject", condition='$x == 2')
+                    EdgeDef(target="approve", condition='x == 1'),
+                    EdgeDef(target="reject", condition='x == 2')
                 ]
             )
         assert "exactly one edge must have default=true" in str(exc_info.value).lower()
@@ -370,7 +370,7 @@ class TestNodeDefWithEdges:
                 prompt="test",
                 model=ModelTier.OPUS,
                 edges=[
-                    EdgeDef(target="approve", condition='$x == 1'),
+                    EdgeDef(target="approve", condition='x == 1'),
                     EdgeDef(target="reject", default=True),
                     EdgeDef(target="escalate", default=True)
                 ]
