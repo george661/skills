@@ -1,0 +1,14 @@
+name: interrupt_conditional
+config:
+  checkpoint_prefix: .dag-checkpoints
+inputs:
+  requires_approval:
+    type: boolean
+    required: true
+nodes:
+  - id: conditional_gate
+    name: Conditional Approval Gate
+    type: interrupt
+    message: "Approval required"
+    resume_key: "approval"
+    condition: "requires_approval == True"

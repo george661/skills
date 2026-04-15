@@ -34,7 +34,7 @@ from dag_executor.graph import topological_sort_with_layers, CycleDetectedError
 from dag_executor.variables import resolve_variables, VariableResolutionError
 
 # Executor
-from dag_executor.executor import WorkflowExecutor, WorkflowResult
+from dag_executor.executor import WorkflowExecutor, WorkflowResult, NodeSummary
 
 # Events
 from dag_executor.events import EventType, WorkflowEvent, EventEmitter
@@ -43,7 +43,7 @@ from dag_executor.events import EventType, WorkflowEvent, EventEmitter
 from dag_executor.labels import LabelManager, LabelCallback
 
 # Checkpoint store
-from dag_executor.checkpoint import CheckpointStore, CheckpointMetadata, NodeCheckpoint
+from dag_executor.checkpoint import CheckpointStore, CheckpointMetadata, NodeCheckpoint, InterruptCheckpoint
 
 __all__ = [
     "load_workflow",
@@ -59,6 +59,7 @@ __all__ = [
     # Executor
     "WorkflowExecutor",
     "WorkflowResult",
+    "NodeSummary",
     # Events
     "EventType",
     "WorkflowEvent",
@@ -70,6 +71,7 @@ __all__ = [
     "CheckpointStore",
     "CheckpointMetadata",
     "NodeCheckpoint",
+    "InterruptCheckpoint",
     # Runtime models
     "Workflow",
     "Node",
@@ -147,6 +149,7 @@ def resume_workflow(
     checkpoint_store: CheckpointStore,
     workflow_def: WorkflowDef,
     inputs: Optional[Dict[str, Any]] = None,
+    resume_values: Optional[Dict[str, Any]] = None,
     concurrency_limit: int = 10
 ) -> WorkflowResult:
     """Resume a paused or failed workflow from its last state.
@@ -157,6 +160,7 @@ def resume_workflow(
         checkpoint_store: Checkpoint store containing saved state
         workflow_def: Workflow definition to resume
         inputs: Workflow input values (from checkpoint metadata if not provided)
+        resume_values: Values to inject for resume (keyed by resume_key from interrupt)
         concurrency_limit: Maximum concurrent node executions
 
     Returns:
@@ -173,7 +177,16 @@ def resume_workflow(
 
     # Use checkpoint inputs if not explicitly provided
     if inputs is None:
-        inputs = metadata.inputs
+        inputs = metadata.inputs.copy()
+    else:
+        inputs = inputs.copy()
+
+    # Load interrupt checkpoint if present
+    interrupt_checkpoint = checkpoint_store.load_interrupt(workflow_name, run_id)
+    if interrupt_checkpoint and resume_values:
+        # Inject resume values into workflow inputs
+        for resume_key, resume_value in resume_values.items():
+            inputs[resume_key] = resume_value
 
     # The executor will use checkpoint_store.check_cache() to skip completed nodes
     # by matching content hashes - completed nodes with matching hashes will be restored

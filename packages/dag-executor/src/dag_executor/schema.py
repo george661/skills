@@ -13,6 +13,7 @@ class NodeStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    INTERRUPTED = "interrupted"
 
 
 class WorkflowStatus(str, Enum):
@@ -193,8 +194,18 @@ class BashNodeConfig(BaseModel):
 class GateNodeConfig(BaseModel):
     """Configuration for gate/condition nodes."""
     model_config = {"extra": "forbid"}
-    
+
     condition: str = Field(..., description="Condition expression to evaluate")
+
+
+class InterruptConfig(BaseModel):
+    """Configuration for interrupt nodes (human-in-the-loop)."""
+    model_config = {"extra": "forbid"}
+
+    message: str = Field(..., description="Message to display to the user")
+    resume_key: str = Field(..., description="Key to inject resume value into workflow inputs")
+    channels: List[str] = Field(default=["terminal"], description="Channels to surface interrupt on")
+    timeout: Optional[int] = Field(default=None, description="Optional timeout in seconds")
 
 
 class NodeDef(BaseModel):
@@ -236,8 +247,14 @@ class NodeDef(BaseModel):
     script: Optional[str] = Field(default=None, description="Bash script (for type=bash)")
     
     # Gate node
-    condition: Optional[str] = Field(default=None, description="Gate condition (for type=gate)")
-    
+    condition: Optional[str] = Field(default=None, description="Gate condition (for type=gate) or interrupt condition (for type=interrupt)")
+
+    # Interrupt node
+    message: Optional[str] = Field(default=None, description="Interrupt message (for type=interrupt)")
+    resume_key: Optional[str] = Field(default=None, description="Resume key (for type=interrupt)")
+    channels: Optional[List[str]] = Field(default=None, description="Interrupt channels (for type=interrupt)")
+    # timeout already defined above in common fields
+
     def model_post_init(self, __context: Any) -> None:
         """Validate type-specific required fields."""
         if self.type == "skill":
@@ -259,6 +276,11 @@ class NodeDef(BaseModel):
         elif self.type == "gate":
             if self.condition is None:
                 raise ValueError("condition field is required for type=gate")
+        elif self.type == "interrupt":
+            if self.message is None:
+                raise ValueError("message field is required for type=interrupt")
+            if self.resume_key is None:
+                raise ValueError("resume_key field is required for type=interrupt")
 
 
 class LabelsConfig(BaseModel):

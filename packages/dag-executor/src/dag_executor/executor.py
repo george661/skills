@@ -26,6 +26,14 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class NodeSummary:
+    """Summary of node execution state for WorkflowResult.nodes."""
+    id: str
+    status: NodeStatus
+    result: Optional[NodeResult] = None
+
+
+@dataclass
 class ExecutionContext:
     """Tracks execution state across the workflow.
 
@@ -38,6 +46,7 @@ class ExecutionContext:
         _state_lock: Lock for thread-safe workflow_state mutations
         concurrency_limit: Max concurrent node executions
         stopped: Set to True when workflow should halt (on_failure=stop)
+        interrupted: Set to True when workflow hits an interrupt node
         skipped_nodes: Set of node IDs marked for skipping
     """
     node_outputs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -48,6 +57,7 @@ class ExecutionContext:
     _state_lock: threading.Lock = field(default_factory=threading.Lock)
     concurrency_limit: int = 10
     stopped: bool = False
+    interrupted: bool = False
     skipped_nodes: Set[str] = field(default_factory=set)
     pool: Optional[ThreadPoolExecutor] = field(default=None, repr=False)
     semaphore: Optional[asyncio.Semaphore] = field(default=None, repr=False)
@@ -55,18 +65,44 @@ class ExecutionContext:
 
 class WorkflowResult:
     """Result of workflow execution.
-    
+
     Uses BaseModel-like structure for consistency with other schema models.
     """
     def __init__(
         self,
         status: WorkflowStatus,
         node_results: Dict[str, NodeResult],
-        outputs: Optional[Dict[str, Any]] = None
+        outputs: Optional[Dict[str, Any]] = None,
+        run_id: Optional[str] = None,
+        node_statuses: Optional[Dict[str, NodeStatus]] = None
     ):
         self.status = status
         self.node_results = node_results
         self.outputs = outputs or {}
+        self.run_id = run_id or ""
+        self._node_statuses = node_statuses or {}
+
+    @property
+    def nodes(self) -> List[NodeSummary]:
+        """Convert node_results to list of typed node summaries."""
+        node_list: List[NodeSummary] = []
+        for node_id, result in self.node_results.items():
+            node = NodeSummary(
+                id=node_id,
+                status=result.status,
+                result=result
+            )
+            node_list.append(node)
+        # Add nodes that don't have results yet (still pending)
+        for node_id, status in self._node_statuses.items():
+            if node_id not in self.node_results:
+                node = NodeSummary(
+                    id=node_id,
+                    status=status,
+                    result=None
+                )
+                node_list.append(node)
+        return node_list
 
 
 class WorkflowExecutor:
@@ -142,6 +178,10 @@ class WorkflowExecutor:
             semaphore=asyncio.Semaphore(concurrency_limit),
         )
 
+        # Initialize all nodes to PENDING status
+        for node in workflow_def.nodes:
+            ctx.node_statuses[node.id] = NodeStatus.PENDING
+
         # Get topologically sorted layers
         layers = topological_sort_with_layers(workflow_def.nodes)
 
@@ -170,13 +210,38 @@ class WorkflowExecutor:
                             ))
                 continue
 
+            if ctx.interrupted:
+                # Skip remaining layers when interrupted
+                break
+
             await self._execute_layer(
                 layer, nodes_map, ctx, workflow_def, event_emitter, checkpoint_store, run_id
             )
 
-            # Check if any node triggered a stop
-            if ctx.stopped:
-                continue
+            # Check if any node triggered a stop or interrupt
+            if ctx.stopped or ctx.interrupted:
+                break
+
+        # Mark any remaining PENDING nodes as SKIPPED (when stopped or interrupted)
+        if ctx.stopped or ctx.interrupted:
+            for node_id, status in list(ctx.node_statuses.items()):
+                if status == NodeStatus.PENDING:
+                    error_msg = "Workflow interrupted" if ctx.interrupted else "Workflow stopped due to upstream failure"
+                    ctx.node_results[node_id] = NodeResult(
+                        status=NodeStatus.SKIPPED,
+                        error=error_msg
+                    )
+                    ctx.node_statuses[node_id] = NodeStatus.SKIPPED
+                    # Emit NODE_SKIPPED event
+                    if event_emitter:
+                        from dag_executor.events import EventType, WorkflowEvent
+                        event_emitter.emit(WorkflowEvent(
+                            event_type=EventType.NODE_SKIPPED,
+                            workflow_id=workflow_def.name,
+                            node_id=node_id,
+                            status=NodeStatus.SKIPPED,
+                            timestamp=datetime.now(timezone.utc)
+                        ))
 
         # Shut down shared thread pool
         pool.shutdown(wait=False)
@@ -191,9 +256,17 @@ class WorkflowExecutor:
         workflow_completed_at = datetime.now(timezone.utc)
         workflow_duration_ms = int((workflow_completed_at - workflow_started_at).total_seconds() * 1000)
 
-        # Emit WORKFLOW_COMPLETED or WORKFLOW_FAILED event
+        # Emit WORKFLOW_COMPLETED, WORKFLOW_FAILED, or WORKFLOW_INTERRUPTED event
         if event_emitter:
-            if final_status == WorkflowStatus.COMPLETED:
+            if final_status == WorkflowStatus.PAUSED:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.WORKFLOW_INTERRUPTED,
+                    workflow_id=workflow_def.name,
+                    status=final_status,
+                    duration_ms=workflow_duration_ms,
+                    timestamp=workflow_completed_at
+                ))
+            elif final_status == WorkflowStatus.COMPLETED:
                 event_emitter.emit(WorkflowEvent(
                     event_type=EventType.WORKFLOW_COMPLETED,
                     workflow_id=workflow_def.name,
@@ -225,7 +298,9 @@ class WorkflowExecutor:
         return WorkflowResult(
             status=final_status,
             node_results=ctx.node_results,
-            outputs=outputs
+            outputs=outputs,
+            run_id=run_id,
+            node_statuses=ctx.node_statuses
         )
     
     async def _execute_layer(
@@ -289,7 +364,7 @@ class WorkflowExecutor:
         # Check if checkpointing is enabled for this node (respect node-level checkpoint flag)
         enable_checkpoint = checkpoint_store is not None and node_def.checkpoint is not False
 
-        # Check cache for completed result
+        # Check cache for completed result (skip cache for interrupt nodes on resume)
         if enable_checkpoint and checkpoint_store:
             # Build dependency outputs for cache key
             dependency_outputs = {}
@@ -301,6 +376,7 @@ class WorkflowExecutor:
             content_hash = checkpoint_store.compute_content_hash(node_def, dependency_outputs)
             cached = checkpoint_store.check_cache(workflow_def.name, run_id, node_id, content_hash)
 
+            # Don't restore INTERRUPTED status from cache (node needs to re-execute with resume value)
             if cached and cached.status == NodeStatus.COMPLETED:
                 # Cache hit - restore result and skip execution
                 result = NodeResult(
@@ -473,6 +549,49 @@ class WorkflowExecutor:
                                 custom_function=reducer_def.function
                             )
                             ctx.workflow_state[output_key] = merged
+
+        # Handle INTERRUPTED status
+        if result.status == NodeStatus.INTERRUPTED:
+            # Set interrupted flag
+            ctx.interrupted = True
+
+            # Save interrupt checkpoint
+            if checkpoint_store:
+                from dag_executor.checkpoint import InterruptCheckpoint
+
+                # Get pending nodes (not yet executed)
+                pending_nodes = [
+                    nid for nid, status in ctx.node_statuses.items()
+                    if status == NodeStatus.PENDING
+                ]
+
+                interrupt_checkpoint = InterruptCheckpoint(
+                    node_id=node_id,
+                    message=result.output.get("message", "") if result.output else "",
+                    resume_key=result.output.get("resume_key", "") if result.output else "",
+                    channels=result.output.get("channels", ["terminal"]) if result.output else ["terminal"],
+                    timeout=node_def.timeout,
+                    workflow_state=ctx.workflow_state.copy(),
+                    pending_nodes=pending_nodes
+                )
+                checkpoint_store.save_interrupt(workflow_def.name, run_id, interrupt_checkpoint)
+
+            # Emit NODE_INTERRUPTED event
+            if event_emitter:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.NODE_INTERRUPTED,
+                    workflow_id=workflow_def.name,
+                    node_id=node_id,
+                    status=NodeStatus.INTERRUPTED,
+                    duration_ms=duration_ms,
+                    metadata={
+                        "message": result.output.get("message", "") if result.output else "",
+                        "resume_key": result.output.get("resume_key", "") if result.output else "",
+                        "channels": result.output.get("channels", ["terminal"]) if result.output else ["terminal"]
+                    },
+                    timestamp=completed_at
+                ))
+            return
 
         # Emit NODE_COMPLETED or NODE_FAILED event
         if event_emitter:
@@ -701,21 +820,25 @@ class WorkflowExecutor:
     
     def _compute_workflow_status(self, ctx: ExecutionContext) -> WorkflowStatus:
         """Compute final workflow status.
-        
+
         Args:
             ctx: Execution context
-        
+
         Returns:
             Final workflow status
         """
         statuses = ctx.node_statuses.values()
-        
+
+        # Check for interrupted nodes first (PAUSED takes priority)
+        if any(status == NodeStatus.INTERRUPTED for status in statuses):
+            return WorkflowStatus.PAUSED
+
         if any(status == NodeStatus.FAILED for status in statuses):
             return WorkflowStatus.FAILED
-        
+
         if all(status in {NodeStatus.COMPLETED, NodeStatus.SKIPPED} for status in statuses):
             return WorkflowStatus.COMPLETED
-        
+
         return WorkflowStatus.FAILED
     
     def _extract_outputs(
