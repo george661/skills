@@ -128,20 +128,9 @@ class WorkflowValidator:
         result: ValidationResult,
     ) -> None:
         """Check for cycles, missing deps, unreachable nodes."""
-        # Cycle detection
-        try:
-            topological_sort_with_layers(workflow_def.nodes)
-        except CycleDetectedError as e:
-            result.issues.append(ValidationIssue(
-                severity="error",
-                node_id=None,
-                code="cycle_detected",
-                message=f"DAG contains a cycle: {e}",
-            ))
-            return  # Can't do further graph checks with cycles
-
-        # Missing dependency references
+        # Missing dependency references (check BEFORE topological sort to avoid ValueError)
         all_ids = set(nodes_map.keys())
+        has_missing_refs = False
         for node in workflow_def.nodes:
             for dep_id in node.depends_on:
                 if dep_id not in all_ids:
@@ -151,6 +140,33 @@ class WorkflowValidator:
                         code="missing_dependency",
                         message=f"Depends on '{dep_id}' which does not exist",
                     ))
+                    has_missing_refs = True
+
+        # Check edge targets (also before topological sort)
+        for node in workflow_def.nodes:
+            if node.edges:
+                for edge in node.edges:
+                    if edge.target not in all_ids:
+                        result.issues.append(ValidationIssue(
+                            severity="error",
+                            node_id=node.id,
+                            code="invalid_edge_target",
+                            message=f"Edge target '{edge.target}' does not exist",
+                        ))
+                        has_missing_refs = True
+
+        # Cycle detection (skip if there are missing refs)
+        if not has_missing_refs:
+            try:
+                topological_sort_with_layers(workflow_def.nodes)
+            except CycleDetectedError as e:
+                result.issues.append(ValidationIssue(
+                    severity="error",
+                    node_id=None,
+                    code="cycle_detected",
+                    message=f"DAG contains a cycle: {e}",
+                ))
+                return  # Can't do further graph checks with cycles
 
         # Unreachable nodes (no path from any root)
         roots = {n.id for n in workflow_def.nodes if not n.depends_on}
@@ -297,18 +313,14 @@ class WorkflowValidator:
         nodes_map: Dict[str, NodeDef],
         result: ValidationResult,
     ) -> None:
-        """Verify conditional edge targets exist in the workflow."""
-        all_ids = set(nodes_map.keys())
-        for node in workflow_def.nodes:
-            if node.edges:
-                for edge in node.edges:
-                    if edge.target not in all_ids:
-                        result.issues.append(ValidationIssue(
-                            severity="error",
-                            node_id=node.id,
-                            code="invalid_edge_target",
-                            message=f"Edge target '{edge.target}' does not exist",
-                        ))
+        """Verify conditional edge targets exist in the workflow.
+
+        Note: Edge target existence is now checked in _check_graph_structure
+        before topological_sort to avoid ValueError. This method is kept
+        for future edge consistency checks (e.g., default edge validation).
+        """
+        # Edge target existence is checked in _check_graph_structure
+        pass
 
     def _check_trigger_rules(
         self,

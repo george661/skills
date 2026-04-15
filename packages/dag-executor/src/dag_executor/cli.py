@@ -4,6 +4,7 @@ import json
 import shutil
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dag_executor import (
@@ -20,6 +21,7 @@ from dag_executor import (
     EventEmitter,
     StreamMode,
 )
+from dag_executor.validator import WorkflowValidator
 
 SUBCOMMANDS = {"replay", "history", "inspect"}
 
@@ -290,18 +292,50 @@ def parse_inputs(input_args: List[str]) -> Dict[str, Any]:
 
 def run_dry_run(workflow_path: str) -> None:
     """Validate workflow and print execution plan.
-    
+
     Args:
         workflow_path: Path to workflow YAML file
     """
-    # Load and validate workflow
+    # Load workflow
     workflow_def = load_workflow(workflow_path)
-    
+
+    # Run pre-flight validation
+    workflow_path_obj = Path(workflow_path)
+    parent_dir = workflow_path_obj.parent
+    validator = WorkflowValidator(
+        skills_dir=parent_dir / "skills" if (parent_dir / "skills").exists() else None,
+        commands_dir=parent_dir / "commands" if (parent_dir / "commands").exists() else None,
+        workflows_dir=parent_dir / "workflows" if (parent_dir / "workflows").exists() else None,
+    )
+    validation_result = validator.validate(workflow_def)
+
+    # Print validation summary
+    print(f"Validation: {validation_result.summary()}")
+    print()
+
+    # If there are errors, print them and exit
+    if not validation_result.passed:
+        print("Validation Errors:")
+        for error in validation_result.errors:
+            node_str = f"[{error.node_id}] " if error.node_id else ""
+            print(f"  ✗ {node_str}{error.message}")
+        print()
+        sys.exit(1)
+
+    # If there are warnings, print them
+    if validation_result.warnings:
+        print("Validation Warnings:")
+        for warning in validation_result.warnings:
+            node_str = f"[{warning.node_id}] " if warning.node_id else ""
+            print(f"  ⚠ {node_str}{warning.message}")
+        print()
+
+    # Print workflow info
     print(f"✓ Workflow '{workflow_def.name}' is valid")
     print(f"  Checkpoint prefix: {workflow_def.config.checkpoint_prefix}")
     print(f"  Nodes: {len(workflow_def.nodes)}")
     print()
-    
+
     # Compute execution plan (topological layers)
     layers = topological_sort_with_layers(workflow_def.nodes)
 
