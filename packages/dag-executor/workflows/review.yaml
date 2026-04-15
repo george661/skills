@@ -1,0 +1,449 @@
+---
+# Review Command Workflow
+#
+# Converts the /review command into a YAML DAG. Performs a thorough PR code
+# review across 10 phases: parse input, fetch PR, find Jira issue, run local
+# validation, analyze code quality + security, verify requirements coverage,
+# check test adequacy, post inline comments, post PR summary, and post Jira
+# summary.
+#
+# Verdict determination:
+#   The code_quality node produces a verdict (APPROVED or REQUIRES_REWORK)
+#   based on line-by-line diff analysis. requirements_coverage and
+#   test_adequacy can escalate to REQUIRES_REWORK if gaps are found.
+#   The final verdict flows through post_inline_comments into
+#   post_pr_summary, which posts the authoritative verdict on the PR.
+#
+# Failure strategy:
+#   - Hard stops: branch_sync (conflicts must be resolved manually),
+#     fetch_pr (can't review without a diff).
+#   - Soft continues: find_jira_issue (PR may lack an issue key),
+#     local_validation (tests may not exist), post_jira_summary
+#     (Jira outage should not block the PR comment).
+
+name: Review Command Workflow
+config:
+  checkpoint_prefix: review
+  worktree: false
+  labels:
+    on_failure: "outcome:review-failed"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command review"
+      run_on: [completed, failed]
+
+inputs:
+  repo:
+    type: string
+    required: true
+  pr_number:
+    type: string
+    required: true
+
+nodes:
+  # --------------------------------------------------------------------------
+  # Phase 0.5: Branch Sync
+  # Merge the feature branch with main so the review reflects the actual
+  # merge state. If there are conflicts, stop — the developer must resolve
+  # them before re-running /review.
+  # --------------------------------------------------------------------------
+  - id: branch_sync
+    name: Branch Sync
+    type: bash
+    script: |
+      cd $PROJECT_ROOT/$repo
+      git fetch origin main
+      behind=$(git rev-list --count HEAD..origin/main)
+      if [ "$behind" -gt 0 ]; then
+        echo "[branch-sync] Branch is $behind commit(s) behind main — merging"
+        git merge origin/main --no-edit
+        git push
+        echo "[branch-sync] Merged $behind commit(s) from main and pushed"
+      else
+        echo "[branch-sync] Branch is up to date with main"
+      fi
+    on_failure: stop
+    timeout: 120
+
+  # --------------------------------------------------------------------------
+  # Phase 1: Parse Input
+  # Extract repo slug and PR number from arguments. Determine VCS provider
+  # (Bitbucket vs GitHub) so downstream nodes use the correct API.
+  # --------------------------------------------------------------------------
+  - id: parse_input
+    name: Parse Input
+    type: bash
+    depends_on:
+      - branch_sync
+    script: |
+      # Determine VCS provider from repo config
+      cd $PROJECT_ROOT/$repo
+      remote_url=$(git remote get-url origin 2>/dev/null || echo "")
+      if echo "$remote_url" | grep -q "bitbucket"; then
+        provider="bitbucket"
+      elif echo "$remote_url" | grep -q "github"; then
+        provider="github"
+      else
+        provider="unknown"
+      fi
+      echo "{\"repo\": \"$repo\", \"pr_number\": $pr_number, \"provider\": \"$provider\"}"
+    output_format: json
+
+  # --------------------------------------------------------------------------
+  # Phase 2: Fetch PR Details
+  # Retrieve PR metadata (title, description, author, diff) via the VCS
+  # skill. This is a hard dependency — review cannot proceed without a diff.
+  # --------------------------------------------------------------------------
+  - id: fetch_pr
+    name: Fetch PR Details
+    type: bash
+    depends_on:
+      - parse_input
+    script: |
+      cd $PROJECT_ROOT && pr=$(npx tsx ~/.claude/skills/vcs/get_pull_request.ts \
+        "{\"repo\": \"$repo\", \"pr_number\": $pr_number}")
+      diff=$(npx tsx ~/.claude/skills/vcs/get_pull_request_diff.ts \
+        "{\"repo\": \"$repo\", \"pr_number\": $pr_number}")
+      echo "$pr" | jq --arg diff "$diff" '. + {diff: $diff}'
+    output_format: json
+    on_failure: stop
+
+  # --------------------------------------------------------------------------
+  # Phase 3: Find Related Jira Issue
+  # Extract issue key from PR title/body (e.g. PROJ-123) and fetch issue
+  # details from Jira. If no issue key found or Jira is unreachable, continue
+  # without requirements data — the review will skip coverage verification.
+  # --------------------------------------------------------------------------
+  - id: find_jira_issue
+    name: Find Related Jira Issue
+    type: bash
+    depends_on:
+      - fetch_pr
+    script: |
+      # Extract issue key from PR title or description
+      pr_title=$(echo '$fetch_pr' | jq -r '.title // ""')
+      pr_body=$(echo '$fetch_pr' | jq -r '.description // ""')
+      issue_key=$(echo "$pr_title $pr_body" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+      if [ -z "$issue_key" ]; then
+        echo "{\"found\": false, \"issue_key\": null, \"issue\": null}"
+        exit 0
+      fi
+      cd $PROJECT_ROOT && issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
+        "{\"issue_key\": \"$issue_key\", \"fields\": \"summary,status,labels,description\"}" 2>/dev/null) || true
+      if [ -z "$issue" ] || echo "$issue" | jq -e '.errors' >/dev/null 2>&1; then
+        echo "{\"found\": false, \"issue_key\": \"$issue_key\", \"issue\": null}"
+      else
+        echo "$issue" | jq "{found: true, issue_key: \"$issue_key\", issue: .}"
+      fi
+    output_format: json
+    on_failure: continue
+
+  # --------------------------------------------------------------------------
+  # Phase 4: Run Local Validation
+  # Execute the repo's test suite locally. Failures here do not block the
+  # review — they are reported as findings in the PR summary.
+  # --------------------------------------------------------------------------
+  - id: local_validation
+    name: Run Local Validation
+    type: bash
+    depends_on:
+      - find_jira_issue
+    trigger_rule: all_done
+    script: |
+      cd $PROJECT_ROOT/$repo
+      # Source validation commands from TESTING.md or VALIDATION.md if present
+      if [ -f TESTING.md ]; then
+        echo "[validation] Running tests per TESTING.md"
+      elif [ -f VALIDATION.md ]; then
+        echo "[validation] Running tests per VALIDATION.md"
+      fi
+      # Run standard validation
+      if [ -f Makefile ] && grep -q "^test:" Makefile; then
+        make test 2>&1 || echo '{"validation_passed": false}'
+      elif [ -f package.json ]; then
+        npm test 2>&1 || echo '{"validation_passed": false}'
+      elif [ -f go.mod ]; then
+        go test ./... 2>&1 || echo '{"validation_passed": false}'
+      else
+        echo '{"validation_passed": "skipped", "reason": "no test runner detected"}'
+      fi
+    timeout: 300
+    on_failure: continue
+    checkpoint: true
+    label: "step:validating"
+
+  # --------------------------------------------------------------------------
+  # Phase 5: Analyze Code Quality & Security
+  # Line-by-line diff analysis using Opus. Checks for:
+  #   - Code quality issues (naming, complexity, dead code, error handling)
+  #   - OWASP Top 10 security vulnerabilities
+  #   - Architectural concerns (coupling, separation of concerns)
+  #
+  # Produces a verdict: APPROVED or REQUIRES_REWORK with specific findings.
+  # --------------------------------------------------------------------------
+  - id: code_quality
+    name: Analyze Code Quality and Security
+    type: prompt
+    depends_on:
+      - local_validation
+    trigger_rule: all_done
+    prompt: |
+      Perform a thorough code review on the following PR diff.
+
+      PR: $repo #$pr_number
+      Title: $fetch_pr.title
+      Diff:
+      $fetch_pr.diff
+
+      Local validation result: $local_validation
+
+      Analyze line-by-line for:
+      1. Code quality: naming, complexity, dead code, error handling, logging
+      2. Security (OWASP Top 10): injection, broken auth, sensitive data exposure,
+         XXE, broken access control, misconfig, XSS, insecure deserialization,
+         vulnerable components, insufficient logging
+      3. Architecture: coupling, separation of concerns, API contract changes
+      4. Performance: N+1 queries, unbounded loops, missing pagination
+
+      For each finding, produce:
+        - severity: critical | major | minor | info
+        - file: path to file
+        - line: line number in the diff
+        - message: concise description of the issue
+        - suggestion: how to fix it
+
+      Output JSON:
+      {
+        "verdict": "APPROVED" or "REQUIRES_REWORK",
+        "findings": [...],
+        "summary": "one-paragraph overall assessment"
+      }
+
+      Verdict rules:
+      - Any critical finding -> REQUIRES_REWORK
+      - 3+ major findings -> REQUIRES_REWORK
+      - Otherwise -> APPROVED
+    model: opus
+    dispatch: inline
+    output_format: json
+    checkpoint: true
+    label: "step:reviewing"
+
+  # --------------------------------------------------------------------------
+  # Phase 6: Verify Requirements Coverage
+  # Cross-reference the implementation against Jira acceptance criteria.
+  # Only meaningful when a Jira issue was found in Phase 3. Uses all_done
+  # trigger rule so it runs even if find_jira_issue soft-failed.
+  # --------------------------------------------------------------------------
+  - id: requirements_coverage
+    name: Verify Requirements Coverage
+    type: prompt
+    depends_on:
+      - code_quality
+      - find_jira_issue
+    trigger_rule: all_done
+    prompt: |
+      Verify that the PR implementation satisfies the Jira requirements.
+
+      PR diff summary: $code_quality.summary
+      Jira issue: $find_jira_issue
+
+      If no Jira issue was found, output:
+      {"covered": "skipped", "reason": "no Jira issue linked"}
+
+      Otherwise, for each acceptance criterion in the Jira issue:
+      1. Determine if the diff addresses it (fully, partially, or not at all)
+      2. Note any acceptance criteria with no corresponding code changes
+
+      Output JSON:
+      {
+        "covered": true/false,
+        "criteria": [
+          {"criterion": "...", "status": "fully|partially|missing", "evidence": "..."}
+        ],
+        "gaps": ["...list of unaddressed criteria..."]
+      }
+
+      If any criterion is "missing", escalate verdict to REQUIRES_REWORK.
+    model: opus
+    dispatch: inline
+
+  # --------------------------------------------------------------------------
+  # Phase 7: Check Test Adequacy
+  # Verify that test coverage matches the scope of code changes. New public
+  # functions, changed business logic, and bug fixes should have tests.
+  # --------------------------------------------------------------------------
+  - id: test_adequacy
+    name: Check Test Adequacy
+    type: prompt
+    depends_on:
+      - code_quality
+    prompt: |
+      Assess whether the test changes in this PR adequately cover the
+      code changes.
+
+      PR diff findings: $code_quality.findings
+      PR diff summary: $code_quality.summary
+      Local validation result: $local_validation
+
+      Check:
+      1. Every new public function/method has a corresponding test
+      2. Changed business logic has updated tests
+      3. Bug fixes include a regression test
+      4. Edge cases are covered (null, empty, boundary values)
+      5. Error paths are tested
+
+      Output JSON:
+      {
+        "adequate": true/false,
+        "coverage_gaps": ["...list of untested areas..."],
+        "suggestions": ["...specific tests to add..."]
+      }
+
+      If adequate is false, this escalates the verdict to REQUIRES_REWORK.
+    model: opus
+    dispatch: inline
+
+  # --------------------------------------------------------------------------
+  # Phase 8: Post Inline Comments
+  # Leave specific comments on problematic lines in the PR. Each finding
+  # from code_quality, requirements_coverage, and test_adequacy that
+  # references a file/line gets posted as an inline comment.
+  # --------------------------------------------------------------------------
+  - id: post_inline_comments
+    name: Post Inline Comments
+    type: bash
+    depends_on:
+      - code_quality
+      - requirements_coverage
+      - test_adequacy
+    script: |
+      cd $PROJECT_ROOT
+      count=0
+      # Post inline comments for each finding that has file + line
+      findings=$(echo '$code_quality' | jq -c '.findings[]? // empty')
+      for finding in $findings; do
+        file=$(echo "$finding" | jq -r '.file // empty')
+        line=$(echo "$finding" | jq -r '.line // empty')
+        msg=$(echo "$finding" | jq -r '.message // empty')
+        sev=$(echo "$finding" | jq -r '.severity // "info"')
+        suggestion=$(echo "$finding" | jq -r '.suggestion // empty')
+        if [ -n "$file" ] && [ -n "$line" ] && [ "$line" != "null" ]; then
+          comment_body="**[$sev]** $msg"
+          if [ -n "$suggestion" ] && [ "$suggestion" != "null" ]; then
+            comment_body="$comment_body\n\n_Suggestion:_ $suggestion"
+          fi
+          tmpfile=$(mktemp)
+          echo "$comment_body" > "$tmpfile"
+          body=$(cat "$tmpfile")
+          rm -f "$tmpfile"
+          npx tsx ~/.claude/skills/vcs/add_pull_request_comment.ts \
+            "{\"repo\": \"$repo\", \"pr_number\": $pr_number, \"comment_text\": \"$body\", \"path\": \"$file\", \"line\": $line}" 2>/dev/null || true
+          count=$((count + 1))
+        fi
+      done
+      echo "{\"count\": $count}"
+    output_format: json
+
+  # --------------------------------------------------------------------------
+  # Phase 9: Post PR Summary
+  # Post an overall verdict and key findings as a top-level PR comment.
+  # The verdict is the authoritative outcome of the review.
+  # --------------------------------------------------------------------------
+  - id: post_pr_summary
+    name: Post PR Summary
+    type: bash
+    depends_on:
+      - post_inline_comments
+    script: |
+      cd $PROJECT_ROOT
+
+      # Determine final verdict — escalate if requirements or tests failed
+      verdict=$(echo '$code_quality' | jq -r '.verdict // "APPROVED"')
+      req_covered=$(echo '$requirements_coverage' | jq -r '.covered // "skipped"')
+      test_adequate=$(echo '$test_adequacy' | jq -r '.adequate // true')
+
+      if [ "$req_covered" = "false" ]; then
+        verdict="REQUIRES_REWORK"
+      fi
+      if [ "$test_adequate" = "false" ]; then
+        verdict="REQUIRES_REWORK"
+      fi
+
+      quality_summary=$(echo '$code_quality' | jq -r '.summary // "No summary"')
+      inline_count=$(echo '$post_inline_comments' | jq -r '.count // 0')
+      req_gaps=$(echo '$requirements_coverage' | jq -r '.gaps // [] | join(", ")' 2>/dev/null || echo "none")
+      test_gaps=$(echo '$test_adequacy' | jq -r '.coverage_gaps // [] | join(", ")' 2>/dev/null || echo "none")
+
+      # Build summary comment
+      comment="## Code Review: **$verdict**
+
+      **Quality:** $quality_summary
+
+      **Inline comments posted:** $inline_count
+
+      **Requirements gaps:** ${req_gaps:-none}
+
+      **Test coverage gaps:** ${test_gaps:-none}
+
+      ---
+      _Automated review by /review workflow_"
+
+      tmpfile=$(mktemp)
+      printf '%s' "$comment" > "$tmpfile"
+      body=$(cat "$tmpfile")
+      rm -f "$tmpfile"
+
+      npx tsx ~/.claude/skills/vcs/add_pull_request_comment.ts \
+        "{\"repo\": \"$repo\", \"pr_number\": $pr_number, \"comment_text\": $(echo "$body" | jq -Rs .)}"
+
+      echo "{\"verdict\": \"$verdict\", \"inline_count\": $inline_count}"
+    output_format: json
+
+  # --------------------------------------------------------------------------
+  # Phase 10: Post Jira Summary
+  # Post the verdict and a link to the PR review on the related Jira issue.
+  # Skipped gracefully if no Jira issue was found or Jira is unreachable.
+  # --------------------------------------------------------------------------
+  - id: post_jira_summary
+    name: Post Jira Summary
+    type: bash
+    depends_on:
+      - post_pr_summary
+      - find_jira_issue
+    trigger_rule: all_done
+    script: |
+      cd $PROJECT_ROOT
+      issue_key=$(echo '$find_jira_issue' | jq -r '.issue_key // empty')
+      found=$(echo '$find_jira_issue' | jq -r '.found // false')
+
+      if [ "$found" != "true" ] || [ -z "$issue_key" ]; then
+        echo "{\"posted\": false, \"reason\": \"no Jira issue linked\"}"
+        exit 0
+      fi
+
+      verdict=$(echo '$post_pr_summary' | jq -r '.verdict // "UNKNOWN"')
+      inline_count=$(echo '$post_pr_summary' | jq -r '.inline_count // 0')
+
+      comment="Code Review: *$verdict*
+
+      PR: $repo #$pr_number
+      Inline comments: $inline_count
+
+      See PR for full review details."
+
+      npx tsx ~/.claude/skills/issues/add_comment.ts \
+        "{\"issue_key\": \"$issue_key\", \"body\": $(echo "$comment" | jq -Rs .)}" 2>/dev/null || true
+
+      echo "{\"posted\": true, \"issue_key\": \"$issue_key\", \"verdict\": \"$verdict\"}"
+    output_format: json
+    on_failure: continue
+
+outputs:
+  verdict:
+    node: post_pr_summary
+    field: verdict
+  comments_count:
+    node: post_inline_comments
+    field: count

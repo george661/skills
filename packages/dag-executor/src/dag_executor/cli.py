@@ -24,20 +24,168 @@ from dag_executor import (
 SUBCOMMANDS = {"replay", "history", "inspect"}
 
 
+def _build_list_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+    """Add 'list' subcommand for workflow catalog."""
+    list_parser = subparsers.add_parser(
+        "list",
+        help="List available workflows in a directory",
+    )
+    list_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        help="Directory to scan for .yaml workflow files (default: current dir)",
+    )
+    list_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Output as JSON",
+    )
+
+
+def _build_info_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+    """Add 'info' subcommand for workflow details."""
+    info_parser = subparsers.add_parser(
+        "info",
+        help="Show detailed info about a workflow",
+    )
+    info_parser.add_argument(
+        "workflow",
+        help="Path to workflow YAML file",
+    )
+
+
+def run_list(directory: str, json_output: bool = False) -> None:
+    """List all valid workflows in a directory.
+
+    Scans for .yaml files, attempts to parse each as a WorkflowDef,
+    and displays a catalog of valid workflows.
+
+    Args:
+        directory: Directory to scan
+        json_output: If True, output as JSON
+    """
+    from pathlib import Path
+
+    scan_dir = Path(directory)
+    if not scan_dir.is_dir():
+        print(f"Error: '{directory}' is not a directory", file=sys.stderr)
+        sys.exit(1)
+
+    workflows: List[Dict[str, Any]] = []
+    for yaml_file in sorted(scan_dir.glob("*.yaml")):
+        try:
+            wf = load_workflow(str(yaml_file))
+            workflows.append({
+                "file": yaml_file.name,
+                "name": wf.name,
+                "nodes": len(wf.nodes),
+                "inputs": list(wf.inputs.keys()),
+                "checkpoint_prefix": wf.config.checkpoint_prefix,
+            })
+        except (ValueError, Exception):
+            continue  # Skip non-workflow YAML files
+
+    if json_output:
+        print(json.dumps(workflows, indent=2))
+    else:
+        if not workflows:
+            print("No workflows found.")
+            return
+        print(f"{'File':<30} {'Name':<35} {'Nodes':>5}  Inputs")
+        print("-" * 90)
+        for entry in workflows:
+            inputs_str = ", ".join(str(i) for i in entry["inputs"]) if entry["inputs"] else "(none)"
+            print(f"{entry['file']:<30} {entry['name']:<35} {entry['nodes']:>5}  {inputs_str}")
+
+
+def run_info(workflow_path: str) -> None:
+    """Show detailed info about a workflow.
+
+    Args:
+        workflow_path: Path to workflow YAML file
+    """
+    workflow_def = load_workflow(workflow_path)
+
+    print(f"Workflow: {workflow_def.name}")
+    print(f"File: {workflow_path}")
+    print(f"Checkpoint prefix: {workflow_def.config.checkpoint_prefix}")
+    print(f"Worktree: {workflow_def.config.worktree}")
+    print()
+
+    # Inputs
+    if workflow_def.inputs:
+        print("Inputs:")
+        for name, inp in workflow_def.inputs.items():
+            req = "required" if inp.required else "optional"
+            default = f" (default: {inp.default})" if inp.default is not None else ""
+            pattern = f" [pattern: {inp.pattern}]" if inp.pattern else ""
+            print(f"  {name}: {inp.type} ({req}){default}{pattern}")
+        print()
+
+    # Node summary by type
+    type_counts: Dict[str, int] = {}
+    for node in workflow_def.nodes:
+        type_counts[node.type] = type_counts.get(node.type, 0) + 1
+    print(f"Nodes: {len(workflow_def.nodes)} total")
+    for ntype, count in sorted(type_counts.items()):
+        print(f"  {ntype}: {count}")
+    print()
+
+    # Execution plan
+    layers = topological_sort_with_layers(workflow_def.nodes)
+    node_map = {n.id: n for n in workflow_def.nodes}
+    print("Execution Plan:")
+    for layer_idx, layer_ids in enumerate(layers):
+        parallel = " (parallel)" if len(layer_ids) > 1 else ""
+        print(f"  Layer {layer_idx}{parallel}:")
+        for nid in layer_ids:
+            node = node_map[nid]
+            print(f"    {nid}: {node.name} [{node.type}]")
+
+    # Outputs
+    if workflow_def.outputs:
+        print()
+        print("Outputs:")
+        for name, out in workflow_def.outputs.items():
+            field = f".{out.field}" if out.field else ""
+            print(f"  {name}: from {out.node}{field}")
+
+    # Exit hooks
+    if workflow_def.config.on_exit:
+        print()
+        print("Exit Hooks:")
+        for hook in workflow_def.config.on_exit:
+            runs = ", ".join(hook.run_on)
+            print(f"  {hook.id}: {hook.type} (runs on: {runs})")
+
+
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     """Parse CLI arguments.
-    
+
     Args:
         argv: Argument list (defaults to sys.argv[1:])
-    
+
     Returns:
         Parsed arguments namespace
     """
+    args_list = argv if argv is not None else sys.argv[1:]
+
+    # Check if first arg is a subcommand (list, info) — handle separately
+    # to avoid breaking the original `dag-exec workflow.yaml` syntax
+    if args_list and args_list[0] in ("list", "info"):
+        sub_parser = argparse.ArgumentParser(prog="dag-exec")
+        sub = sub_parser.add_subparsers(dest="subcommand")
+        _build_list_parser(sub)
+        _build_info_parser(sub)
+        return sub_parser.parse_args(args_list)
+
     parser = argparse.ArgumentParser(
         prog="dag-exec",
         description="Execute DAG workflows from YAML files",
     )
-    
+
     parser.add_argument(
         "workflow",
         help="Path to workflow YAML file",
@@ -430,7 +578,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                 return run_replay(argv[1:])
 
         args = parse_args(argv)
-        
+
+        # Subcommand dispatch (list, info)
+        subcommand = getattr(args, "subcommand", None)
+        if subcommand == "list":
+            run_list(args.directory, args.json_output)
+            sys.exit(0)
+        elif subcommand == "info":
+            run_info(args.workflow)
+            sys.exit(0)
+
         # Dry-run mode
         if args.dry_run:
             run_dry_run(args.workflow)

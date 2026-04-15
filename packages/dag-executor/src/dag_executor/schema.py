@@ -315,6 +315,39 @@ class LabelsConfig(BaseModel):
     on_failure: Optional[str] = Field(default=None, description="Label to apply when workflow fails")
 
 
+class ExitHookDef(BaseModel):
+    """Definition for a workflow exit hook — runs on completion or failure.
+
+    Inspired by Argo Workflows' exit hooks: guaranteed cleanup actions
+    that execute regardless of workflow outcome.
+
+    Example YAML:
+        config:
+          on_exit:
+            - id: cleanup_worktree
+              type: bash
+              script: "git worktree remove ..."
+              run_on: [completed, failed]
+            - id: reset_labels
+              type: bash
+              script: "..."
+              run_on: [failed]
+    """
+    model_config = {"extra": "forbid"}
+
+    id: str = Field(..., description="Unique exit hook identifier")
+    name: Optional[str] = Field(default=None, description="Human-readable name")
+    type: str = Field(..., description="Runner type (bash, skill)")
+    script: Optional[str] = Field(default=None, description="Bash script (for type=bash)")
+    skill: Optional[str] = Field(default=None, description="Skill path (for type=skill)")
+    params: Optional[Dict[str, Any]] = Field(default=None, description="Skill params")
+    run_on: List[str] = Field(
+        default_factory=lambda: ["completed", "failed"],
+        description="Workflow statuses that trigger this hook (completed, failed, paused)"
+    )
+    timeout: int = Field(default=60, description="Timeout in seconds")
+
+
 class WorkflowConfig(BaseModel):
     """Workflow-level configuration."""
     model_config = {"extra": "forbid"}
@@ -322,6 +355,10 @@ class WorkflowConfig(BaseModel):
     checkpoint_prefix: str = Field(..., description="Prefix for checkpoint files")
     worktree: bool = Field(default=False, description="Use worktree isolation")
     labels: LabelsConfig = Field(default_factory=LabelsConfig, description="Label lifecycle configuration")
+    on_exit: List[ExitHookDef] = Field(
+        default_factory=list,
+        description="Exit hooks — guaranteed cleanup actions on workflow completion or failure"
+    )
 
 
 class WorkflowDef(BaseModel):

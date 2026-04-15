@@ -1,0 +1,393 @@
+---
+name: Plan Command Workflow
+config:
+  checkpoint_prefix: plan
+  worktree: false
+  labels:
+    on_failure: "outcome:plan-failed"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command plan"
+      run_on: [completed, failed]
+
+inputs:
+  epic_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+nodes:
+  # ──────────────────────────────────────────────────────────
+  # Phase 0: Initialize
+  # ──────────────────────────────────────────────────────────
+  - id: init_session
+    name: Initialize Planning Session
+    type: bash
+    label: "step:planning"
+    script: |
+      # Load AgentDB patterns for planning context
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts \
+        "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"plan-$epic_key\", \"k\": 3}"
+      # Set step label on Jira
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
+      labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not)) + ["step:planning"] | @json')
+      npx tsx ~/.claude/skills/jira/update_issue.ts "{\"issue_key\": \"$epic_key\", \"labels\": $labels, \"notify_users\": false}"
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 0.5: Design Discovery
+  # Classify the work type and search for existing design
+  # sessions that may inform the PRP.
+  # ──────────────────────────────────────────────────────────
+  - id: design_discovery
+    name: Design Discovery
+    type: prompt
+    depends_on:
+      - init_session
+    prompt: |
+      Classify the work type for Epic $epic_key and search for
+      existing design sessions. Determine if this is net-new
+      development, enhancement, migration, or infrastructure work.
+      Search AgentDB and design artifacts for prior decisions.
+      Output: { work_type, design_sessions[], prior_decisions[] }
+    model: opus
+    dispatch: inline
+    output_format: json
+    checkpoint: true
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 1: Fetch Epic from Jira
+  # ──────────────────────────────────────────────────────────
+  - id: fetch_epic
+    name: Fetch Epic from Jira
+    type: bash
+    depends_on:
+      - design_discovery
+    on_failure: stop
+    output_format: json
+    script: |
+      npx tsx ~/.claude/skills/jira/get_issue.ts \
+        "{\"issue_key\": \"$epic_key\", \"fields\": \"summary,description,labels,status,issuelinks,subtasks\"}"
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 1.5: Domain Model
+  # Map bounded contexts and propose CML changes. Skipped
+  # when TENANT_DOMAIN_PATH is not set (on_failure: continue).
+  # ──────────────────────────────────────────────────────────
+  - id: domain_design
+    name: Domain Model Design
+    type: prompt
+    depends_on:
+      - fetch_epic
+    on_failure: continue
+    checkpoint: true
+    prompt: |
+      Map the Epic $epic_key to bounded contexts from the domain
+      model at $TENANT_DOMAIN_PATH. Identify affected aggregates,
+      commands, events, and services. Propose CML changes if the
+      epic introduces new domain concepts. Skip if TENANT_DOMAIN_PATH
+      is unset.
+    model: opus
+    dispatch: inline
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 1.7: Repo Requirements
+  # Extract TESTING.md, VALIDATION.md, CLAUDE.md from each
+  # affected repo so the PRP author knows the constraints.
+  # ──────────────────────────────────────────────────────────
+  - id: read_repo_requirements
+    name: Read Repo Requirements
+    type: prompt
+    depends_on:
+      - domain_design
+    trigger_rule: all_done
+    output_format: json
+    checkpoint: true
+    prompt: |
+      For each repo affected by Epic $epic_key, read TESTING.md,
+      VALIDATION.md, and CLAUDE.md. Extract validation commands,
+      testing patterns, CI pipeline type, and code standards.
+      Output a structured map of repo -> requirements.
+    model: opus
+    dispatch: inline
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 2: Create PRP
+  # Draft the Product Requirements Plan document. Runs on a
+  # local Sonnet model for cost efficiency on long-form writing.
+  # ──────────────────────────────────────────────────────────
+  - id: create_prp
+    name: Create PRP Document
+    type: prompt
+    depends_on:
+      - read_repo_requirements
+    dispatch: local
+    checkpoint: true
+    label: "step:authoring"
+    prompt: |
+      Draft a Product Requirements Plan (PRP) for Epic $epic_key.
+      Use the Epic description, domain model analysis, repo
+      requirements, and design discovery results. Structure the
+      PRP with: Overview, Goals, Scope, Technical Design, Stories
+      breakdown, Acceptance Criteria, Testing Strategy, Rollout
+      Plan, and Risk Assessment.
+    model: sonnet
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 2.5: Design Integration
+  # Verify PRP does not deviate from prior design decisions.
+  # Append Design Artifacts section to the PRP.
+  # ──────────────────────────────────────────────────────────
+  - id: design_integration
+    name: Design Integration Check
+    type: prompt
+    depends_on:
+      - create_prp
+    prompt: |
+      Compare the PRP for $epic_key against prior design sessions
+      from design_discovery. Flag any deviations from established
+      decisions. Append a "Design Artifacts" section to the PRP
+      linking relevant design sessions, mockups, and contracts.
+    model: opus
+    dispatch: inline
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 2.8: Walking Skeleton
+  # Create, review, and optionally fix the walking skeleton.
+  #
+  # SKELETON GATE PATTERN:
+  #   create_skeleton -> review_skeleton -> skeleton_gate
+  #     - If APPROVED: skeleton_gate succeeds, fix_skeleton is
+  #       skipped, first_review runs via one_success on
+  #       [fix_skeleton, skeleton_gate].
+  #     - If REJECTED: skeleton_gate fails (on_failure: continue),
+  #       fix_skeleton runs with retry, first_review runs after
+  #       fix_skeleton completes via one_success.
+  # ──────────────────────────────────────────────────────────
+  - id: create_skeleton
+    name: Create Walking Skeleton
+    type: command
+    command: create-skeleton
+    args:
+      - "$epic_key"
+    depends_on:
+      - design_integration
+    dispatch: local
+
+  - id: review_skeleton
+    name: Review Walking Skeleton
+    type: command
+    command: review-skeleton
+    args:
+      - "$epic_key"
+    depends_on:
+      - create_skeleton
+    dispatch: inline
+
+  - id: skeleton_gate
+    name: Skeleton Approval Gate
+    type: gate
+    depends_on:
+      - review_skeleton
+    condition: "$review_skeleton.verdict == 'APPROVED'"
+    on_failure: continue
+
+  - id: fix_skeleton
+    name: Fix Walking Skeleton
+    type: command
+    command: fix-skeleton
+    args:
+      - "$epic_key"
+    depends_on:
+      - skeleton_gate
+    trigger_rule: all_done
+    retry:
+      max_attempts: 2
+      delay_ms: 0
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3: First Review (Completeness)
+  # ──────────────────────────────────────────────────────────
+  #
+  # REVIEW LOOP STRUCTURE:
+  #   The PRP goes through a sequential 4-stage review pipeline:
+  #     first_review -> arch_review -> security_audit -> final_review
+  #   Each review must pass (on_failure: stop) before the next
+  #   stage runs. Reviewers may request edits which are applied
+  #   inline before proceeding. The final_review verifies that
+  #   all feedback from earlier stages was incorporated.
+  # ──────────────────────────────────────────────────────────
+  - id: first_review
+    name: Completeness Review
+    type: prompt
+    depends_on:
+      - fix_skeleton
+      - skeleton_gate
+    trigger_rule: one_success
+    on_failure: stop
+    label: "step:reviewing"
+    prompt: |
+      Review the PRP for $epic_key for completeness, clarity, and
+      structure. Verify: all stories have acceptance criteria, the
+      testing strategy covers unit/integration/e2e, rollout plan
+      has rollback steps, and dependencies are explicitly listed.
+      Apply any required edits inline.
+    model: sonnet
+    dispatch: inline
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 4: Architectural Review
+  # ──────────────────────────────────────────────────────────
+  - id: arch_review
+    name: Architectural Review
+    type: prompt
+    depends_on:
+      - first_review
+    on_failure: stop
+    prompt: |
+      Review the PRP for $epic_key for architectural correctness.
+      Verify: domain boundaries are respected, API contracts follow
+      existing patterns, cross-repo impact is documented, data
+      migration strategy is sound, and infrastructure changes are
+      captured. Apply any required edits inline.
+    model: sonnet
+    dispatch: inline
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 5: Security Audit
+  # ──────────────────────────────────────────────────────────
+  - id: security_audit
+    name: Security Audit
+    type: prompt
+    depends_on:
+      - arch_review
+    on_failure: stop
+    prompt: |
+      Perform a security audit of the PRP for $epic_key.
+      Apply STRIDE threat model to each component. Check OWASP
+      Top 10 relevance. Verify: auth/authz boundaries, input
+      validation, secrets management, data encryption at rest
+      and in transit, and audit logging. Apply any required
+      edits inline.
+    model: sonnet
+    dispatch: inline
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 6: Final Review
+  # Verify all feedback from phases 3-5 was incorporated.
+  # ──────────────────────────────────────────────────────────
+  - id: final_review
+    name: Final Review
+    type: prompt
+    depends_on:
+      - security_audit
+    on_failure: stop
+    checkpoint: true
+    prompt: |
+      Final review of the PRP for $epic_key. Verify that all
+      feedback from completeness review, architectural review,
+      and security audit has been incorporated. Check overall
+      coherence and readiness for implementation. The PRP must
+      be complete and self-contained.
+    model: sonnet
+    dispatch: inline
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 7: Commit PRP
+  # ──────────────────────────────────────────────────────────
+  - id: commit_prp
+    name: Commit and Push PRP
+    type: bash
+    depends_on:
+      - final_review
+    on_failure: stop
+    script: |
+      cd $PROJECT_ROOT/gw-docs
+      git add plans/
+      git commit -m "$epic_key: Add Product Requirements Plan"
+      git push origin $(git branch --show-current)
+      # Link PRP commit to Jira
+      prp_path="plans/$(echo $epic_key | tr '[:upper:]' '[:lower:]')/prp.md"
+      npx tsx ~/.claude/skills/jira/add_comment.ts "{
+        \"issue_key\": \"$epic_key\",
+        \"body\": \"PRP committed: $prp_path\"
+      }"
+      echo "{\"prp_path\": \"$prp_path\"}"
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 8: Cross-Epic Sequencing
+  # Analyze dependencies between this epic and others, write
+  # Jira issue links for ordering.
+  # ──────────────────────────────────────────────────────────
+  - id: cross_epic_sequencing
+    name: Cross-Epic Sequencing
+    type: prompt
+    depends_on:
+      - commit_prp
+    prompt: |
+      Analyze cross-epic dependencies for $epic_key. Check the
+      PRP's dependency list against other epics in the backlog.
+      Create Jira issue links (blocks/is-blocked-by) where
+      sequencing constraints exist. Document the recommended
+      execution order.
+    model: opus
+    dispatch: inline
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 9: Transition
+  # Update Epic status and labels in Jira.
+  # ──────────────────────────────────────────────────────────
+  - id: transition_grooming
+    name: Transition Epic for Grooming
+    type: bash
+    depends_on:
+      - cross_epic_sequencing
+    script: |
+      # Update labels: remove step:*, add outcome
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
+      labels=$(echo "$issue" | jq -r '
+        .fields.labels // [] |
+        map(select(startswith("step:") | not)) +
+        ["outcome:success-prp-created"] | @json')
+      npx tsx ~/.claude/skills/jira/update_issue.ts "{
+        \"issue_key\": \"$epic_key\",
+        \"labels\": $labels,
+        \"notify_users\": false
+      }"
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 10: Report
+  # Store reflexion episode and run auto-validation.
+  # ──────────────────────────────────────────────────────────
+  - id: store_episode
+    name: Store Reflexion Episode
+    type: bash
+    depends_on:
+      - transition_grooming
+    script: |
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
+        \"session_id\": \"${TENANT_NAMESPACE}\",
+        \"task\": \"plan-$epic_key\",
+        \"outcome\": \"success\",
+        \"reward\": 1.0,
+        \"reflection\": \"PRP created and committed for $epic_key\"
+      }"
+
+  - id: auto_validate
+    name: Auto-Validate Plan
+    type: command
+    command: validate-plan
+    args:
+      - "$epic_key"
+    depends_on:
+      - store_episode
+    on_failure: continue
+
+outputs:
+  prp_path:
+    node: commit_prp
+    field: prp_path
+  work_type:
+    node: design_discovery
+    field: work_type

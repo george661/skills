@@ -11,6 +11,7 @@ from dag_executor.schema import (
     NodeDef,
     WorkflowConfig,
     LabelsConfig,
+    ExitHookDef,
     InputDef,
     OutputDef,
     ReducerDef,
@@ -44,6 +45,9 @@ from dag_executor.labels import LabelManager, LabelCallback
 
 # Checkpoint store
 from dag_executor.checkpoint import CheckpointStore, CheckpointMetadata, NodeCheckpoint, InterruptCheckpoint
+
+# Validator
+from dag_executor.validator import WorkflowValidator, ValidationResult, ValidationIssue
 
 __all__ = [
     "load_workflow",
@@ -84,6 +88,7 @@ __all__ = [
     "NodeDef",
     "WorkflowConfig",
     "LabelsConfig",
+    "ExitHookDef",
     "InputDef",
     "OutputDef",
     "ReducerDef",
@@ -94,6 +99,10 @@ __all__ = [
     "OnFailure",
     "OutputFormat",
     "RetryConfig",
+    # Validator
+    "WorkflowValidator",
+    "ValidationResult",
+    "ValidationIssue",
 ]
 
 

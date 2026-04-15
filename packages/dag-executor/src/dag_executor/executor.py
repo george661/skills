@@ -1,6 +1,8 @@
 """Core DAG workflow executor with layer-parallel execution."""
 import asyncio
 import json
+import logging
+import random
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -295,6 +297,12 @@ class WorkflowExecutor:
             )
             checkpoint_store.save_metadata(workflow_def.name, run_id, final_metadata)
 
+        # Execute exit hooks (guaranteed cleanup, like Argo exit hooks)
+        if workflow_def.config.on_exit:
+            await self._run_exit_hooks(
+                workflow_def, final_status, ctx, event_emitter
+            )
+
         return WorkflowResult(
             status=final_status,
             node_results=ctx.node_results,
@@ -503,21 +511,10 @@ class WorkflowExecutor:
             # Get timeout for this node
             timeout = self._get_node_timeout(node_def)
 
-            # Execute in shared thread pool with semaphore for concurrency limiting
-            loop = asyncio.get_running_loop()
-            assert ctx.semaphore is not None
-            assert ctx.pool is not None
-            async with ctx.semaphore:
-                try:
-                    result = await asyncio.wait_for(
-                        loop.run_in_executor(ctx.pool, runner.run, runner_ctx),
-                        timeout=timeout
-                    )
-                except asyncio.TimeoutError:
-                    result = NodeResult(
-                        status=NodeStatus.FAILED,
-                        error=f"Node execution timed out after {timeout}s"
-                    )
+            # Execute with retry logic (exponential backoff + jitter)
+            result = await self._execute_with_retry(
+                node_def, runner, runner_ctx, timeout, ctx, event_emitter
+            )
         
         except Exception as e:
             result = NodeResult(
@@ -896,6 +893,179 @@ class WorkflowExecutor:
                 # Recursively mark its dependents
                 self._mark_downstream_skipped(node_id, nodes_map, ctx)
     
+    async def _run_exit_hooks(
+        self,
+        workflow_def: WorkflowDef,
+        final_status: WorkflowStatus,
+        ctx: ExecutionContext,
+        event_emitter: Optional["EventEmitter"] = None,
+    ) -> None:
+        """Execute exit hooks that match the final workflow status.
+
+        Exit hooks run sequentially, never fail the workflow (errors are logged),
+        and have access to workflow_state for context (e.g., worktree path, PR number).
+
+        Args:
+            workflow_def: Workflow definition with on_exit hooks
+            final_status: Final workflow status (completed, failed, paused)
+            ctx: Execution context (for workflow_state access)
+            event_emitter: Optional event emitter
+        """
+        from dag_executor.events import EventType, WorkflowEvent
+        from dag_executor.runners.base import RunnerContext
+
+        for hook in workflow_def.config.on_exit:
+            # Check if this hook should run for the current status
+            if final_status.value not in hook.run_on:
+                continue
+
+            # Build a synthetic NodeDef for the runner
+            hook_node = NodeDef(
+                id=f"_exit_{hook.id}",
+                name=hook.name or f"Exit: {hook.id}",
+                type=hook.type,
+                script=hook.script,
+                skill=hook.skill,
+                params=hook.params,
+                timeout=hook.timeout,
+            )
+
+            try:
+                runner_class = get_runner(hook.type)
+                if not runner_class:
+                    continue
+
+                runner = runner_class()
+                runner_ctx = RunnerContext(
+                    node_def=hook_node,
+                    resolved_inputs={},
+                    node_outputs=ctx.node_outputs,
+                    workflow_inputs=ctx.workflow_inputs,
+                    workflow_id=workflow_def.name,
+                )
+
+                # Run with timeout in the thread pool
+                loop = asyncio.get_running_loop()
+                pool = ThreadPoolExecutor(max_workers=1)
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(pool, runner.run, runner_ctx),
+                        timeout=float(hook.timeout),
+                    )
+                finally:
+                    pool.shutdown(wait=False)
+
+                if event_emitter:
+                    event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.NODE_COMPLETED,
+                        workflow_id=workflow_def.name,
+                        node_id=hook_node.id,
+                        status=NodeStatus.COMPLETED,
+                        timestamp=datetime.now(timezone.utc),
+                    ))
+
+            except Exception:
+                # Exit hooks must never crash the workflow — log and continue
+                if event_emitter:
+                    event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.NODE_FAILED,
+                        workflow_id=workflow_def.name,
+                        node_id=f"_exit_{hook.id}",
+                        status=NodeStatus.FAILED,
+                        timestamp=datetime.now(timezone.utc),
+                    ))
+
+    async def _execute_with_retry(
+        self,
+        node_def: NodeDef,
+        runner: Any,
+        runner_ctx: Any,
+        timeout: float,
+        ctx: ExecutionContext,
+        event_emitter: Optional["EventEmitter"] = None,
+    ) -> NodeResult:
+        """Execute a runner with retry logic using exponential backoff + jitter.
+
+        If node_def.retry is None, executes once (no retry).
+        Otherwise retries up to max_attempts with exponential backoff.
+
+        Backoff formula: min(delay_ms * 2^attempt + jitter, 30000) ms
+        Jitter: random 0-25% of computed delay
+
+        Args:
+            node_def: Node definition (contains retry config)
+            runner: Instantiated runner
+            runner_ctx: Runner context
+            timeout: Per-attempt timeout in seconds
+            ctx: Execution context (for pool/semaphore)
+            event_emitter: Optional event emitter for retry progress
+
+        Returns:
+            NodeResult from final attempt
+        """
+        from dag_executor.events import EventType, WorkflowEvent
+
+        max_attempts = 1
+        base_delay_ms = 0
+        if node_def.retry:
+            max_attempts = node_def.retry.max_attempts
+            base_delay_ms = node_def.retry.delay_ms
+
+        last_result: Optional[NodeResult] = None
+        loop = asyncio.get_running_loop()
+        assert ctx.semaphore is not None
+        assert ctx.pool is not None
+
+        for attempt in range(max_attempts):
+            async with ctx.semaphore:
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(ctx.pool, runner.run, runner_ctx),
+                        timeout=timeout
+                    )
+                except asyncio.TimeoutError:
+                    result = NodeResult(
+                        status=NodeStatus.FAILED,
+                        error=f"Node execution timed out after {timeout}s"
+                    )
+
+            last_result = result
+
+            # Success or non-retryable status — return immediately
+            if result.status != NodeStatus.FAILED:
+                return result
+
+            # Last attempt — don't sleep, just return the failure
+            if attempt >= max_attempts - 1:
+                break
+
+            # Compute backoff delay: base * 2^attempt + jitter, capped at 30s
+            delay_ms = base_delay_ms * (2 ** attempt) if base_delay_ms > 0 else 1000 * (2 ** attempt)
+            jitter_ms = random.randint(0, max(1, int(delay_ms * 0.25)))
+            actual_delay_ms = min(delay_ms + jitter_ms, 30_000)
+
+            # Emit retry progress event
+            if event_emitter:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.NODE_PROGRESS,
+                    workflow_id=runner_ctx.workflow_id,
+                    node_id=node_def.id,
+                    metadata={
+                        "message": f"Retry {attempt + 1}/{max_attempts - 1}: "
+                                   f"waiting {actual_delay_ms}ms before next attempt",
+                        "attempt": attempt + 1,
+                        "max_attempts": max_attempts,
+                        "delay_ms": actual_delay_ms,
+                        "last_error": result.error,
+                    },
+                    timestamp=datetime.now(timezone.utc),
+                ))
+
+            await asyncio.sleep(actual_delay_ms / 1000.0)
+
+        assert last_result is not None
+        return last_result
+
     def _get_node_timeout(self, node_def: NodeDef) -> float:
         """Get timeout for a node.
         

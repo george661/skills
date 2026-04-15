@@ -1,0 +1,528 @@
+---
+name: Validate Command Workflow
+config:
+  checkpoint_prefix: validate
+  worktree: false
+  labels:
+    on_failure: "outcome:validation-failed"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command validate"
+      run_on: [completed, failed]
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+# ──────────────────────────────────────────────────────────────────────
+# Routing overview:
+#
+#   resume_check → code_review_blocker → classify_type → visual_impact
+#                                             │
+#              ┌──────────────────────────────┼────────────────────────┐
+#              │                              │                        │
+#        fast_path_gate              pipeline_path_gate          deploy_check
+#              │                              │                   (full path)
+#        file_verification          pipeline_verification            │
+#              │                              │                  run_tests
+#              │                              │                   │     │
+#              │                              │          e2e_green_gate │
+#              │                              │                   auth_quality_gate
+#              │                              │                        │
+#              │                              │               collect_evidence
+#              │                              │                        │
+#              │                              │               smoke_regression
+#              │                              │                        │
+#              └──────────────────────────────┴────────────────────────┘
+#                                             │
+#                                    evaluate_results
+#                              (trigger_rule: one_success)
+#                                             │
+#                                      transition_jira
+#                                             │
+#                                       store_episode
+#                                             │
+#                                       print_summary
+#
+# Three mutually exclusive paths converge at evaluate_results:
+#   1. Fast path:     file_verification  (deploy-strategy: none)
+#   2. Pipeline path: pipeline_verification  (pipeline-verification type)
+#   3. Full path:     smoke_regression  (runtime validation)
+#
+# Gates use on_failure: continue so a failed gate does NOT propagate
+# failure to siblings. Only the downstream node gated by trigger_rule:
+# all_success is blocked. The other paths proceed independently.
+# evaluate_results uses trigger_rule: one_success — whichever path
+# completes successfully feeds the verdict.
+# ──────────────────────────────────────────────────────────────────────
+
+nodes:
+
+  # ════════════════════════════════════════════════════════════════════
+  # Phase 0: Resume + Blocker Check
+  # ════════════════════════════════════════════════════════════════════
+
+  - id: resume_check
+    name: Resume Check
+    type: bash
+    script: |
+      python3 ~/.claude/hooks/checkpoint.py load $issue_key 2>/dev/null || echo '{"found":false}'
+    output_format: json
+
+  # Hard gate: if the most recent code review verdict is REQUIRES REWORK,
+  # short-circuit to TRANSITION_TODO. Runs inline on Opus (~100 tokens).
+  - id: code_review_blocker
+    name: Code Review Blocker Check
+    type: prompt
+    depends_on:
+      - resume_check
+    prompt: |
+      Scan the Jira comments for issue $issue_key for the most recent code
+      review verdict (look for comments containing "### Verdict:").
+
+      If the most recent review verdict is REQUIRES REWORK:
+        - Set verdict to TRANSITION_TODO
+        - Post comment: "Validation skipped — unresolved code review: REQUIRES REWORK"
+        - Output: {"blocker": true, "reason": "unresolved_code_review"}
+
+      If no review comment or verdict is APPROVED/LGTM:
+        - Output: {"blocker": false}
+
+      If zero comments exist:
+        - Note "No code review on record" for the Phase 4 report
+        - Output: {"blocker": false, "note": "no_code_review_on_record"}
+    model: opus
+    dispatch: inline
+    output_format: json
+    checkpoint: true
+    on_failure: stop
+
+  # ════════════════════════════════════════════════════════════════════
+  # Phase 0.5: Classification
+  # ════════════════════════════════════════════════════════════════════
+
+  # Classify into one of three routes: fast / pipeline / full.
+  # Reads the repo's CLAUDE.md validation profile to determine
+  # deploy-strategy and validation-type.
+  - id: classify_type
+    name: Classify Validation Type
+    type: prompt
+    depends_on:
+      - code_review_blocker
+    prompt: |
+      Classify the validation type for issue $issue_key.
+
+      1. Extract repo from Jira labels (e.g. repo-project-docs → project-docs).
+      2. Ensure repo is cloned locally.
+      3. Read the repo's CLAUDE.md validation profile:
+         grep -A 6 "## Validation Profile" $PROJECT_ROOT/<repo>/CLAUDE.md
+      4. Parse deploy-strategy and validation-type.
+
+      Routing rules:
+        deploy-strategy: none + file-verification → "file-verification"
+        deploy-strategy: none + integration       → "file-verification" (with local commands)
+        concourse/manual + pipeline-verification  → "pipeline-verification"
+        concourse/manual + runtime                → "full"
+        missing profile                           → "full" (never downgrade without explicit profile)
+
+      Output JSON:
+        {"validation_type": "<file-verification|pipeline-verification|full>",
+         "code_repo": "<repo>", "deploy_strategy": "<strategy>"}
+    model: opus
+    dispatch: inline
+    output_format: json
+    checkpoint: true
+
+  # Determine if backend changes produce user-visible UI effects.
+  # Saves has_visual_effects + ui_paths for dispatch-local.py enrichment.
+  - id: visual_impact
+    name: Visual Impact Classification
+    type: prompt
+    depends_on:
+      - classify_type
+    prompt: |
+      Determine whether issue $issue_key has user-visible effects in the
+      frontend, regardless of which repo the code lives in.
+
+      Using the issue description and acceptance criteria, determine:
+      1. has_visual_effects: true if AC mention something a user sees/views/displays,
+         or the change affects data the frontend renders (sessions, tokens, marketplace,
+         organizations, applications, profiles, datasets).
+         false only for pure infra (VPC, IAM, S3 config, schema-only DynamoDB).
+      2. ui_paths: list of frontend route paths most likely to show the change.
+         Empty array only if has_visual_effects is false.
+
+      Save to checkpoint for dispatch-local.py to read during Phases 2+3.
+
+      Output JSON: {"has_visual_effects": <bool>, "ui_paths": [<paths>]}
+    model: opus
+    dispatch: inline
+    output_format: json
+
+  # ════════════════════════════════════════════════════════════════════
+  # Phase 1: Deploy + Routing Gates
+  #
+  # Three mutually exclusive gates control which path executes.
+  # Each gate uses on_failure: continue so that a failed condition
+  # does NOT poison sibling gates or the deploy_check node.
+  # ════════════════════════════════════════════════════════════════════
+
+  # Gate: fast path (file-verification repos with no deploy pipeline)
+  - id: fast_path_gate
+    name: Fast Path Gate
+    type: gate
+    depends_on:
+      - classify_type
+    condition: "$classify_type.validation_type == \"file-verification\""
+    on_failure: continue
+
+  # Gate: pipeline path (pipeline-verification repos)
+  - id: pipeline_path_gate
+    name: Pipeline Path Gate
+    type: gate
+    depends_on:
+      - classify_type
+    condition: "$classify_type.validation_type == \"pipeline-verification\""
+    on_failure: continue
+
+  # Fast path: verify PR merged + check file contents against AC.
+  # Only runs when fast_path_gate passes (trigger_rule: all_success).
+  - id: file_verification
+    name: File Verification (Fast Path)
+    type: prompt
+    depends_on:
+      - fast_path_gate
+    trigger_rule: all_success
+    prompt: |
+      Fast-path file verification for $issue_key (deploy-strategy: none).
+
+      1. Verify the PR is merged:
+         npx tsx ~/.claude/skills/vcs/get_pull_request.ts with the PR number from labels.
+         If not merged → verdict TRANSITION_TODO, stop.
+      2. Fetch acceptance criteria from Jira.
+      3. For each criterion, run the appropriate verification:
+         - File content: grep / jq against repo files
+         - CLI validation: run commands from the validation profile
+         - Capture output as evidence
+      4. Write results to /tmp/validate-$issue_key-test-results.txt and
+         /tmp/validate-$issue_key-evidence.txt.
+      5. Save checkpoint val.phase1f-complete.
+
+      Output JSON: {"status": "file-verified", "passed": <N>, "failed": <M>,
+                     "total": <T>, "pr_merged": true}
+    model: opus
+    dispatch: inline
+    output_format: json
+    checkpoint: true
+
+  # Pipeline path: verify post-merge pipeline green + read source against AC.
+  # Only runs when pipeline_path_gate passes (trigger_rule: all_success).
+  - id: pipeline_verification
+    name: Pipeline Verification
+    type: prompt
+    depends_on:
+      - pipeline_path_gate
+    trigger_rule: all_success
+    prompt: |
+      Pipeline-verification for $issue_key.
+
+      1. Run deploy status check to confirm post-merge main pipeline is green.
+         (Pre-merge PR-check pipelines do NOT count as deployment evidence.)
+      2. Read changed source files to verify acceptance criteria in code:
+         - Find the PR, then read files from local clone on main.
+      3. For each AC, verify against actual source code and test files.
+      4. Run validation-commands from profile locally if available.
+      5. Write results to /tmp/validate-$issue_key-test-results.txt and
+         /tmp/validate-$issue_key-evidence.txt.
+      6. Save checkpoint val.phase1p-complete.
+
+      Output JSON: {"status": "pipeline-verified", "passed": <N>, "failed": <M>,
+                     "total": <T>, "pr_merged": true}
+    model: opus
+    dispatch: inline
+    output_format: json
+    checkpoint: true
+
+  # Full path + pipeline path: check deployment status.
+  # trigger_rule: all_done means this runs after both gates reach terminal
+  # state (passed or failed). For the full path, both gates fail and this
+  # proceeds. For the pipeline path, pipeline_path_gate passes but this
+  # still runs (pipeline path needs deploy check too).
+  # on_failure: continue allows run_tests to decide how to handle deploy issues.
+  - id: deploy_check
+    name: Check Deployment Status
+    type: command
+    command: validate-deploy-status
+    args:
+      - "$issue_key"
+    depends_on:
+      - fast_path_gate
+      - pipeline_path_gate
+    trigger_rule: all_done
+    dispatch: local
+    on_failure: continue
+    checkpoint: true
+
+  # ════════════════════════════════════════════════════════════════════
+  # Phase 2: Run Tests (full path only)
+  # ════════════════════════════════════════════════════════════════════
+
+  - id: run_tests
+    name: Run Validation Tests
+    type: command
+    command: validate-run-tests
+    args:
+      - "$issue_key"
+      - "$classify_type.code_repo"
+    depends_on:
+      - deploy_check
+    dispatch: local
+    on_failure: continue
+    checkpoint: true
+
+  # E2E GREEN gate: only fires when checkpoint has e2e.green-deferred: true.
+  # If E2E GREEN fails, verdict is TRANSITION_TODO immediately.
+  # on_failure: continue so auth_quality_gate and collect_evidence still run.
+  - id: e2e_green_gate
+    name: E2E GREEN Gate
+    type: gate
+    depends_on:
+      - run_tests
+    condition: "$run_tests.e2e_green_deferred == true"
+    on_failure: continue
+
+  # Auth quality gate: catches local model SRP auth failures.
+  # Runs inline on Opus to verify AUTH_STATUS and remediate if needed.
+  - id: auth_quality_gate
+    name: Auth Quality Gate
+    type: prompt
+    depends_on:
+      - run_tests
+    prompt: |
+      Auth quality gate for $issue_key after test execution.
+
+      1. Read test results: cat /tmp/validate-$issue_key-test-results.txt
+      2. Parse AUTH_STATUS and count criteria with AUTHENTICATED: false.
+      3. Evaluate:
+         - AUTHENTICATED + all/most true → PASS
+         - AUTH_NOT_REQUIRED → PASS
+         - AUTH_FAILED + all false → REMEDIATE (run SRP auth inline)
+         - AUTHENTICATED + some false → PARTIAL (re-test unauthenticated criteria)
+      4. If remediation needed:
+         - Get test credentials from e2e-tests fixtures
+         - Run SRP auth via cognito-srp-token.js
+         - Re-test failing criteria with valid token
+         - Update test results file with corrected results
+      5. If SRP auth also fails for orchestrator:
+         - Log AUTH_UNAVAILABLE, leave criteria as FAIL
+         - Add auth_broken: true, proceed to Phase 3
+
+      Output JSON: {"auth_status": "<pass|remediated|auth_broken>",
+                     "passed": <N>, "failed": <M>}
+    model: opus
+    dispatch: inline
+    output_format: json
+
+  # ════════════════════════════════════════════════════════════════════
+  # Phase 3: Evidence (full path only)
+  # ════════════════════════════════════════════════════════════════════
+
+  # Collect evidence: screenshots, logs, API responses.
+  # trigger_rule: all_done so this runs regardless of whether e2e_green_gate
+  # or auth_quality_gate passed or failed — we still want evidence.
+  - id: collect_evidence
+    name: Collect Evidence
+    type: command
+    command: validate-collect-evidence
+    args:
+      - "$issue_key"
+      - "$classify_type.code_repo"
+    depends_on:
+      - auth_quality_gate
+      - e2e_green_gate
+    trigger_rule: all_done
+    dispatch: local
+    checkpoint: true
+
+  # Smoke regression: compare current smoke results vs AgentDB baseline.
+  # Only meaningful on the full path; fast/pipeline paths skip to evaluate.
+  - id: smoke_regression
+    name: Smoke Regression Check
+    type: prompt
+    depends_on:
+      - collect_evidence
+    prompt: |
+      Run functional smoke regression check for $issue_key.
+
+      1. If smoke test script exists at
+         $PROJECT_ROOT/lambda-functions/tests/smoke/smoke-test.js:
+         - Run it with --env dev --output /tmp/smoke-$issue_key.json
+         - Retrieve baseline from AgentDB (smoke-baseline-lambda-functions-dev)
+         - Compare: count tests that were passing in baseline but now fail
+         - If any new failures: append SMOKE_REGRESSION=true to test results
+      2. If no smoke test script exists, skip.
+
+      Phase 4 will check for SMOKE_REGRESSION=true when producing the verdict.
+
+      Output JSON: {"regression_detected": <bool>, "new_failures": <N>}
+    model: opus
+    dispatch: inline
+    output_format: json
+
+  # ════════════════════════════════════════════════════════════════════
+  # Phase 4: Evaluate
+  #
+  # trigger_rule: one_success — whichever of the three paths completes
+  # successfully feeds the evaluation. The other two paths will have
+  # been skipped or failed (gate didn't pass), which is expected.
+  # ════════════════════════════════════════════════════════════════════
+
+  - id: evaluate_results
+    name: Evaluate Results
+    type: prompt
+    depends_on:
+      - smoke_regression
+      - file_verification
+      - pipeline_verification
+    trigger_rule: one_success
+    prompt: |
+      Evaluate validation results for $issue_key and produce a verdict.
+
+      1. Read test results from /tmp/validate-$issue_key-test-results.txt
+      2. Read evidence from /tmp/validate-$issue_key-evidence.txt
+      3. Fetch acceptance criteria from Jira.
+      4. For each criterion, match to test results and evidence.
+
+      Contradiction detection (MANDATORY):
+        - If Phase 2 tests show PASS but Phase 3 evidence shows 404/login/error
+          screenshot for the same criterion → re-take fresh authenticated screenshot
+          with correct nested auth schema before concluding.
+        - If still unresolvable → verdict NEEDS_HUMAN.
+
+      Playwright hard gate:
+        - If code_repo is e2e-tests AND any Playwright test FAILED → TRANSITION_TODO.
+        - If AC require "tests run without errors" AND tests have errors → TRANSITION_TODO.
+
+      Verdict rules:
+        - All criteria PASS (contradictions resolved) → TRANSITION_DONE
+        - Any criteria FAIL (confirmed regression) → TRANSITION_TODO
+        - Ambiguous or pre-existing → NEEDS_HUMAN
+        - Deploy not ready → NEEDS_DEPLOY
+
+      Write full validation report to /tmp/validate-$issue_key-report.md.
+
+      Output JSON: {"verdict": "<TRANSITION_DONE|TRANSITION_TODO|NEEDS_DEPLOY|NEEDS_HUMAN>",
+                     "passed": <N>, "failed": <M>, "contradiction_detected": <bool>}
+    model: opus
+    dispatch: inline
+    output_format: json
+    checkpoint: true
+
+  # ════════════════════════════════════════════════════════════════════
+  # Phase 5: Transition
+  # ════════════════════════════════════════════════════════════════════
+
+  - id: transition_jira
+    name: Transition Jira
+    type: prompt
+    depends_on:
+      - evaluate_results
+    prompt: |
+      Transition Jira issue $issue_key based on the verdict from evaluation.
+
+      If TRANSITION_DONE:
+        1. Post validation report as Jira comment
+        2. Verify report was posted (evidence gate)
+        3. Transition to Done
+        4. Update labels: remove step:validating, add outcome:validated
+        5. Update smoke baseline in AgentDB
+
+      If TRANSITION_TODO:
+        1. Post validation report as Jira comment
+        2. Transition back to To Do
+        3. Update labels: remove step:validating, add outcome:validation-failed
+
+      If NEEDS_HUMAN:
+        1. Post validation report as Jira comment
+        2. Do NOT transition
+        3. Update labels: add outcome:needs-human
+        4. Report to user that manual review is needed
+
+      If NEEDS_DEPLOY:
+        1. Post validation report as Jira comment
+        2. Transition back to To Do
+        3. Update labels: add outcome:needs-deploy
+
+      Verify status actually changed after transition; retry once if not.
+
+      Output JSON: {"transitioned": <bool>, "new_status": "<status>"}
+    model: opus
+    dispatch: inline
+    output_format: json
+
+  # ════════════════════════════════════════════════════════════════════
+  # Phase 6-7: Cleanup + Summary
+  # ════════════════════════════════════════════════════════════════════
+
+  # Store reflexion episode with validation-specific trajectory fields.
+  - id: store_episode
+    name: Store Reflexion Episode
+    type: bash
+    depends_on:
+      - transition_jira
+    script: |
+      # Reward scoring:
+      #   1.0 — clean pass with runtime evidence
+      #   0.8 — passed with caveats or SUFFICIENT evidence
+      #   0.6 — NEEDS_DEPLOY (code correct but not deployed)
+      #   0.4 — failed validation, sent back to dev
+      #   0.2 — escalated to human or contradiction detected
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts \
+        "{\"session_id\": \"${TENANT_NAMESPACE}\", \
+          \"task\": \"/validate $issue_key\", \
+          \"input\": {}, \
+          \"output\": \"$evaluate_results.verdict\", \
+          \"reward\": 0.0, \
+          \"success\": false, \
+          \"critique\": \"\", \
+          \"trajectory\": { \
+            \"deploy_verified\": true, \
+            \"evidence_quality\": \"SUFFICIENT\", \
+            \"contradiction_detected\": false, \
+            \"verdict\": \"$evaluate_results.verdict\", \
+            \"duration_seconds\": 0 \
+          }}" 2>/dev/null || true
+
+  # Final summary: print a phase-by-phase table and key lesson.
+  - id: print_summary
+    name: Print Summary
+    type: prompt
+    depends_on:
+      - store_episode
+    prompt: |
+      Print a validation summary for $issue_key.
+
+      Include a phase-by-phase results table:
+      | Phase | Result | Notes |
+      |-------|--------|-------|
+      | Deploy Check | <status> | <repo, pipeline, build> |
+      | Run Tests | <N passed, M failed> | <test type> |
+      | Evidence | <N artifacts> | <types collected> |
+      | Evaluation | <verdict> | <criteria summary> |
+      | Transition | <new status> | <transition outcome> |
+
+      End with a "Key Lesson" — one sentence on what worked, what broke,
+      or what the local model missed.
+    model: opus
+    dispatch: inline
+
+outputs:
+  verdict:
+    node: evaluate_results
+    field: verdict
+  validation_type:
+    node: classify_type
+    field: validation_type
