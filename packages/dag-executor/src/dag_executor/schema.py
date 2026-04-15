@@ -337,3 +337,7 @@ class WorkflowDef(BaseModel):
         default_factory=dict,
         description="State reducer definitions (key = state key name)"
     )
+
+
+# Rebuild models to resolve forward references
+NodeDef.model_rebuild()

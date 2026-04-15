@@ -20,14 +20,14 @@ def test_review_branching_approve():
     executor = WorkflowExecutor()
     result = asyncio.run(executor.execute(workflow_def, {}))
 
-    # For bash runner with JSON output_format, the output might be a string
-    # Let's check what actually happened
-    print(f"Review output: {result.node_results['review'].output}")
-    print(f"Merge status: {result.node_results['merge'].status}")
-
     assert result.status == WorkflowStatus.COMPLETED
     # review should complete
     assert result.node_results["review"].status == NodeStatus.COMPLETED
+    # approve branch: merge should execute
+    assert result.node_results["merge"].status == NodeStatus.COMPLETED
+    # fix_pr and escalate should be skipped
+    assert result.node_results["fix_pr"].status == NodeStatus.SKIPPED
+    assert result.node_results["escalate"].status == NodeStatus.SKIPPED
 
 
 def test_review_branching_revise():

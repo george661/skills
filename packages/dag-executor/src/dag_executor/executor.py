@@ -531,7 +531,21 @@ class WorkflowExecutor:
 
         # Store output for downstream variable resolution
         if result.status == NodeStatus.COMPLETED and result.output:
-            ctx.node_outputs[node_id] = result.output
+            # Parse JSON output if output_format=json is specified
+            output_to_store = result.output
+            if node_def.output_format == "json" and isinstance(result.output, dict):
+                # BashRunner returns {"stdout": "...", "stderr": "..."}
+                # When output_format=json, parse the JSON from stdout
+                stdout = result.output.get("stdout", "")
+                if stdout:
+                    try:
+                        parsed = json.loads(stdout.strip())
+                        output_to_store = parsed
+                    except (json.JSONDecodeError, ValueError):
+                        # If parsing fails, keep the raw output
+                        pass
+
+            ctx.node_outputs[node_id] = output_to_store
 
             # Evaluate conditional edges to determine which branch to take
             if node_def.edges is not None:
