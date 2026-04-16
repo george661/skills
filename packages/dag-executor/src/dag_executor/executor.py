@@ -770,13 +770,14 @@ class WorkflowExecutor:
                 eval_context[node_id] = output
 
         # Find first matching edge (first truthy condition wins)
-        matching_target = None
-        default_target = None
+        # matching_targets is a list to support multi-target fan-out
+        matching_targets: Optional[List[str]] = None
+        default_targets: Optional[List[str]] = None
 
         for edge in node_def.edges:
             if edge.default:
-                # Store default edge as fallback
-                default_target = edge.target
+                # Store default edge as fallback (single or multi-target)
+                default_targets = edge.targets if edge.targets else [edge.target] if edge.target else []
                 continue
 
             # Evaluate condition
@@ -785,21 +786,31 @@ class WorkflowExecutor:
                 try:
                     result = evaluator.eval(edge.condition)
                     if result:
-                        matching_target = edge.target
+                        # Match found - store targets (single or multi)
+                        matching_targets = edge.targets if edge.targets else [edge.target] if edge.target else []
                         break  # First match wins
                 except Exception:
                     # Condition evaluation failed, try next edge
                     continue
 
         # Use default if no condition matched
-        if matching_target is None and default_target is not None:
-            matching_target = default_target
+        if matching_targets is None and default_targets is not None:
+            matching_targets = default_targets
 
         # Mark all non-matching edge targets for skipping
-        if matching_target:
+        if matching_targets:
+            # Collect all possible targets from all edges
+            all_edge_targets = set()
             for edge in node_def.edges:
-                if edge.target != matching_target:
-                    ctx.skipped_nodes.add(edge.target)
+                if edge.targets:
+                    all_edge_targets.update(edge.targets)
+                elif edge.target:
+                    all_edge_targets.add(edge.target)
+
+            # Skip targets that are not in the matching set
+            for target in all_edge_targets:
+                if target not in matching_targets:
+                    ctx.skipped_nodes.add(target)
 
     def _check_trigger_rule(
         self,
