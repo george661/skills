@@ -926,3 +926,44 @@ class TestProgressCallbackWiring:
         # Verify callback was None
         assert len(callback_is_none) == 1
         assert callback_is_none[0] is True
+
+
+class TestChannelStoreInitialization:
+    """Tests for ChannelStore initialization in executor (GW-5023)."""
+
+    def test_workflow_with_state_runs_successfully(self) -> None:
+        """Test that workflows with state declarations execute successfully (channel_store initialized)."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        node = NodeDef(id="task", name="Task", type="bash", script="echo 'done'")
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=[node],
+            state={
+                "counter": ReducerDef(strategy=ReducerStrategy.OVERWRITE),
+            }
+        )
+
+        executor = WorkflowExecutor()
+        result = asyncio.run(executor.execute(workflow_def, {}))
+
+        # Verify workflow completes successfully
+        assert result.status == WorkflowStatus.COMPLETED
+        # Channel store should have been initialized internally
+
+    def test_workflow_without_state_runs_successfully(self) -> None:
+        """Test that workflows without state continue to work (backwards compatible)."""
+        node = NodeDef(id="task", name="Task", type="bash", script="echo 'done'")
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=[node]
+            # No state field = backwards compatible mode
+        )
+
+        executor = WorkflowExecutor()
+        result = asyncio.run(executor.execute(workflow_def, {}))
+
+        # Verify workflow completes successfully
+        assert result.status == WorkflowStatus.COMPLETED

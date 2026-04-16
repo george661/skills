@@ -186,6 +186,12 @@ class WorkflowExecutor:
             semaphore=asyncio.Semaphore(concurrency_limit),
         )
 
+        # Initialize ChannelStore if workflow has state declarations (GW-5023)
+        if workflow_def.state:
+            ctx.channel_store = ChannelStore.from_workflow_def(workflow_def)
+            # Populate workflow_state from channels for backwards compatibility
+            ctx.workflow_state = ctx.channel_store.to_dict()
+
         # Initialize all nodes to PENDING status
         for node in workflow_def.nodes:
             ctx.node_statuses[node.id] = NodeStatus.PENDING
