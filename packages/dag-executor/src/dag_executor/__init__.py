@@ -49,6 +49,9 @@ from dag_executor.checkpoint import CheckpointStore, CheckpointMetadata, NodeChe
 # Validator
 from dag_executor.validator import WorkflowValidator, ValidationResult, ValidationIssue
 
+# Replay module
+from dag_executor.replay import TraceRecorder, ExecutionTrace, TraceReplayer, ReplayIssue, TraceEvent
+
 __all__ = [
     "load_workflow",
     "load_workflow_from_string",
@@ -103,6 +106,12 @@ __all__ = [
     "WorkflowValidator",
     "ValidationResult",
     "ValidationIssue",
+    # Replay module
+    "TraceRecorder",
+    "ExecutionTrace",
+    "TraceReplayer",
+    "ReplayIssue",
+    "TraceEvent",
 ]
 
 
