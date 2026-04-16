@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class NodeStatus(str, Enum):
@@ -351,6 +351,22 @@ class ExitHookDef(BaseModel):
         description="Workflow statuses that trigger this hook (completed, failed, paused)"
     )
     timeout: int = Field(default=60, description="Timeout in seconds")
+
+    @model_validator(mode="after")
+    def validate_exit_hook(self) -> "ExitHookDef":
+        """Validate exit hook configuration."""
+        # Validate type field
+        if self.type not in ("bash", "skill"):
+            raise ValueError(f"type must be 'bash' or 'skill', got '{self.type}'")
+
+        # Validate run_on values
+        valid_statuses = {"completed", "failed", "paused"}
+        for status in self.run_on:
+            if status not in valid_statuses:
+                raise ValueError(
+                    f"run_on values must be one of {valid_statuses}, got '{status}'"
+                )
+        return self
 
 
 class WorkflowConfig(BaseModel):
