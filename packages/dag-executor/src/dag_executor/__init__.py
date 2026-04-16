@@ -60,6 +60,7 @@ from dag_executor.channels import (
     BarrierChannel,
     ChannelStore,
     ConflictError,
+    ChannelConflictError,
 )
 
 __all__ = [
@@ -129,6 +130,7 @@ __all__ = [
     "BarrierChannel",
     "ChannelStore",
     "ConflictError",
+    "ChannelConflictError",
 ]
 
 

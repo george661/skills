@@ -15,9 +15,24 @@ from dag_executor.reducers import ReducerRegistry
 from dag_executor.schema import ReducerDef, ReducerStrategy, WorkflowDef
 
 
-class ConflictError(Exception):
+class ChannelConflictError(Exception):
     """Raised when two parallel nodes write to the same LastValueChannel without a reducer."""
-    pass
+
+    def __init__(self, channel_key: str, writers: Set[str], message: str):
+        """Initialize ChannelConflictError.
+
+        Args:
+            channel_key: Key of the channel where conflict occurred
+            writers: Set of node IDs that caused the conflict
+            message: Error message
+        """
+        super().__init__(message)
+        self.channel_key = channel_key
+        self.writers = writers
+
+
+# Deprecated alias for backward compatibility
+ConflictError = ChannelConflictError
 
 
 class Channel(ABC):
@@ -71,12 +86,18 @@ class Channel(ABC):
 
 class LastValueChannel(Channel):
     """Channel that stores a single value.
-    
-    Raises ConflictError if two different nodes write without a reducer.
+
+    Raises ChannelConflictError if two different nodes write without a reducer.
     Thread-safe: all writes acquire internal lock.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, key: Optional[str] = None) -> None:
+        """Initialize LastValueChannel.
+
+        Args:
+            key: Optional channel key (used in error messages)
+        """
+        self._key = key
         self._value: Any = None
         self._version: int = 0
         self._writers: Set[str] = set()
@@ -88,28 +109,33 @@ class LastValueChannel(Channel):
             return (self._value, self._version)
 
     def write(self, value: Any, writer_node_id: str) -> int:
-        """Write a value, raising ConflictError if multiple writers.
-        
+        """Write a value, raising ChannelConflictError if multiple writers.
+
         Args:
             value: Value to write
             writer_node_id: ID of the node writing
-            
+
         Returns:
             New version number
-            
+
         Raises:
-            ConflictError: If a different node has already written
+            ChannelConflictError: If a different node has already written
         """
         with self._lock:
             # Check for conflict: if writers already contains a different node
             if self._writers and writer_node_id not in self._writers:
+                # Add the new writer to the set for error reporting
+                all_writers = self._writers | {writer_node_id}
                 existing_writers = ", ".join(sorted(self._writers))
-                raise ConflictError(
-                    f"Parallel write conflict: node '{writer_node_id}' attempted to write, "
-                    f"but node(s) {existing_writers} already wrote to this channel. "
+                channel_key = self._key or "unknown"
+                message = (
+                    f"Parallel write conflict on channel '{channel_key}': "
+                    f"node '{writer_node_id}' attempted to write, "
+                    f"but node(s) {existing_writers} already wrote. "
                     f"Use a reducer strategy to merge parallel writes."
                 )
-            
+                raise ChannelConflictError(channel_key, all_writers, message)
+
             self._writers.add(writer_node_id)
             self._value = value
             self._version += 1
@@ -369,23 +395,23 @@ class ChannelStore:
     @classmethod
     def from_workflow_def(cls, workflow_def: WorkflowDef) -> "ChannelStore":
         """Factory method to build ChannelStore from WorkflowDef.
-        
+
         Creates channels based on reducer strategies:
         - OVERWRITE strategy -> LastValueChannel
         - All other strategies -> ReducerChannel
-        
+
         Args:
             workflow_def: Workflow definition with state field declarations
-            
+
         Returns:
             ChannelStore with channels for each state field
         """
         store = cls()
-        
+
         for key, reducer_def in workflow_def.state.items():
             if reducer_def.strategy == ReducerStrategy.OVERWRITE:
-                store.channels[key] = LastValueChannel()
+                store.channels[key] = LastValueChannel(key=key)
             else:
                 store.channels[key] = ReducerChannel(reducer_def)
-        
+
         return store

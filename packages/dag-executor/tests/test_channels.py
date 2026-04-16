@@ -10,6 +10,7 @@ from dag_executor.channels import (
     BarrierChannel,
     ChannelStore,
     ConflictError,
+    ChannelConflictError,
 )
 from dag_executor.schema import ReducerStrategy, ReducerDef, WorkflowDef, WorkflowConfig
 
@@ -49,6 +50,25 @@ class TestLastValueChannel:
         channel.write("value1", "node_a")
         with pytest.raises(ConflictError) as exc_info:
             channel.write("value2", "node_b")
+        assert "node_a" in str(exc_info.value)
+        assert "node_b" in str(exc_info.value)
+
+    def test_conflict_error_includes_channel_key(self) -> None:
+        """ChannelConflictError includes channel key in message and as attribute."""
+        channel = LastValueChannel(key="user_count")
+        channel.write(10, "node_a")
+        with pytest.raises(ChannelConflictError) as exc_info:
+            channel.write(20, "node_b")
+
+        # Check channel_key attribute
+        assert exc_info.value.channel_key == "user_count"
+
+        # Check writers attribute
+        assert "node_a" in exc_info.value.writers
+        assert "node_b" in exc_info.value.writers
+
+        # Check message includes channel key
+        assert "user_count" in str(exc_info.value)
         assert "node_a" in str(exc_info.value)
         assert "node_b" in str(exc_info.value)
 
