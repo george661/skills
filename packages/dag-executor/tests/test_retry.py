@@ -56,9 +56,8 @@ class TestRetryOnFilter:
         )
 
         ctx = ExecutionContext(
-            workflow_state={},
             node_outputs={},
-            
+
             semaphore=asyncio.Semaphore(1),
             pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
         )
@@ -90,9 +89,8 @@ class TestRetryOnFilter:
         )
 
         ctx = ExecutionContext(
-            workflow_state={},
             node_outputs={},
-            
+
             semaphore=asyncio.Semaphore(1),
             pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
         )
@@ -124,9 +122,8 @@ class TestRetryOnFilter:
         )
 
         ctx = ExecutionContext(
-            workflow_state={},
             node_outputs={},
-            
+
             semaphore=asyncio.Semaphore(1),
             pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
         )
@@ -158,9 +155,8 @@ class TestRetryOnFilter:
         )
 
         ctx = ExecutionContext(
-            workflow_state={},
             node_outputs={},
-            
+
             semaphore=asyncio.Semaphore(1),
             pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
         )
@@ -198,9 +194,8 @@ class TestPartialOutputClearing:
 
         # Pre-populate node_outputs with stale data
         ctx = ExecutionContext(
-            workflow_state={},
             node_outputs={"node1": {"stale": "data"}},
-            
+
             semaphore=asyncio.Semaphore(1),
             pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
         )
@@ -236,9 +231,8 @@ class TestPartialOutputClearing:
 
         # Pre-populate node_outputs
         ctx = ExecutionContext(
-            workflow_state={},
             node_outputs={"node1": {"old": "output"}},
-            
+
             semaphore=asyncio.Semaphore(1),
             pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
         )
@@ -274,7 +268,6 @@ class TestRetryBehavior:
         )
 
         ctx = ExecutionContext(
-            workflow_state={},
             node_outputs={},
             semaphore=asyncio.Semaphore(1),
             pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -308,7 +301,6 @@ class TestRetryBehavior:
         )
 
         ctx = ExecutionContext(
-            workflow_state={},
             node_outputs={},
             semaphore=asyncio.Semaphore(1),
             pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -342,7 +334,6 @@ class TestRetryBehavior:
         )
 
         ctx = ExecutionContext(
-            workflow_state={},
             node_outputs={},
             semaphore=asyncio.Semaphore(1),
             pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -396,7 +387,6 @@ class TestRetryBehavior:
         )
 
         ctx = ExecutionContext(
-            workflow_state={},
             node_outputs={},
             semaphore=asyncio.Semaphore(1),
             pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
