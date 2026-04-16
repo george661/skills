@@ -391,3 +391,83 @@ class TestNodeDefWithEdges:
         )
         assert node.edges is None
         assert node.depends_on == ["upstream"]
+
+
+class TestNodeDefChannelSubscriptions:
+    """Test NodeDef channel subscriptions (reads/writes)."""
+
+    def test_node_with_reads_and_writes(self) -> None:
+        """Test that NodeDef accepts optional reads and writes fields."""
+        from dag_executor.schema import NodeDef
+
+        node = NodeDef(
+            id="processor",
+            name="Data Processor",
+            type="bash",
+            script="echo 'processing'",
+            reads=["input_data", "config"],
+            writes=["output_data"]
+        )
+        assert node.reads == ["input_data", "config"]
+        assert node.writes == ["output_data"]
+
+    def test_node_reads_writes_default_to_none(self) -> None:
+        """Test that reads/writes default to None when not provided."""
+        from dag_executor.schema import NodeDef
+
+        node = NodeDef(
+            id="task",
+            name="Task",
+            type="bash",
+            script="echo 'task'"
+        )
+        assert node.reads is None
+        assert node.writes is None
+
+    def test_node_reads_must_be_list_of_strings(self) -> None:
+        """Test that reads field must be a list of strings."""
+        from dag_executor.schema import NodeDef
+
+        # Valid: list of strings
+        node = NodeDef(
+            id="task",
+            name="Task",
+            type="bash",
+            script="echo 'task'",
+            reads=["key1", "key2"]
+        )
+        assert node.reads == ["key1", "key2"]
+
+        # Invalid: not a list
+        with pytest.raises(ValidationError):
+            NodeDef(
+                id="task",
+                name="Task",
+                type="bash",
+                script="echo 'task'",
+                reads="not_a_list"  # type: ignore
+            )
+
+    def test_node_writes_must_be_list_of_strings(self) -> None:
+        """Test that writes field must be a list of strings."""
+        from dag_executor.schema import NodeDef
+
+        # Valid: list of strings
+        node = NodeDef(
+            id="task",
+            name="Task",
+            type="bash",
+            script="echo 'task'",
+            writes=["output1", "output2"]
+        )
+        assert node.writes == ["output1", "output2"]
+
+        # Invalid: not a list
+        with pytest.raises(ValidationError):
+            NodeDef(
+                id="task",
+                name="Task",
+                type="bash",
+                script="echo 'task'",
+                writes="not_a_list"  # type: ignore
+            )

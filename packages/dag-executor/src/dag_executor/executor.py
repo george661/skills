@@ -9,10 +9,11 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from simpleeval import SimpleEval  # type: ignore
 
+from dag_executor.channels import ChannelStore
 from dag_executor.graph import topological_sort_with_layers
 from dag_executor.reducers import ReducerRegistry
 from dag_executor.runners import get_runner
@@ -46,7 +47,9 @@ class ExecutionContext:
         node_statuses: Map of node_id -> current NodeStatus
         node_results: Map of node_id -> full NodeResult
         workflow_inputs: Global workflow inputs
-        workflow_state: Shared mutable state merged via reducers
+        workflow_state: Shared mutable state merged via reducers (backwards-compat view)
+        channel_store: Channel-based state management (None = legacy dict mode)
+        versions_seen: Per-node snapshot of channel versions at last execution
         _state_lock: Lock for thread-safe workflow_state mutations
         concurrency_limit: Max concurrent node executions
         stopped: Set to True when workflow should halt (on_failure=stop)
@@ -58,6 +61,8 @@ class ExecutionContext:
     node_results: Dict[str, NodeResult] = field(default_factory=dict)
     workflow_inputs: Dict[str, Any] = field(default_factory=dict)
     workflow_state: Dict[str, Any] = field(default_factory=dict)
+    channel_store: Optional[ChannelStore] = field(default=None)
+    versions_seen: Dict[str, Dict[str, int]] = field(default_factory=dict)
     _state_lock: threading.Lock = field(default_factory=threading.Lock)
     concurrency_limit: int = 10
     stopped: bool = False
@@ -183,6 +188,12 @@ class WorkflowExecutor:
             pool=pool,
             semaphore=asyncio.Semaphore(concurrency_limit),
         )
+
+        # Initialize ChannelStore if workflow has state declarations
+        if workflow_def.state:
+            ctx.channel_store = ChannelStore.from_workflow_def(workflow_def)
+            # Populate workflow_state from channels for backwards compatibility
+            ctx.workflow_state = ctx.channel_store.to_dict()
 
         # Initialize all nodes to PENDING status
         for node in workflow_def.nodes:
@@ -349,7 +360,51 @@ class WorkflowExecutor:
 
         # Execute all nodes in parallel
         await asyncio.gather(*tasks)
-    
+
+    def _infer_channel_subscriptions(
+        self,
+        node_def: NodeDef,
+        nodes_map: Dict[str, NodeDef],
+        workflow_def: WorkflowDef
+    ) -> "Tuple[List[str], List[str]]":
+        """Infer reads/writes from depends_on and state when not explicitly declared.
+
+        Args:
+            node_def: Node definition
+            nodes_map: Map of node_id -> NodeDef
+            workflow_def: Workflow definition
+
+        Returns:
+            Tuple of (reads, writes) channel key lists
+        """
+        # Infer reads
+        if node_def.reads is not None:
+            reads = node_def.reads
+        else:
+            # Collect all writes from upstream dependencies
+            reads_set: Set[str] = set()
+            for dep_id in node_def.depends_on:
+                if dep_id in nodes_map:
+                    dep_node = nodes_map[dep_id]
+                    # Recursively infer if upstream also has no writes declaration
+                    _, dep_writes = self._infer_channel_subscriptions(dep_node, nodes_map, workflow_def)
+                    reads_set.update(dep_writes)
+
+            # If no upstream writes found, node reads all state keys (full backwards compat)
+            if not reads_set and workflow_def.state:
+                reads = list(workflow_def.state.keys())
+            else:
+                reads = list(reads_set)
+
+        # Infer writes
+        if node_def.writes is not None:
+            writes = node_def.writes
+        else:
+            # Default: node writes nothing (will be updated dynamically based on outputs)
+            writes = []
+
+        return reads, writes
+
     async def _execute_node(
         self,
         node_def: NodeDef,
@@ -453,11 +508,11 @@ class WorkflowExecutor:
                 ))
             return
 
-        # Check trigger rule
-        if not self._check_trigger_rule(node_def, ctx):
+        # Check trigger (trigger_rule + version-aware)
+        if not self._check_trigger(node_def, nodes_map, workflow_def, ctx):
             ctx.node_results[node_id] = NodeResult(
                 status=NodeStatus.SKIPPED,
-                error="Trigger rule not satisfied"
+                error="Trigger rule not satisfied or no channel updates"
             )
             ctx.node_statuses[node_id] = NodeStatus.SKIPPED
             # Emit NODE_SKIPPED event
@@ -578,6 +633,15 @@ class WorkflowExecutor:
         ctx.node_results[node_id] = result
         ctx.node_statuses[node_id] = result.status
 
+        # Snapshot channel versions after node completion
+        if ctx.channel_store is not None and result.status == NodeStatus.COMPLETED:
+            reads, _ = self._infer_channel_subscriptions(node_def, nodes_map, workflow_def)
+            current_versions = ctx.channel_store.get_versions()
+            # Store only the versions of channels this node reads
+            ctx.versions_seen[node_id] = {
+                key: current_versions[key] for key in reads if key in current_versions
+            }
+
         # Store output for downstream variable resolution
         if result.status == NodeStatus.COMPLETED and result.output:
             # Parse JSON output if output_format=json is specified
@@ -601,21 +665,33 @@ class WorkflowExecutor:
                 self._evaluate_edges(node_def, ctx)
 
             # Apply reducers to merge outputs into workflow_state
+            # Route through channels when channel_store is available
             if workflow_def.state and isinstance(output_to_store, dict):
-                reducer_registry = ReducerRegistry()
-                for output_key, output_value in output_to_store.items():
-                    if output_key in workflow_def.state:
-                        reducer_def = workflow_def.state[output_key]
-                        # Thread-safe mutation of workflow_state
-                        with ctx._state_lock:
-                            current = ctx.workflow_state.get(output_key)
-                            merged = reducer_registry.apply(
-                                reducer_def.strategy,
-                                current,
-                                output_value,
-                                custom_function=reducer_def.function
-                            )
-                            ctx.workflow_state[output_key] = merged
+                if ctx.channel_store is not None:
+                    # Channel-based state management
+                    for output_key, output_value in output_to_store.items():
+                        if output_key in workflow_def.state:
+                            # Thread-safe write through channel
+                            with ctx._state_lock:
+                                ctx.channel_store.write(output_key, output_value, node_id)
+                    # Sync workflow_state from channels for backwards compatibility
+                    ctx.workflow_state = ctx.channel_store.to_dict()
+                else:
+                    # Legacy dict-based state management
+                    reducer_registry = ReducerRegistry()
+                    for output_key, output_value in output_to_store.items():
+                        if output_key in workflow_def.state:
+                            reducer_def = workflow_def.state[output_key]
+                            # Thread-safe mutation of workflow_state
+                            with ctx._state_lock:
+                                current = ctx.workflow_state.get(output_key)
+                                merged = reducer_registry.apply(
+                                    reducer_def.strategy,
+                                    current,
+                                    output_value,
+                                    custom_function=reducer_def.function
+                                )
+                                ctx.workflow_state[output_key] = merged
 
         # Compute state diff after reducer application
         state_diff: Dict[str, Any] = {}
@@ -871,7 +947,65 @@ class WorkflowExecutor:
             return all(status in terminal_states for status in upstream_statuses)
         
         return True
-    
+
+    def _check_trigger(
+        self,
+        node_def: NodeDef,
+        nodes_map: Dict[str, NodeDef],
+        workflow_def: WorkflowDef,
+        ctx: ExecutionContext
+    ) -> bool:
+        """Check if node should trigger based on trigger_rule AND channel versions.
+
+        Args:
+            node_def: Node definition
+            nodes_map: Map of node_id -> NodeDef
+            workflow_def: Workflow definition
+            ctx: Execution context
+
+        Returns:
+            True if node should trigger, False to skip
+        """
+        # First check traditional trigger rule (ALL_SUCCESS, ONE_SUCCESS, etc)
+        if not self._check_trigger_rule(node_def, ctx):
+            return False
+
+        # If no channel_store, fall back to trigger_rule only (backwards compat)
+        if ctx.channel_store is None:
+            return True
+
+        # Version-aware triggering: check if subscribed channels have new versions
+        node_id = node_def.id
+        reads, _ = self._infer_channel_subscriptions(node_def, nodes_map, workflow_def)
+
+        # If node reads no channels, always trigger (after trigger_rule passes)
+        if not reads:
+            return True
+
+        # Get versions this node saw on its last execution (empty dict on first run)
+        last_seen = ctx.versions_seen.get(node_id, {})
+
+        # On first run (no previous versions), always trigger
+        if not last_seen:
+            return True
+
+        # Get current channel versions
+        current_versions = ctx.channel_store.get_versions()
+
+        # Check if ANY subscribed channel has a newer version
+        for channel_key in reads:
+            if channel_key not in current_versions:
+                # Channel doesn't exist yet, trigger (first write to this channel)
+                return True
+            current_ver = current_versions[channel_key]
+            last_ver = last_seen.get(channel_key, 0)
+            if current_ver > last_ver:
+                # At least one channel updated, node should trigger
+                return True
+
+        # All subscribed channels have same versions as last run, skip execution
+        return False
+
     def _resolve_node_inputs(
         self,
         node_def: NodeDef,

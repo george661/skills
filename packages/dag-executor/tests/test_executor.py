@@ -927,6 +927,7 @@ class TestProgressCallbackWiring:
         assert len(callback_is_none) == 1
         assert callback_is_none[0] is True
 
+
 # ---------------------------------------------------------------------------
 # Version-based checkpoint tests (GW-5025)
 # ---------------------------------------------------------------------------
@@ -1157,3 +1158,129 @@ def test_executor_no_channel_store_falls_back_to_hash():
         assert result2.status == WorkflowStatus.COMPLETED
         # Node should be skipped via hash check
         assert len(execution_log) == 0, "Expected no re-execution (hash-based skip)"
+
+
+class TestChannelStoreInitialization:
+    """Tests for ChannelStore initialization in executor."""
+
+    def test_workflow_with_state_runs_successfully(self) -> None:
+        """Test that workflows with state declarations execute successfully (channel_store initialized)."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        node = NodeDef(id="task", name="Task", type="bash", script="echo 'done'")
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=[node],
+            state={
+                "counter": ReducerDef(strategy=ReducerStrategy.OVERWRITE),
+            }
+        )
+
+        executor = WorkflowExecutor()
+        result = asyncio.run(executor.execute(workflow_def, {}))
+
+        # Verify workflow completes successfully
+        assert result.status == WorkflowStatus.COMPLETED
+        # Channel store should have been initialized internally
+
+    def test_workflow_without_state_runs_successfully(self) -> None:
+        """Test that workflows without state continue to work (backwards compatible)."""
+        node = NodeDef(id="task", name="Task", type="bash", script="echo 'done'")
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=[node]
+            # No state field = backwards compatible mode
+        )
+
+        executor = WorkflowExecutor()
+        result = asyncio.run(executor.execute(workflow_def, {}))
+
+        # Verify workflow completes successfully
+        assert result.status == WorkflowStatus.COMPLETED
+
+    def test_state_mutations_through_channels(self) -> None:
+        """Test that state mutations go through channel_store when available."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        # Create two nodes that write to the same append state key
+        nodes = [
+            NodeDef(id="task1", name="Task 1", type="bash", script='echo \'{"items": "value1"}\'', output_format="json"),
+            NodeDef(id="task2", name="Task 2", type="bash", script='echo \'{"items": "value2"}\'', output_format="json"),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "items": ReducerDef(strategy=ReducerStrategy.APPEND),
+            }
+        )
+
+        executor = WorkflowExecutor()
+        result = asyncio.run(executor.execute(workflow_def, {}))
+
+        # Verify workflow completes and state was merged via channels
+        assert result.status == WorkflowStatus.COMPLETED
+        assert "items" in result.outputs
+        # Both values should be in the list (APPEND reducer)
+        items = result.outputs["items"]
+        assert isinstance(items, list)
+        assert len(items) == 2
+        assert "value1" in items
+        assert "value2" in items
+
+
+class TestVersionAwareTriggering:
+    """Tests for version-aware triggering."""
+
+    def test_node_triggers_on_first_run(self) -> None:
+        """Test that nodes trigger on first run (no previous versions)."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        nodes = [
+            NodeDef(id="producer", name="Producer", type="bash", script='echo \'{"data": "initial"}\'', output_format="json", writes=["data"]),
+            NodeDef(id="consumer", name="Consumer", type="bash", script="echo 'consumed'", depends_on=["producer"], reads=["data"]),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "data": ReducerDef(strategy=ReducerStrategy.OVERWRITE),
+            }
+        )
+
+        executor = WorkflowExecutor()
+        result = asyncio.run(executor.execute(workflow_def, {}))
+
+        # Both nodes should execute on first run
+        assert result.status == WorkflowStatus.COMPLETED
+        assert result.node_results["producer"].status == NodeStatus.COMPLETED
+        assert result.node_results["consumer"].status == NodeStatus.COMPLETED
+
+    def test_backwards_compatible_no_reads_writes(self) -> None:
+        """Test that nodes without reads/writes declarations work unchanged."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        nodes = [
+            NodeDef(id="task1", name="Task 1", type="bash", script='echo \'{"count": 1}\'', output_format="json"),
+            NodeDef(id="task2", name="Task 2", type="bash", script="echo 'done'", depends_on=["task1"]),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "count": ReducerDef(strategy=ReducerStrategy.OVERWRITE),
+            }
+        )
+
+        executor = WorkflowExecutor()
+        result = asyncio.run(executor.execute(workflow_def, {}))
+
+        # Should complete successfully with inferred reads/writes
+        assert result.status == WorkflowStatus.COMPLETED
+        assert result.node_results["task1"].status == NodeStatus.COMPLETED
+        assert result.node_results["task2"].status == NodeStatus.COMPLETED
