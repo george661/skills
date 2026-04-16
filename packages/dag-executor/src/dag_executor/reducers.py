@@ -158,7 +158,7 @@ class ReducerRegistry:
             ) from e
 
 
-def parse_reducer(spec: Union[dict, ReducerDef]) -> ReducerDef:
+def parse_reducer(spec: Union[dict[str, Any], ReducerDef]) -> ReducerDef:
     """Parse reducer specification from inline dict or explicit ReducerDef.
 
     Supports two formats:
