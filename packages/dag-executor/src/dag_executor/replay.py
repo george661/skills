@@ -140,14 +140,15 @@ class TraceRecorder:
         self._events.append(trace_event)
 
         # Track node execution order (NODE_STARTED events)
-        if "STARTED" in trace_event.event_type and trace_event.node_id:
+        # Note: event_type.value returns lowercase (e.g., "node_started")
+        if trace_event.event_type == "node_started" and trace_event.node_id:
             if trace_event.node_id not in self._node_order:
                 self._node_order.append(trace_event.node_id)
 
         # Track workflow-level info
-        if "WORKFLOW_STARTED" in trace_event.event_type:
+        if trace_event.event_type == "workflow_started":
             self._workflow_name = getattr(event, "workflow_id", "")
-        if trace_event.event_type in ("WORKFLOW_COMPLETED", "WORKFLOW_FAILED", "WORKFLOW_INTERRUPTED"):
+        if trace_event.event_type in ("workflow_completed", "workflow_failed", "workflow_interrupted"):
             self._final_status = trace_event.status
 
     def build_trace(self, run_id: str, inputs: Optional[Dict[str, Any]] = None) -> ExecutionTrace:
