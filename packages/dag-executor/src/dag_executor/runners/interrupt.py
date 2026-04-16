@@ -1,5 +1,4 @@
 """Interrupt runner for human-in-the-loop nodes."""
-from typing import Optional
 from simpleeval import SimpleEval, NameNotDefined  # type: ignore[import-untyped]
 
 from dag_executor.schema import NodeResult, NodeStatus

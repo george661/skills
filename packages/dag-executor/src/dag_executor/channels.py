@@ -413,14 +413,15 @@ class ChannelStore:
             workflow_def: Workflow definition with state field declarations
 
         Returns:
-            ChannelStore with channels for each state field
+            ChannelStore with channels for each state field (empty if no state block)
         """
         store = cls()
 
-        for key, reducer_def in workflow_def.state.items():
-            if reducer_def.strategy == ReducerStrategy.OVERWRITE:
-                store.channels[key] = LastValueChannel(key=key)
-            else:
-                store.channels[key] = ReducerChannel(reducer_def)
+        if workflow_def.state:
+            for key, reducer_def in workflow_def.state.items():
+                if reducer_def.strategy == ReducerStrategy.OVERWRITE:
+                    store.channels[key] = LastValueChannel(key=key)
+                else:
+                    store.channels[key] = ReducerChannel(reducer_def)
 
         return store
