@@ -1,6 +1,6 @@
 """State reducer registry for merging node outputs."""
 import importlib
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
 
 from dag_executor.schema import ReducerStrategy, ReducerDef
 
@@ -158,7 +158,7 @@ class ReducerRegistry:
             ) from e
 
 
-def parse_reducer(spec: Union[dict[str, Any], ReducerDef]) -> ReducerDef:
+def parse_reducer(spec: Union[Dict[str, Any], ReducerDef]) -> ReducerDef:
     """Parse reducer specification from inline dict or explicit ReducerDef.
 
     Supports two formats:

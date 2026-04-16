@@ -1,7 +1,7 @@
 """Tests for state diff capture in NODE_COMPLETED events."""
 import asyncio
 import pytest
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from dag_executor.executor import WorkflowExecutor
 from dag_executor.parser import load_workflow_from_string
 from dag_executor.schema import NodeStatus, WorkflowStatus
@@ -43,7 +43,7 @@ nodes:
 
 
 @pytest.fixture
-def capturing_event_emitter() -> tuple[EventEmitter, List[WorkflowEvent]]:
+def capturing_event_emitter() -> Tuple[EventEmitter, List[WorkflowEvent]]:
     """An EventEmitter paired with a list that captures all emitted events."""
     captured_events: List[WorkflowEvent] = []
     emitter = EventEmitter()
@@ -55,7 +55,7 @@ class TestStateDiff:
     """Test state diff capture in NODE_COMPLETED events."""
 
     def test_state_diff_metadata_present(
-        self, test_workflow_yaml_simple: str, capturing_event_emitter: tuple[EventEmitter, List[WorkflowEvent]]
+        self, test_workflow_yaml_simple: str, capturing_event_emitter: Tuple[EventEmitter, List[WorkflowEvent]]
     ) -> None:
         """NODE_COMPLETED events include state_diff in metadata."""
         workflow_def = load_workflow_from_string(test_workflow_yaml_simple)
@@ -78,7 +78,7 @@ class TestStateDiff:
         assert "state_diff" in event.metadata, "state_diff must be present in NODE_COMPLETED event metadata"
 
     def test_state_diff_captures_state_changes(
-        self, test_workflow_yaml_with_state: str, capturing_event_emitter: tuple[EventEmitter, List[WorkflowEvent]]
+        self, test_workflow_yaml_with_state: str, capturing_event_emitter: Tuple[EventEmitter, List[WorkflowEvent]]
     ) -> None:
         """State diff captured correctly when state is modified."""
         workflow_def = load_workflow_from_string(test_workflow_yaml_with_state)
@@ -105,7 +105,7 @@ class TestStateDiff:
         assert state_diff["output"] == "new_value"
 
     def test_state_diff_empty_when_no_changes(
-        self, test_workflow_yaml_simple: str, capturing_event_emitter: tuple[EventEmitter, List[WorkflowEvent]]
+        self, test_workflow_yaml_simple: str, capturing_event_emitter: Tuple[EventEmitter, List[WorkflowEvent]]
     ) -> None:
         """State diff is empty dict when node makes no state changes."""
         workflow_def = load_workflow_from_string(test_workflow_yaml_simple)
