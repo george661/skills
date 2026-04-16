@@ -1,5 +1,6 @@
 """Core DAG workflow executor with layer-parallel execution."""
 import asyncio
+import copy
 import json
 import logging
 import random
@@ -471,7 +472,10 @@ class WorkflowExecutor:
                 dispatch=node_def.dispatch.value if node_def.dispatch else None,
                 timestamp=started_at
             ))
-        
+
+        # Initialize pre_state for diff computation
+        pre_state: Dict[str, Any] = {}
+
         try:
             # Resolve variables in node definition
             resolved_inputs = self._resolve_node_inputs(node_def, ctx)
@@ -525,6 +529,9 @@ class WorkflowExecutor:
             
             # Get timeout for this node
             timeout = self._get_node_timeout(node_def)
+
+            # Capture pre-execution state snapshot for diff computation
+            pre_state = copy.deepcopy(ctx.workflow_state)
 
             # Execute with retry logic (exponential backoff + jitter)
             result = await self._execute_with_retry(
@@ -580,9 +587,9 @@ class WorkflowExecutor:
                 self._evaluate_edges(node_def, ctx)
 
             # Apply reducers to merge outputs into workflow_state
-            if workflow_def.state and isinstance(result.output, dict):
+            if workflow_def.state and isinstance(output_to_store, dict):
                 reducer_registry = ReducerRegistry()
-                for output_key, output_value in result.output.items():
+                for output_key, output_value in output_to_store.items():
                     if output_key in workflow_def.state:
                         reducer_def = workflow_def.state[output_key]
                         # Thread-safe mutation of workflow_state
@@ -595,6 +602,16 @@ class WorkflowExecutor:
                                 custom_function=reducer_def.function
                             )
                             ctx.workflow_state[output_key] = merged
+
+        # Compute state diff after reducer application
+        state_diff: Dict[str, Any] = {}
+        for key in ctx.workflow_state:
+            if key not in pre_state or ctx.workflow_state[key] != pre_state.get(key):
+                state_diff[key] = ctx.workflow_state[key]
+        # Also check for keys that were in pre_state but removed (rare case)
+        for key in pre_state:
+            if key not in ctx.workflow_state:
+                state_diff[key] = None
 
         # Handle INTERRUPTED status
         if result.status == NodeStatus.INTERRUPTED:
@@ -650,6 +667,7 @@ class WorkflowExecutor:
                     duration_ms=duration_ms,
                     model=node_def.model.value if node_def.model else None,
                     dispatch=node_def.dispatch.value if node_def.dispatch else None,
+                    metadata={"state_diff": state_diff},
                     timestamp=completed_at
                 ))
             elif result.status == NodeStatus.FAILED:
