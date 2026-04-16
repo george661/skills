@@ -18,8 +18,11 @@ def test_missing_child_workflow(fixtures_dir):
     parent = load_workflow(str(fixtures_dir / "parent_with_missing_child.yaml"))
     validator = ContractValidator(workflows_dir=fixtures_dir)
     issues = validator.check_contracts(parent)
-    # Missing child → no issues (it's not a sub-DAG, just a command)
-    assert len(issues) == 0
+    # Missing child → should emit error
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].code == "missing_child_workflow"
+    assert "nonexistent_child" in issues[0].message
 
 
 def test_missing_required_input_error(fixtures_dir):
@@ -99,3 +102,23 @@ def test_no_workflows_dir_skips_validation(fixtures_dir):
     validator = ContractValidator(workflows_dir=None)
     issues = validator.check_contracts(parent)
     assert len(issues) == 0  # No child can be loaded → skip validation
+
+
+def test_output_refs_in_params(fixtures_dir):
+    """Check that params field is scanned for variable references."""
+    parent = load_workflow(str(fixtures_dir / "parent_refs_in_params.yaml"))
+    validator = ContractValidator(workflows_dir=fixtures_dir)
+    issues = validator.check_contracts(parent)
+    # Should find the invalid reference in params
+    assert len(issues) >= 1
+    assert any(i.code == "unresolvable_child_output" and "bad_field" in i.message for i in issues)
+
+
+def test_output_refs_in_args(fixtures_dir):
+    """Check that args field is scanned for variable references."""
+    parent = load_workflow(str(fixtures_dir / "parent_refs_in_args.yaml"))
+    validator = ContractValidator(workflows_dir=fixtures_dir)
+    issues = validator.check_contracts(parent)
+    # Should find the invalid reference in args
+    assert len(issues) >= 1
+    assert any(i.code == "unresolvable_child_output" and "invalid_output" in i.message for i in issues)

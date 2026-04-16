@@ -15,7 +15,6 @@ Usage:
     validator = ContractValidator(workflows_dir=Path("workflows/"))
     issues = validator.check_contracts(parent_def, child_name="implement")
 """
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -80,7 +79,22 @@ class ContractValidator:
 
             child_def = self._load_child(node.command)
             if child_def is None:
-                # Not a sub-DAG (might be a markdown command) — skip
+                # Check if workflows_dir is set and YAML file should exist but doesn't
+                if self.workflows_dir is not None:
+                    yaml_path = self.workflows_dir / f"{node.command}.yaml"
+                    # Only flag as error if we expected to find a workflow file
+                    # (workflows_dir is set) but it doesn't exist
+                    if not yaml_path.exists():
+                        issues.append(ValidationIssue(
+                            severity="error",
+                            node_id=node.id,
+                            code="missing_child_workflow",
+                            message=(
+                                f"Command node references '{node.command}' but no workflow file "
+                                f"found at {yaml_path.relative_to(self.workflows_dir.parent) if self.workflows_dir.parent else yaml_path}"
+                            ),
+                        ))
+                # Not a sub-DAG (might be a markdown command) — skip further checks
                 continue
 
             # Check 1: Child required inputs are provided by parent args
@@ -125,22 +139,35 @@ class ContractValidator:
         issues: List[ValidationIssue],
     ) -> None:
         """Check that parent variable refs ($command_node.field) match child outputs."""
+        from dag_executor.variables import extract_variable_references
+
         child_output_fields = set(child.outputs.keys())
         if not child_output_fields:
             return  # Child has no declared outputs — can't validate
 
         # Scan parent nodes for variable references to this command node's output
-        prefix = f"${command_node_id}."
         for node in parent.nodes:
-            # Check script, prompt, condition fields for variable refs
-            for field_value in [node.script, node.prompt, node.condition]:
-                if field_value and prefix in field_value:
-                    # Extract referenced field names
-                    refs = re.findall(
-                        rf"\${re.escape(command_node_id)}\.(\w+)",
-                        field_value,
-                    )
-                    for ref_field in refs:
+            # Collect all fields that can contain variable references
+            fields_to_check: List[Any] = []
+            if node.script:
+                fields_to_check.append(node.script)
+            if node.prompt:
+                fields_to_check.append(node.prompt)
+            if node.condition:
+                fields_to_check.append(node.condition)
+            if node.params:
+                fields_to_check.append(node.params)
+            if node.args:
+                fields_to_check.append(node.args)
+
+            # Extract all variable references using the same method as validator.py
+            for field_value in fields_to_check:
+                refs = extract_variable_references(field_value)
+                for node_id_ref, field_path in refs:
+                    # Check if this reference is to our command node
+                    if node_id_ref == command_node_id and field_path:
+                        # Extract the top-level field being referenced
+                        ref_field = field_path.split('.', 1)[0]
                         if ref_field not in child_output_fields:
                             issues.append(ValidationIssue(
                                 severity="warning",

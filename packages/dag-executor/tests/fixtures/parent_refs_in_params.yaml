@@ -1,0 +1,26 @@
+name: Parent With Refs in Params
+config:
+  checkpoint_prefix: parent-test
+
+nodes:
+  - id: call_child
+    name: Call Child Workflow
+    type: command
+    command: child_simple
+    args:
+      - "arg1_value"
+      - "arg2_value"
+  
+  - id: use_output_in_params
+    name: Use Child Output in Params
+    type: bash
+    depends_on:
+      - call_child
+    script: "echo 'Running with params'"
+    params:
+      valid_ref: "$call_child.result"
+      invalid_ref: "$call_child.bad_field"
+
+outputs:
+  final:
+    node: use_output_in_params
