@@ -1021,7 +1021,8 @@ class WorkflowExecutor:
         resolved = resolve_variables(
             inputs_to_resolve,
             ctx.node_outputs,
-            ctx.workflow_inputs
+            ctx.workflow_inputs,
+            channel_store=None
         )
 
         return resolved  # type: ignore[no-any-return]
