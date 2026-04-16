@@ -598,21 +598,33 @@ class WorkflowExecutor:
                 self._evaluate_edges(node_def, ctx)
 
             # Apply reducers to merge outputs into workflow_state
+            # GW-5023: Route through channels when channel_store is available
             if workflow_def.state and isinstance(output_to_store, dict):
-                reducer_registry = ReducerRegistry()
-                for output_key, output_value in output_to_store.items():
-                    if output_key in workflow_def.state:
-                        reducer_def = workflow_def.state[output_key]
-                        # Thread-safe mutation of workflow_state
-                        with ctx._state_lock:
-                            current = ctx.workflow_state.get(output_key)
-                            merged = reducer_registry.apply(
-                                reducer_def.strategy,
-                                current,
-                                output_value,
-                                custom_function=reducer_def.function
-                            )
-                            ctx.workflow_state[output_key] = merged
+                if ctx.channel_store is not None:
+                    # Channel-based state management
+                    for output_key, output_value in output_to_store.items():
+                        if output_key in workflow_def.state:
+                            # Thread-safe write through channel
+                            with ctx._state_lock:
+                                ctx.channel_store.write(output_key, output_value, node_id)
+                    # Sync workflow_state from channels for backwards compatibility
+                    ctx.workflow_state = ctx.channel_store.to_dict()
+                else:
+                    # Legacy dict-based state management
+                    reducer_registry = ReducerRegistry()
+                    for output_key, output_value in output_to_store.items():
+                        if output_key in workflow_def.state:
+                            reducer_def = workflow_def.state[output_key]
+                            # Thread-safe mutation of workflow_state
+                            with ctx._state_lock:
+                                current = ctx.workflow_state.get(output_key)
+                                merged = reducer_registry.apply(
+                                    reducer_def.strategy,
+                                    current,
+                                    output_value,
+                                    custom_function=reducer_def.function
+                                )
+                                ctx.workflow_state[output_key] = merged
 
         # Compute state diff after reducer application
         state_diff: Dict[str, Any] = {}

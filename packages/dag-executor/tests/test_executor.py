@@ -967,3 +967,34 @@ class TestChannelStoreInitialization:
 
         # Verify workflow completes successfully
         assert result.status == WorkflowStatus.COMPLETED
+
+    def test_state_mutations_through_channels(self) -> None:
+        """Test that state mutations go through channel_store when available."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        # Create two nodes that write to the same append state key
+        nodes = [
+            NodeDef(id="task1", name="Task 1", type="bash", script='echo \'{"items": "value1"}\'', output_format="json"),
+            NodeDef(id="task2", name="Task 2", type="bash", script='echo \'{"items": "value2"}\'', output_format="json"),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "items": ReducerDef(strategy=ReducerStrategy.APPEND),
+            }
+        )
+
+        executor = WorkflowExecutor()
+        result = asyncio.run(executor.execute(workflow_def, {}))
+
+        # Verify workflow completes and state was merged via channels
+        assert result.status == WorkflowStatus.COMPLETED
+        assert "items" in result.outputs
+        # Both values should be in the list (APPEND reducer)
+        items = result.outputs["items"]
+        assert isinstance(items, list)
+        assert len(items) == 2
+        assert "value1" in items
+        assert "value2" in items
