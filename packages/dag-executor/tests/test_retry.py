@@ -251,3 +251,186 @@ class TestPartialOutputClearing:
         assert result.status == NodeStatus.COMPLETED
         # Old output should have been cleared
         assert "node1" not in ctx.node_outputs or ctx.node_outputs["node1"] != {"old": "output"}
+
+
+@pytest.mark.asyncio
+class TestRetryBehavior:
+    """Test retry behavior: success on retry, exhaustion, backoff delays, and progress events."""
+
+    async def test_retry_succeeds_on_second_attempt(self) -> None:
+        """Test that retry logic succeeds when the second attempt passes."""
+        node_def = NodeDef(
+            id="node1",
+            name="Flakey Node",
+            type="bash",
+            script="echo test",
+            retry=RetryConfig(max_attempts=3, delay_ms=100)
+        )
+
+        runner = FlakeyRunner(fail_count=1, error_message="Transient error")
+        runner_ctx = RunnerContext(
+            node_def=node_def,
+            workflow_id="test",
+        )
+
+        ctx = ExecutionContext(
+            workflow_state={},
+            node_outputs={},
+            semaphore=asyncio.Semaphore(1),
+            pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        )
+
+        with patch("asyncio.sleep", return_value=None):
+            executor = WorkflowExecutor()
+            result = await executor._execute_with_retry(
+                node_def, runner, runner_ctx, timeout=30, ctx=ctx
+            )
+
+            # Should succeed on second attempt
+            assert result.status == NodeStatus.COMPLETED
+            assert result.output == {"success": True}
+            assert runner.call_count == 2
+
+    async def test_retry_exhaustion_returns_failure(self) -> None:
+        """Test that retry exhaustion returns the last failure result."""
+        node_def = NodeDef(
+            id="node1",
+            name="Always Fails Node",
+            type="bash",
+            script="echo test",
+            retry=RetryConfig(max_attempts=3, delay_ms=100)
+        )
+
+        runner = FlakeyRunner(fail_count=10, error_message="Persistent error")
+        runner_ctx = RunnerContext(
+            node_def=node_def,
+            workflow_id="test",
+        )
+
+        ctx = ExecutionContext(
+            workflow_state={},
+            node_outputs={},
+            semaphore=asyncio.Semaphore(1),
+            pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        )
+
+        with patch("asyncio.sleep", return_value=None):
+            executor = WorkflowExecutor()
+            result = await executor._execute_with_retry(
+                node_def, runner, runner_ctx, timeout=30, ctx=ctx
+            )
+
+            # Should fail after exhausting all retries
+            assert result.status == NodeStatus.FAILED
+            assert "Persistent error (attempt 3)" in result.error
+            assert runner.call_count == 3
+
+    async def test_backoff_delay_verification(self) -> None:
+        """Test that exponential backoff with jitter is applied correctly."""
+        node_def = NodeDef(
+            id="node1",
+            name="Flakey Node",
+            type="bash",
+            script="echo test",
+            retry=RetryConfig(max_attempts=4, delay_ms=100)
+        )
+
+        runner = FlakeyRunner(fail_count=3, error_message="Transient error")
+        runner_ctx = RunnerContext(
+            node_def=node_def,
+            workflow_id="test",
+        )
+
+        ctx = ExecutionContext(
+            workflow_state={},
+            node_outputs={},
+            semaphore=asyncio.Semaphore(1),
+            pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        )
+
+        with patch("asyncio.sleep") as mock_sleep:
+            mock_sleep.return_value = None
+            executor = WorkflowExecutor()
+            result = await executor._execute_with_retry(
+                node_def, runner, runner_ctx, timeout=30, ctx=ctx
+            )
+
+            # Should succeed on 4th attempt (after 3 failures)
+            assert result.status == NodeStatus.COMPLETED
+            assert runner.call_count == 4
+
+            # Verify asyncio.sleep was called 3 times (after first 3 failures)
+            assert mock_sleep.call_count == 3
+
+            # Extract delays and verify exponential backoff pattern
+            # Expected: base * 2^attempt + jitter
+            # Attempt 0: 100 * 2^0 = 100ms + jitter (0-25ms) -> 100-125ms -> 0.1-0.125s
+            # Attempt 1: 100 * 2^1 = 200ms + jitter (0-50ms) -> 200-250ms -> 0.2-0.25s
+            # Attempt 2: 100 * 2^2 = 400ms + jitter (0-100ms) -> 400-500ms -> 0.4-0.5s
+            delays = [call.args[0] for call in mock_sleep.call_args_list]
+
+            # Verify first delay is in expected range
+            assert 0.1 <= delays[0] <= 0.125, f"First delay {delays[0]} not in [0.1, 0.125]"
+            # Verify second delay is in expected range
+            assert 0.2 <= delays[1] <= 0.25, f"Second delay {delays[1]} not in [0.2, 0.25]"
+            # Verify third delay is in expected range
+            assert 0.4 <= delays[2] <= 0.5, f"Third delay {delays[2]} not in [0.4, 0.5]"
+
+    async def test_node_progress_event_emitted_on_retry(self) -> None:
+        """Test that NODE_PROGRESS events are emitted during retry attempts."""
+        from unittest.mock import Mock
+        from dag_executor.events import EventType
+
+        node_def = NodeDef(
+            id="node1",
+            name="Flakey Node",
+            type="bash",
+            script="echo test",
+            retry=RetryConfig(max_attempts=3, delay_ms=100)
+        )
+
+        runner = FlakeyRunner(fail_count=2, error_message="Transient error")
+        runner_ctx = RunnerContext(
+            node_def=node_def,
+            workflow_id="test-workflow",
+        )
+
+        ctx = ExecutionContext(
+            workflow_state={},
+            node_outputs={},
+            semaphore=asyncio.Semaphore(1),
+            pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        )
+
+        # Mock event emitter
+        mock_emitter = Mock()
+
+        with patch("asyncio.sleep", return_value=None):
+            executor = WorkflowExecutor()
+            result = await executor._execute_with_retry(
+                node_def, runner, runner_ctx, timeout=30, ctx=ctx,
+                event_emitter=mock_emitter
+            )
+
+            # Should succeed on 3rd attempt
+            assert result.status == NodeStatus.COMPLETED
+            assert runner.call_count == 3
+
+            # Verify NODE_PROGRESS events were emitted (2 retries = 2 events)
+            assert mock_emitter.emit.call_count == 2
+
+            # Verify first event
+            first_event = mock_emitter.emit.call_args_list[0].args[0]
+            assert first_event.event_type == EventType.NODE_PROGRESS
+            assert first_event.workflow_id == "test-workflow"
+            assert first_event.node_id == "node1"
+            assert first_event.metadata["attempt"] == 1
+            assert first_event.metadata["max_attempts"] == 3
+            assert "delay_ms" in first_event.metadata
+            assert "last_error" in first_event.metadata
+
+            # Verify second event
+            second_event = mock_emitter.emit.call_args_list[1].args[0]
+            assert second_event.event_type == EventType.NODE_PROGRESS
+            assert second_event.metadata["attempt"] == 2
+            assert second_event.metadata["max_attempts"] == 3

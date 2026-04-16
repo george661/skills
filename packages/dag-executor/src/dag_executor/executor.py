@@ -1022,7 +1022,7 @@ class WorkflowExecutor:
 
         max_attempts = 1
         base_delay_ms = 0
-        retry_on_patterns: Optional[list[str]] = None
+        retry_on_patterns: Optional[List[str]] = None
         if node_def.retry:
             max_attempts = node_def.retry.max_attempts
             base_delay_ms = node_def.retry.delay_ms
