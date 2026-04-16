@@ -1034,7 +1034,7 @@ class WorkflowExecutor:
         for attempt in range(max_attempts):
             async with ctx.semaphore:
                 try:
-                    result = await asyncio.wait_for(
+                    result: NodeResult = await asyncio.wait_for(
                         loop.run_in_executor(ctx.pool, runner.run, runner_ctx),
                         timeout=timeout
                     )

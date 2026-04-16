@@ -16,7 +16,7 @@ Usage:
     issues = validator.check_contracts(parent_def, child_name="implement")
 """
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from dag_executor.parser import load_workflow as _load_workflow
 from dag_executor.schema import WorkflowDef
@@ -93,7 +93,7 @@ class ContractValidator:
     def _check_required_inputs(
         self,
         parent_node_id: str,
-        parent_args: list,
+        parent_args: List[Any],
         child: WorkflowDef,
         issues: List[ValidationIssue],
     ) -> None:
