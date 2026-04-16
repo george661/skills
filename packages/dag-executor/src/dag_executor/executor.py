@@ -1022,14 +1022,19 @@ class WorkflowExecutor:
 
         max_attempts = 1
         base_delay_ms = 0
+        retry_on_patterns: Optional[list[str]] = None
         if node_def.retry:
             max_attempts = node_def.retry.max_attempts
             base_delay_ms = node_def.retry.delay_ms
+            retry_on_patterns = node_def.retry.retry_on
 
         last_result: Optional[NodeResult] = None
         loop = asyncio.get_running_loop()
         assert ctx.semaphore is not None
         assert ctx.pool is not None
+
+        # Clear any partial outputs before retry loop starts (prevents state corruption)
+        ctx.node_outputs.pop(node_def.id, None)
 
         for attempt in range(max_attempts):
             async with ctx.semaphore:
@@ -1049,6 +1054,16 @@ class WorkflowExecutor:
             # Success or non-retryable status — return immediately
             if result.status != NodeStatus.FAILED:
                 return result
+
+            # If retry_on filter is set, check if error matches any pattern
+            if retry_on_patterns is not None and result.error:
+                error_matches = any(
+                    pattern.lower() in result.error.lower()
+                    for pattern in retry_on_patterns
+                )
+                if not error_matches:
+                    # Error doesn't match filter — don't retry, return immediately
+                    break
 
             # Last attempt — don't sleep, just return the failure
             if attempt >= max_attempts - 1:
