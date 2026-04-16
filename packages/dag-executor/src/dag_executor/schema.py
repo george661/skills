@@ -270,6 +270,10 @@ class NodeDef(BaseModel):
     output_format: Optional[OutputFormat] = Field(default=None, description="Output format")
     read_state: Optional[List[str]] = Field(default=None, description="State keys this node reads (None = full state)")
 
+    # Channel subscriptions (GW-5023)
+    reads: Optional[List[str]] = Field(default=None, description="Channel keys this node reads (None = infer from depends_on)")
+    writes: Optional[List[str]] = Field(default=None, description="Channel keys this node writes (None = infer from outputs)")
+
     # Node type-specific fields (flattened for YAML simplicity)
     # Skill node
     skill: Optional[str] = Field(default=None, description="Skill path (for type=skill)")
