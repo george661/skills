@@ -356,10 +356,23 @@ class WorkflowValidator:
         result: ValidationResult,
     ) -> None:
         """Check that state reducer keys are actually produced by nodes."""
+        from dag_executor.schema import ChannelFieldDef, ReducerDef
+
         # Collect all output keys produced by nodes (heuristic: we can't know
         # output keys statically for bash/prompt, but we can flag state keys
         # that have CUSTOM strategy with missing functions)
-        for state_key, reducer_def in workflow_def.state.items():
+        for state_key, field_def in workflow_def.state.items():
+            # Extract ReducerDef from union type (ChannelFieldDef or ReducerDef)
+            reducer_def = None
+            if isinstance(field_def, ChannelFieldDef):
+                reducer_def = field_def.reducer  # May be None
+            elif isinstance(field_def, ReducerDef):
+                reducer_def = field_def
+
+            # Skip if no reducer (e.g., ChannelFieldDef without reducer)
+            if reducer_def is None:
+                continue
+
             if reducer_def.strategy.value == "custom" and reducer_def.function:
                 # Verify the custom function is importable
                 parts = reducer_def.function.rsplit(".", 1)
@@ -378,27 +391,31 @@ class WorkflowValidator:
         nodes_map: Dict[str, NodeDef],
         result: ValidationResult,
     ) -> None:
-        """Check that reads/writes channel keys match declared state."""
+        """Check that reads/writes channel keys match declared state or workflow inputs."""
         if not workflow_def.state:
             # No state declared, skip channel subscription checks
             return
 
         state_keys = set(workflow_def.state.keys())
+        input_keys = set(workflow_def.inputs.keys())
+        # Reads can reference state keys OR workflow input keys
+        valid_read_keys = state_keys | input_keys
 
         for node in workflow_def.nodes:
-            # Check reads keys
+            # Check reads keys (can be state or input keys)
             if node.reads is not None:
                 for key in node.reads:
-                    if key not in state_keys:
+                    if key not in valid_read_keys:
                         result.issues.append(ValidationIssue(
                             severity="warning",
                             node_id=node.id,
                             code="unknown_read_channel",
                             message=f"Node declares reads=['{key}'] but '{key}' "
-                                    f"not in workflow state keys: {sorted(state_keys)}",
+                                    f"not in workflow state keys: {sorted(state_keys)} "
+                                    f"or input keys: {sorted(input_keys)}",
                         ))
 
-            # Check writes keys
+            # Check writes keys (must be state keys only)
             if node.writes is not None:
                 for key in node.writes:
                     if key not in state_keys:

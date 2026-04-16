@@ -405,9 +405,11 @@ class ChannelStore:
     def from_workflow_def(cls, workflow_def: WorkflowDef) -> "ChannelStore":
         """Factory method to build ChannelStore from WorkflowDef.
 
-        Creates channels based on reducer strategies:
-        - OVERWRITE strategy -> LastValueChannel
-        - All other strategies -> ReducerChannel
+        Creates channels based on state field definitions:
+        - ChannelFieldDef with no reducer -> LastValueChannel
+        - ChannelFieldDef with reducer -> ReducerChannel (using reducer strategy)
+        - ReducerDef with OVERWRITE strategy -> LastValueChannel
+        - ReducerDef with other strategies -> ReducerChannel
 
         Args:
             workflow_def: Workflow definition with state field declarations
@@ -415,12 +417,38 @@ class ChannelStore:
         Returns:
             ChannelStore with channels for each state field
         """
+        from dag_executor.schema import ChannelFieldDef, ReducerDef
+
         store = cls()
 
-        for key, reducer_def in workflow_def.state.items():
-            if reducer_def.strategy == ReducerStrategy.OVERWRITE:
-                store.channels[key] = LastValueChannel(key=key)
-            else:
-                store.channels[key] = ReducerChannel(reducer_def)
+        for key, field_def in workflow_def.state.items():
+            # Handle ChannelFieldDef (new syntax)
+            if isinstance(field_def, ChannelFieldDef):
+                channel: Channel
+                if field_def.reducer is None:
+                    # No reducer = LastValueChannel
+                    channel = LastValueChannel(key=key)
+                    store.channels[key] = channel
+                else:
+                    # Has reducer = ReducerChannel with the specified strategy
+                    if field_def.reducer.strategy == ReducerStrategy.OVERWRITE:
+                        channel = LastValueChannel(key=key)
+                        store.channels[key] = channel
+                    else:
+                        channel = ReducerChannel(field_def.reducer)
+                        store.channels[key] = channel
+
+                # Apply default value if specified (directly initialize channel's internal value)
+                if field_def.default is not None:
+                    # Directly set the channel's internal value to avoid reducer application
+                    channel._value = field_def.default
+                    channel._version = 1
+
+            # Handle ReducerDef (legacy syntax for backwards compat)
+            elif isinstance(field_def, ReducerDef):
+                if field_def.strategy == ReducerStrategy.OVERWRITE:
+                    store.channels[key] = LastValueChannel(key=key)
+                else:
+                    store.channels[key] = ReducerChannel(field_def)
 
         return store

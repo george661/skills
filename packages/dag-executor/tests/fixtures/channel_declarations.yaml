@@ -1,0 +1,59 @@
+name: channel-declarations-demo
+config:
+  checkpoint_prefix: channel-demo
+
+inputs:
+  config:
+    type: dict
+    required: true
+  threshold:
+    type: number
+    required: false
+    default: 0.5
+
+# Mixed syntax demonstration: new ChannelFieldDef and legacy ReducerDef
+state:
+  # New syntax with bare string reducer shorthand
+  messages:
+    type: list
+    reducer: append
+    default: []
+  
+  # New syntax with nested ReducerDef
+  best_score:
+    type: float
+    reducer:
+      strategy: max
+  
+  # New syntax without reducer (LastValueChannel semantics)
+  latest_status:
+    type: string
+  
+  # Legacy ReducerDef syntax (backwards compatibility)
+  severity:
+    strategy: overwrite
+
+nodes:
+  - id: analyzer
+    name: Analyze Input
+    type: prompt
+    model: sonnet
+    prompt: "Analyze this config"
+    reads:
+      - config  # Workflow input key
+      - messages  # State channel
+    writes:
+      - messages
+      - best_score
+
+  - id: reporter
+    name: Generate Report
+    type: prompt
+    model: sonnet
+    prompt: "Generate report"
+    reads:
+      - best_score
+      - threshold  # Workflow input key
+    writes:
+      - latest_status
+      - severity

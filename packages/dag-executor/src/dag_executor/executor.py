@@ -682,10 +682,24 @@ class WorkflowExecutor:
                     ctx.workflow_state = ctx.channel_store.to_dict()
                 else:
                     # Legacy dict-based state management
+                    from dag_executor.schema import ChannelFieldDef, ReducerDef
                     reducer_registry = ReducerRegistry()
                     for output_key, output_value in output_to_store.items():
                         if output_key in workflow_def.state:
-                            reducer_def = workflow_def.state[output_key]
+                            field_def = workflow_def.state[output_key]
+
+                            # Extract ReducerDef from union type
+                            reducer_def = None
+                            if isinstance(field_def, ChannelFieldDef):
+                                reducer_def = field_def.reducer  # May be None
+                            elif isinstance(field_def, ReducerDef):
+                                reducer_def = field_def
+
+                            # Skip if no reducer (e.g., ChannelFieldDef without reducer)
+                            # LastValueChannel semantics don't apply in legacy dict state
+                            if reducer_def is None:
+                                continue
+
                             # Thread-safe mutation of workflow_state
                             with ctx._state_lock:
                                 current = ctx.workflow_state.get(output_key)
