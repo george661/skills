@@ -1284,3 +1284,115 @@ class TestVersionAwareTriggering:
         assert result.status == WorkflowStatus.COMPLETED
         assert result.node_results["task1"].status == NodeStatus.COMPLETED
         assert result.node_results["task2"].status == NodeStatus.COMPLETED
+
+    def test_parallel_write_conflict_on_overwrite_channel(self) -> None:
+        """Test that parallel writes to OVERWRITE channel raise ChannelConflictError."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+        from dag_executor.channels import ChannelConflictError
+
+        nodes = [
+            NodeDef(id="node_a", name="Node A", type="bash", script="echo a"),
+            NodeDef(id="node_b", name="Node B", type="bash", script="echo b"),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "counter": ReducerDef(strategy=ReducerStrategy.OVERWRITE)
+            }
+        )
+
+        # Mock runners to write to the same state key
+        def mock_get_runner(node_type):
+            class ConflictRunner(BaseRunner):
+                def run(self, ctx: RunnerContext) -> NodeResult:
+                    return NodeResult(
+                        status=NodeStatus.COMPLETED,
+                        output={"counter": 1}
+                    )
+            return ConflictRunner
+
+        with patch("dag_executor.executor.get_runner", side_effect=mock_get_runner):
+            executor = WorkflowExecutor()
+            with pytest.raises(ChannelConflictError) as exc_info:
+                asyncio.run(executor.execute(workflow_def, {}))
+
+            # Verify error includes channel key and both writers
+            assert exc_info.value.channel_key == "counter"
+            assert "node_a" in exc_info.value.writers
+            assert "node_b" in exc_info.value.writers
+
+    def test_parallel_write_no_conflict_with_reducer(self) -> None:
+        """Test that parallel writes to APPEND channel succeed without conflict."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        nodes = [
+            NodeDef(id="node_a", name="Node A", type="bash", script="echo a"),
+            NodeDef(id="node_b", name="Node B", type="bash", script="echo b"),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "items": ReducerDef(strategy=ReducerStrategy.APPEND)
+            }
+        )
+
+        # Mock runners to write to the same state key with APPEND reducer
+        def mock_get_runner(node_type):
+            class AppendRunner(BaseRunner):
+                def run(self, ctx: RunnerContext) -> NodeResult:
+                    node_id = ctx.node_def.id
+                    return NodeResult(
+                        status=NodeStatus.COMPLETED,
+                        output={"items": f"item_from_{node_id}"}
+                    )
+            return AppendRunner
+
+        with patch("dag_executor.executor.get_runner", side_effect=mock_get_runner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}))
+
+            # Should complete without error - reducer handles merge
+            assert result.status == WorkflowStatus.COMPLETED
+            assert "items" in result.outputs
+            assert set(result.outputs["items"]) == {"item_from_node_a", "item_from_node_b"}
+
+    def test_sequential_writes_across_layers_no_conflict(self) -> None:
+        """Test that sequential writes to OVERWRITE channel succeed (reset between layers)."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        nodes = [
+            NodeDef(id="layer1_node", name="Layer 1", type="bash", script="echo layer1"),
+            NodeDef(id="layer2_node", name="Layer 2", type="bash", script="echo layer2", depends_on=["layer1_node"]),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "counter": ReducerDef(strategy=ReducerStrategy.OVERWRITE)
+            }
+        )
+
+        # Mock runners to write to the same state key sequentially
+        def mock_get_runner(node_type):
+            class SequentialRunner(BaseRunner):
+                def run(self, ctx: RunnerContext) -> NodeResult:
+                    node_id = ctx.node_def.id
+                    return NodeResult(
+                        status=NodeStatus.COMPLETED,
+                        output={"counter": node_id}
+                    )
+            return SequentialRunner
+
+        with patch("dag_executor.executor.get_runner", side_effect=mock_get_runner):
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(workflow_def, {}))
+
+            # Should complete without conflict - reset between layers allows this
+            assert result.status == WorkflowStatus.COMPLETED
+            # Final value should be from layer2_node (last write wins)
+            assert result.outputs["counter"] == "layer2_node"

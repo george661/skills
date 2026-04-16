@@ -235,6 +235,10 @@ class WorkflowExecutor:
                 layer, nodes_map, ctx, workflow_def, event_emitter, checkpoint_store, run_id, channel_store
             )
 
+            # Reset channel writers at layer boundary for next layer
+            if ctx.channel_store is not None:
+                ctx.channel_store.reset_all()
+
             # Check if any node triggered a stop or interrupt
             if ctx.stopped or ctx.interrupted:
                 break
@@ -1041,7 +1045,8 @@ class WorkflowExecutor:
         resolved = resolve_variables(
             inputs_to_resolve,
             ctx.node_outputs,
-            ctx.workflow_inputs
+            ctx.workflow_inputs,
+            channel_store=None
         )
 
         return resolved  # type: ignore[no-any-return]
