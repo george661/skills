@@ -52,6 +52,16 @@ from dag_executor.validator import WorkflowValidator, ValidationResult, Validati
 # Replay module
 from dag_executor.replay import TraceRecorder, ExecutionTrace, TraceReplayer, ReplayIssue, TraceEvent
 
+# Channels
+from dag_executor.channels import (
+    Channel,
+    LastValueChannel,
+    ReducerChannel,
+    BarrierChannel,
+    ChannelStore,
+    ConflictError,
+)
+
 __all__ = [
     "load_workflow",
     "load_workflow_from_string",
@@ -112,6 +122,13 @@ __all__ = [
     "TraceReplayer",
     "ReplayIssue",
     "TraceEvent",
+    # Channels
+    "Channel",
+    "LastValueChannel",
+    "ReducerChannel",
+    "BarrierChannel",
+    "ChannelStore",
+    "ConflictError",
 ]
 
 
