@@ -392,6 +392,15 @@ class ChannelStore:
         """
         return {key: channel.value for key, channel in self.channels.items()}
 
+    def reset_all(self) -> None:
+        """Reset all channels, clearing their writer tracking.
+
+        Called at layer boundaries to allow different nodes to write
+        in subsequent layers without triggering conflict errors.
+        """
+        for channel in self.channels.values():
+            channel.reset()
+
     @classmethod
     def from_workflow_def(cls, workflow_def: WorkflowDef) -> "ChannelStore":
         """Factory method to build ChannelStore from WorkflowDef.

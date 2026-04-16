@@ -378,6 +378,31 @@ class TestChannelStore:
         store = ChannelStore()
         assert store.to_dict() == {}
 
+    def test_reset_all_clears_all_channel_writers(self) -> None:
+        """reset_all() calls reset() on all channels, clearing writers."""
+        store = ChannelStore()
+        store.channels["key1"] = LastValueChannel(key="key1")
+        store.channels["key2"] = LastValueChannel(key="key2")
+
+        # Write from different nodes
+        store.write("key1", "value_a", "node_a")
+        store.write("key2", "value_b", "node_b")
+
+        # Verify writers are tracked
+        assert "node_a" in store.channels["key1"].writers
+        assert "node_b" in store.channels["key2"].writers
+
+        # Reset all channels
+        store.reset_all()
+
+        # Verify writers are cleared
+        assert len(store.channels["key1"].writers) == 0
+        assert len(store.channels["key2"].writers) == 0
+
+        # Verify new nodes can now write (no conflict)
+        store.write("key1", "value_c", "node_c")
+        store.write("key2", "value_d", "node_d")
+
     def test_to_dict_with_none_values(self) -> None:
         """to_dict() includes channels with None values."""
         store = ChannelStore()
