@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 from unittest.mock import patch
 
 import pytest
 
-from dag_executor.checkpoint import CheckpointStore
+from dag_executor.checkpoint import CheckpointMetadata, CheckpointStore
 from dag_executor.events import EventEmitter, EventType, WorkflowEvent
 from dag_executor.executor import WorkflowExecutor, WorkflowResult
 from dag_executor.runners.base import BaseRunner, RunnerContext, get_runner
@@ -419,3 +421,55 @@ def event_collector() -> tuple:
     emitter = EventEmitter()
     emitter.add_listener(lambda e: captured_events.append(e))
     return emitter, captured_events
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def checkpoint_store(tmp_path: Path) -> CheckpointStore:
+    """A CheckpointStore backed by a temporary directory."""
+    return CheckpointStore(str(tmp_path / ".dag-checkpoints"))
+
+
+@pytest.fixture()
+def sample_metadata() -> CheckpointMetadata:
+    """A shared CheckpointMetadata fixture for checkpoint roundtrip tests.
+
+    Uses status="running" as the general case (checkpoint created mid-execution).
+    """
+    return CheckpointMetadata(
+        workflow_name="test-workflow",
+        run_id="run-123",
+        started_at=datetime.now(timezone.utc).isoformat(),
+        inputs={"input1": "value1"},
+        status="running",
+    )
+
+
+@pytest.fixture()
+def sample_node_def() -> NodeDef:
+    """A sample NodeDef for checkpoint and general testing."""
+    return NodeDef(
+        id="node1",
+        name="Test Node",
+        type="bash",
+        script="echo 'test'",
+    )
+
+
+@pytest.fixture()
+def checkpoint_node_result() -> NodeResult:
+    """A NodeResult fixture tailored for checkpoint tests.
+
+    Distinct from sample_node_result — includes timestamps and checkpoint-specific
+    output shape.
+    """
+    return NodeResult(
+        status=NodeStatus.COMPLETED,
+        output={"result": "test-output"},
+        started_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+    )
