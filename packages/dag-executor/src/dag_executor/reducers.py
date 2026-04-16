@@ -1,8 +1,8 @@
 """State reducer registry for merging node outputs."""
 import importlib
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
-from dag_executor.schema import ReducerStrategy
+from dag_executor.schema import ReducerStrategy, ReducerDef
 
 
 class ReducerRegistry:
@@ -156,3 +156,49 @@ class ReducerRegistry:
             raise ValueError(
                 f"Could not load custom reducer function '{custom_function}': {e}"
             ) from e
+
+
+def parse_reducer(spec: Union[dict, ReducerDef]) -> ReducerDef:
+    """Parse reducer specification from inline dict or explicit ReducerDef.
+
+    Supports two formats:
+    1. Explicit ReducerDef: Already validated, return as-is
+    2. Inline dict: {strategy: "append"} → ReducerDef(strategy="append")
+
+    Args:
+        spec: Reducer specification (dict or ReducerDef)
+
+    Returns:
+        Validated ReducerDef object
+
+    Raises:
+        ValueError: If spec is invalid
+
+    Examples:
+        >>> parse_reducer({"strategy": "append"})
+        ReducerDef(strategy=ReducerStrategy.APPEND, function=None)
+
+        >>> parse_reducer(ReducerDef(strategy=ReducerStrategy.OVERWRITE))
+        ReducerDef(strategy=ReducerStrategy.OVERWRITE, function=None)
+    """
+    # If already a ReducerDef, return as-is
+    if isinstance(spec, ReducerDef):
+        return spec
+
+    # If dict, parse to ReducerDef
+    if isinstance(spec, dict):
+        # Inline format: {strategy: "append"} or {strategy: "custom", function: "..."}
+        if "strategy" in spec:
+            strategy_str = spec["strategy"]
+            # Convert string to ReducerStrategy enum
+            try:
+                strategy = ReducerStrategy(strategy_str)
+            except ValueError:
+                raise ValueError(f"Invalid reducer strategy: '{strategy_str}'")
+
+            function = spec.get("function")
+            return ReducerDef(strategy=strategy, function=function)
+        else:
+            raise ValueError("Inline reducer dict must have 'strategy' key")
+
+    raise ValueError(f"Invalid reducer spec type: {type(spec)}")
