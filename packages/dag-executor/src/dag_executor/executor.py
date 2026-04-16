@@ -496,12 +496,27 @@ class WorkflowExecutor:
                         timestamp=datetime.now(timezone.utc)
                     ))
 
+            # Filter state based on read_state declaration
+            if node_def.read_state is not None:
+                # Filter workflow_inputs to only include declared keys
+                filtered_workflow_inputs = {
+                    k: v for k, v in ctx.workflow_inputs.items()
+                    if k in node_def.read_state
+                }
+                # Filter node_outputs to only include outputs from nodes that produce read_state keys
+                # For now, pass all node_outputs since we can't statically determine output keys
+                filtered_node_outputs = ctx.node_outputs
+            else:
+                # No filtering - pass full state
+                filtered_workflow_inputs = ctx.workflow_inputs
+                filtered_node_outputs = ctx.node_outputs
+
             # Create runner context
             runner_ctx = RunnerContext(
                 node_def=node_def,
                 resolved_inputs=resolved_inputs,
-                node_outputs=ctx.node_outputs,
-                workflow_inputs=ctx.workflow_inputs,
+                node_outputs=filtered_node_outputs,
+                workflow_inputs=filtered_workflow_inputs,
                 workflow_id=workflow_def.name,
                 max_output_bytes=10 * 1024 * 1024,
                 progress_callback=progress_callback,

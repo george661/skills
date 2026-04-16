@@ -244,7 +244,8 @@ class NodeDef(BaseModel):
     on_failure: OnFailure = Field(default=OnFailure.STOP, description="Failure handling")
     timeout: Optional[int] = Field(default=None, description="Timeout in seconds")
     output_format: Optional[OutputFormat] = Field(default=None, description="Output format")
-    
+    read_state: Optional[List[str]] = Field(default=None, description="State keys this node reads (None = full state)")
+
     # Node type-specific fields (flattened for YAML simplicity)
     # Skill node
     skill: Optional[str] = Field(default=None, description="Skill path (for type=skill)")

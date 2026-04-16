@@ -114,6 +114,8 @@ class WorkflowValidator:
         self._check_edge_consistency(workflow_def, nodes_map, result)
         self._check_trigger_rules(workflow_def, nodes_map, result)
         self._check_reducer_consistency(workflow_def, nodes_map, result)
+        self._check_variable_references(workflow_def, nodes_map, result)
+        self._check_read_state(workflow_def, nodes_map, result)
 
         return result
 
@@ -362,3 +364,127 @@ class WorkflowValidator:
                         message=f"State key '{state_key}' has invalid function path: "
                                 f"'{reducer_def.function}' (expected 'module.function')",
                     ))
+
+    def _check_variable_references(
+        self,
+        workflow_def: WorkflowDef,
+        nodes_map: Dict[str, NodeDef],
+        result: ValidationResult,
+    ) -> None:
+        """Check that all variable references point to existing upstream nodes.
+
+        Validates:
+        - $node.field references point to nodes that exist
+        - Referenced nodes are upstream (earlier in topological order)
+        - Warns if referenced node has on_failure: continue
+        """
+        from dag_executor.variables import extract_variable_references
+
+        # Get topological layers for upstream validation
+        try:
+            layers = topological_sort_with_layers(workflow_def.nodes)
+        except (CycleDetectedError, ValueError):
+            # If graph is broken, skip variable validation (errors already reported)
+            return
+
+        # Build layer index: node_id -> layer_index
+        node_layer_index: Dict[str, int] = {}
+        for layer_idx, layer in enumerate(layers):
+            for node_id in layer:
+                node_layer_index[node_id] = layer_idx
+
+        # Check each node's variable references
+        for node in workflow_def.nodes:
+            # Collect all fields that can contain variable references
+            fields_to_check: List[Any] = []
+
+            if node.script:
+                fields_to_check.append(node.script)
+            if node.prompt:
+                fields_to_check.append(node.prompt)
+            if node.condition:
+                fields_to_check.append(node.condition)
+            if node.params:
+                fields_to_check.append(node.params)
+            if node.args:
+                fields_to_check.append(node.args)
+
+            # Extract all variable references from these fields
+            all_refs: List[tuple[str, str]] = []
+            for field_value in fields_to_check:
+                all_refs.extend(extract_variable_references(field_value))
+
+            # Validate each reference
+            for node_id_ref, field_path in all_refs:
+                # Check if referenced node exists
+                if node_id_ref not in nodes_map:
+                    # Could be a workflow input or environment variable
+                    if node_id_ref not in workflow_def.inputs:
+                        # If it has no field_path (e.g., $repo vs $node.output),
+                        # it might be an environment variable - only warn
+                        if not field_path:
+                            # Single-part reference could be env var - skip validation
+                            continue
+                        else:
+                            # Multi-part reference (e.g., $node.output) must be a node
+                            result.issues.append(ValidationIssue(
+                                severity="error",
+                                node_id=node.id,
+                                code="dangling_variable_ref",
+                                message=f"Variable reference ${node_id_ref}.{field_path} "
+                                        f"points to non-existent node (and is not a workflow input)",
+                            ))
+                    continue
+
+                # Check if referenced node is upstream
+                ref_layer = node_layer_index.get(node_id_ref)
+                current_layer = node_layer_index.get(node.id)
+
+                if ref_layer is not None and current_layer is not None:
+                    if ref_layer >= current_layer:
+                        result.issues.append(ValidationIssue(
+                            severity="error",
+                            node_id=node.id,
+                            code="downstream_variable_ref",
+                            message=f"Variable reference ${node_id_ref}.{field_path} points to "
+                                    f"downstream or same-layer node (layer {ref_layer} >= {current_layer})",
+                        ))
+
+                # Warn if referenced node has on_failure: continue
+                ref_node = nodes_map[node_id_ref]
+                if ref_node.on_failure and ref_node.on_failure.value == "continue":
+                    result.issues.append(ValidationIssue(
+                        severity="warning",
+                        node_id=node.id,
+                        code="fragile_variable_ref",
+                        message=f"Variable reference ${node_id_ref}.{field_path} points to node "
+                                f"with on_failure=continue (output may be absent at runtime)",
+                    ))
+
+    def _check_read_state(
+        self,
+        workflow_def: WorkflowDef,
+        nodes_map: Dict[str, NodeDef],
+        result: ValidationResult,
+    ) -> None:
+        """Check that read_state declarations reference valid state keys.
+
+        Validates:
+        - All keys in read_state are produced by upstream nodes or workflow inputs
+        """
+        # Collect available state keys: workflow inputs + state reducer keys
+        available_keys = set(workflow_def.inputs.keys())
+        available_keys.update(workflow_def.state.keys())
+
+        # Check each node with read_state declared
+        for node in workflow_def.nodes:
+            if node.read_state is not None:
+                for key in node.read_state:
+                    if key not in available_keys:
+                        result.issues.append(ValidationIssue(
+                            severity="error",
+                            node_id=node.id,
+                            code="invalid_read_state_key",
+                            message=f"read_state key '{key}' is not produced by any upstream node "
+                                    f"or workflow input. Available: {sorted(available_keys)}",
+                        ))

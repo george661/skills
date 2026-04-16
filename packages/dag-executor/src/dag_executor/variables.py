@@ -5,7 +5,7 @@ Resolves variable references in the form:
 - $input-name — references to workflow inputs
 """
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 
 class VariableResolutionError(Exception):
@@ -174,3 +174,49 @@ def _traverse_path(
         )
     
     return _traverse_path(path[1:], obj[key], full_reference, node_outputs, workflow_inputs)
+
+
+def extract_variable_references(value: Any) -> List[Tuple[str, str]]:
+    """Extract all variable references from a value for static analysis.
+
+    Args:
+        value: The value to scan (can be str, dict, list, or primitive)
+
+    Returns:
+        List of (node_id, field_path) tuples. For workflow inputs (no dots),
+        field_path is empty string. For node references like $node.output.data,
+        returns ("node", "output.data").
+    """
+    refs: List[Tuple[str, str]] = []
+    _collect_references(value, refs)
+    # Deduplicate while preserving order
+    seen = set()
+    deduplicated = []
+    for ref in refs:
+        if ref not in seen:
+            seen.add(ref)
+            deduplicated.append(ref)
+    return deduplicated
+
+
+def _collect_references(value: Any, refs: List[Tuple[str, str]]) -> None:
+    """Recursively collect variable references from a value.
+
+    Args:
+        value: The value to scan
+        refs: List to append found references to (modified in place)
+    """
+    if isinstance(value, str):
+        matches = VARIABLE_PATTERN.finditer(value)
+        for match in matches:
+            reference = match.group(1)  # e.g., "node.output.field" or "input"
+            parts = reference.split('.', 1)
+            node_id = parts[0]
+            field_path = parts[1] if len(parts) > 1 else ""
+            refs.append((node_id, field_path))
+    elif isinstance(value, dict):
+        for v in value.values():
+            _collect_references(v, refs)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_references(item, refs)
