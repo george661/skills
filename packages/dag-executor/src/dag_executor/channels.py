@@ -349,11 +349,22 @@ class ChannelStore:
 
     def get_versions(self) -> Dict[str, int]:
         """Get immutable snapshot of all channel versions.
-        
+
         Returns:
             Dict mapping channel keys to current version numbers
         """
         return {key: channel.version for key, channel in self.channels.items()}
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Extract current state as a plain dictionary.
+
+        Provides backwards-compatible view of workflow state for checkpoint
+        serialization and output extraction.
+
+        Returns:
+            Dict mapping channel keys to their current values
+        """
+        return {key: channel.value for key, channel in self.channels.items()}
 
     @classmethod
     def from_workflow_def(cls, workflow_def: WorkflowDef) -> "ChannelStore":

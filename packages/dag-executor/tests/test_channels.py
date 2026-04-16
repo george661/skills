@@ -333,12 +333,42 @@ class TestChannelStore:
     def test_unknown_key_raises_key_error(self) -> None:
         """read() and write() raise KeyError for unknown key."""
         store = ChannelStore()
-        
+
         with pytest.raises(KeyError):
             store.read("nonexistent")
-        
+
         with pytest.raises(KeyError):
             store.write("nonexistent", "value", "node_a")
+
+    def test_to_dict_returns_all_channel_values(self) -> None:
+        """to_dict() returns dict of all channel values."""
+        store = ChannelStore()
+        store.channels["key1"] = LastValueChannel()
+        store.channels["key2"] = LastValueChannel()
+
+        store.write("key1", "value_a", "node_a")
+        store.write("key2", "value_b", "node_b")
+
+        state_dict = store.to_dict()
+
+        assert state_dict == {"key1": "value_a", "key2": "value_b"}
+
+    def test_to_dict_empty_store(self) -> None:
+        """to_dict() returns empty dict for empty store."""
+        store = ChannelStore()
+        assert store.to_dict() == {}
+
+    def test_to_dict_with_none_values(self) -> None:
+        """to_dict() includes channels with None values."""
+        store = ChannelStore()
+        store.channels["unwritten"] = LastValueChannel()
+        store.channels["written"] = LastValueChannel()
+
+        store.write("written", "some_value", "node_a")
+
+        state_dict = store.to_dict()
+
+        assert state_dict == {"unwritten": None, "written": "some_value"}
 
 
 class TestVersionMonotonicity:
