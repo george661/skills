@@ -954,3 +954,93 @@ def test_read_state_state_reducer_keys_valid():
 
     assert result.passed
     assert not any(e.code == "invalid_read_state_key" for e in result.errors)
+
+
+def test_channel_subscriptions_valid_keys():
+    """Nodes with reads/writes matching workflow state keys pass validation (GW-5023)."""
+    workflow = WorkflowDef(
+        name="channel-test",
+        state={
+            "input": ReducerDef(strategy=ReducerStrategy.OVERWRITE),
+            "output": ReducerDef(strategy=ReducerStrategy.APPEND),
+        },
+        nodes=[
+            NodeDef(
+                id="producer",
+                type="bash",
+                name="Producer",
+                script="echo test",
+                writes=["input"]
+            ),
+            NodeDef(
+                id="consumer",
+                type="bash",
+                name="Consumer",
+                script="echo test",
+                reads=["input"],
+                writes=["output"],
+                depends_on=["producer"]
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    # Should pass with no warnings about channel keys
+    assert result.passed
+    assert not any(e.code == "unknown_read_channel" for e in result.issues)
+    assert not any(e.code == "unknown_write_channel" for e in result.issues)
+
+
+def test_channel_subscriptions_invalid_read_key():
+    """Nodes with reads keys not in workflow state generate warnings (GW-5023)."""
+    workflow = WorkflowDef(
+        name="channel-test",
+        state={
+            "valid_key": ReducerDef(strategy=ReducerStrategy.OVERWRITE),
+        },
+        nodes=[
+            NodeDef(
+                id="node1",
+                type="bash",
+                name="Node1",
+                script="echo test",
+                reads=["nonexistent_key"]
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    warnings = [e for e in result.issues if e.code == "unknown_read_channel"]
+    assert len(warnings) == 1
+    assert "nonexistent_key" in warnings[0].message
+    assert "valid_key" in warnings[0].message
+
+
+def test_channel_subscriptions_invalid_write_key():
+    """Nodes with writes keys not in workflow state generate warnings (GW-5023)."""
+    workflow = WorkflowDef(
+        name="channel-test",
+        state={
+            "valid_key": ReducerDef(strategy=ReducerStrategy.OVERWRITE),
+        },
+        nodes=[
+            NodeDef(
+                id="node1",
+                type="bash",
+                name="Node1",
+                script="echo test",
+                writes=["invalid_write_key"]
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    warnings = [e for e in result.issues if e.code == "unknown_write_channel"]
+    assert len(warnings) == 1
+    assert "invalid_write_key" in warnings[0].message

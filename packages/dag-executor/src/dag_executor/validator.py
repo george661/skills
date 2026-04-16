@@ -116,6 +116,7 @@ class WorkflowValidator:
         self._check_edge_consistency(workflow_def, nodes_map, result)
         self._check_trigger_rules(workflow_def, nodes_map, result)
         self._check_reducer_consistency(workflow_def, nodes_map, result)
+        self._check_channel_subscriptions(workflow_def, nodes_map, result)
         self._check_variable_references(workflow_def, nodes_map, result)
         self._check_read_state(workflow_def, nodes_map, result)
         self._check_contracts(workflow_def, result)
@@ -370,6 +371,44 @@ class WorkflowValidator:
                         message=f"State key '{state_key}' has invalid function path: "
                                 f"'{reducer_def.function}' (expected 'module.function')",
                     ))
+
+    def _check_channel_subscriptions(
+        self,
+        workflow_def: WorkflowDef,
+        nodes_map: Dict[str, NodeDef],
+        result: ValidationResult,
+    ) -> None:
+        """Check that reads/writes channel keys match declared state (GW-5023)."""
+        if not workflow_def.state:
+            # No state declared, skip channel subscription checks
+            return
+
+        state_keys = set(workflow_def.state.keys())
+
+        for node in workflow_def.nodes:
+            # Check reads keys
+            if node.reads is not None:
+                for key in node.reads:
+                    if key not in state_keys:
+                        result.issues.append(ValidationIssue(
+                            severity="warning",
+                            node_id=node.id,
+                            code="unknown_read_channel",
+                            message=f"Node declares reads=['{key}'] but '{key}' "
+                                    f"not in workflow state keys: {sorted(state_keys)}",
+                        ))
+
+            # Check writes keys
+            if node.writes is not None:
+                for key in node.writes:
+                    if key not in state_keys:
+                        result.issues.append(ValidationIssue(
+                            severity="warning",
+                            node_id=node.id,
+                            code="unknown_write_channel",
+                            message=f"Node declares writes=['{key}'] but '{key}' "
+                                    f"not in workflow state keys: {sorted(state_keys)}",
+                        ))
 
     def _check_variable_references(
         self,
