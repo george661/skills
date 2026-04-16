@@ -2,9 +2,7 @@
 import asyncio
 import copy
 import json
-import logging
 import random
-import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -15,7 +13,6 @@ from simpleeval import SimpleEval  # type: ignore
 
 from dag_executor.channels import ChannelStore
 from dag_executor.graph import topological_sort_with_layers
-from dag_executor.reducers import ReducerRegistry
 from dag_executor.runners import get_runner
 from dag_executor.runners.base import RunnerContext
 from dag_executor.schema import (
@@ -26,7 +23,7 @@ from dag_executor.variables import resolve_variables
 
 if TYPE_CHECKING:
     from dag_executor.events import EventEmitter
-    from dag_executor.checkpoint import CheckpointStore, CheckpointMetadata
+    from dag_executor.checkpoint import CheckpointStore
     from dag_executor.channels import ChannelStore
 
 
@@ -47,10 +44,9 @@ class ExecutionContext:
         node_statuses: Map of node_id -> current NodeStatus
         node_results: Map of node_id -> full NodeResult
         workflow_inputs: Global workflow inputs
-        workflow_state: Shared mutable state merged via reducers (backwards-compat view)
-        channel_store: Channel-based state management (None = legacy dict mode)
+        workflow_state: Shared mutable state merged via reducers (backwards-compat view via @property)
+        channel_store: Channel-based state management
         versions_seen: Per-node snapshot of channel versions at last execution
-        _state_lock: Lock for thread-safe workflow_state mutations
         concurrency_limit: Max concurrent node executions
         stopped: Set to True when workflow should halt (on_failure=stop)
         interrupted: Set to True when workflow hits an interrupt node
@@ -60,16 +56,27 @@ class ExecutionContext:
     node_statuses: Dict[str, NodeStatus] = field(default_factory=dict)
     node_results: Dict[str, NodeResult] = field(default_factory=dict)
     workflow_inputs: Dict[str, Any] = field(default_factory=dict)
-    workflow_state: Dict[str, Any] = field(default_factory=dict)
     channel_store: Optional[ChannelStore] = field(default=None)
     versions_seen: Dict[str, Dict[str, int]] = field(default_factory=dict)
-    _state_lock: threading.Lock = field(default_factory=threading.Lock)
     concurrency_limit: int = 10
     stopped: bool = False
     interrupted: bool = False
     skipped_nodes: Set[str] = field(default_factory=set)
     pool: Optional[ThreadPoolExecutor] = field(default=None, repr=False)
     semaphore: Optional[asyncio.Semaphore] = field(default=None, repr=False)
+
+    @property
+    def workflow_state(self) -> Dict[str, Any]:
+        """Backwards-compatible view of workflow state from channel_store.
+
+        Returns channel_store.to_dict() when channel_store exists, else empty dict.
+        Note: The snapshot is not atomic (each channel read locks individually),
+        but this is acceptable since workflow_state is only accessed after node
+        completion (state_diff, exit hooks, interrupt checkpoint).
+        """
+        if self.channel_store is not None:
+            return self.channel_store.to_dict()
+        return {}
 
 
 class WorkflowResult:
@@ -189,11 +196,8 @@ class WorkflowExecutor:
             semaphore=asyncio.Semaphore(concurrency_limit),
         )
 
-        # Initialize ChannelStore if workflow has state declarations
-        if workflow_def.state:
-            ctx.channel_store = ChannelStore.from_workflow_def(workflow_def)
-            # Populate workflow_state from channels for backwards compatibility
-            ctx.workflow_state = ctx.channel_store.to_dict()
+        # Always initialize ChannelStore (empty for workflows without state declarations)
+        ctx.channel_store = ChannelStore.from_workflow_def(workflow_def)
 
         # Initialize all nodes to PENDING status
         for node in workflow_def.nodes:
@@ -603,7 +607,7 @@ class WorkflowExecutor:
             # Get timeout for this node
             timeout = self._get_node_timeout(node_def)
 
-            # Capture pre-execution state snapshot for diff computation
+            # Capture pre-execution state snapshot for diff computation (from channel_store)
             pre_state = copy.deepcopy(ctx.workflow_state)
 
             # Execute with retry logic (exponential backoff + jitter)
@@ -668,50 +672,16 @@ class WorkflowExecutor:
             if node_def.edges is not None:
                 self._evaluate_edges(node_def, ctx)
 
-            # Apply reducers to merge outputs into workflow_state
-            # Route through channels when channel_store is available
+            # Apply reducers to merge outputs into workflow_state via channel_store
             if workflow_def.state and isinstance(output_to_store, dict):
-                if ctx.channel_store is not None:
-                    # Channel-based state management
-                    for output_key, output_value in output_to_store.items():
-                        if output_key in workflow_def.state:
-                            # Thread-safe write through channel
-                            with ctx._state_lock:
-                                ctx.channel_store.write(output_key, output_value, node_id)
-                    # Sync workflow_state from channels for backwards compatibility
-                    ctx.workflow_state = ctx.channel_store.to_dict()
-                else:
-                    # Legacy dict-based state management
-                    from dag_executor.schema import ChannelFieldDef, ReducerDef
-                    reducer_registry = ReducerRegistry()
-                    for output_key, output_value in output_to_store.items():
-                        if output_key in workflow_def.state:
-                            field_def = workflow_def.state[output_key]
+                # Channel-based state management (always available now)
+                assert ctx.channel_store is not None, "channel_store should always be initialized"
+                for output_key, output_value in output_to_store.items():
+                    if output_key in workflow_def.state:
+                        # Thread-safe write through channel (channels have internal locks)
+                        ctx.channel_store.write(output_key, output_value, node_id)
 
-                            # Extract ReducerDef from union type
-                            reducer_def = None
-                            if isinstance(field_def, ChannelFieldDef):
-                                reducer_def = field_def.reducer  # May be None
-                            elif isinstance(field_def, ReducerDef):
-                                reducer_def = field_def
-
-                            # Skip if no reducer (e.g., ChannelFieldDef without reducer)
-                            # LastValueChannel semantics don't apply in legacy dict state
-                            if reducer_def is None:
-                                continue
-
-                            # Thread-safe mutation of workflow_state
-                            with ctx._state_lock:
-                                current = ctx.workflow_state.get(output_key)
-                                merged = reducer_registry.apply(
-                                    reducer_def.strategy,
-                                    current,
-                                    output_value,
-                                    custom_function=reducer_def.function
-                                )
-                                ctx.workflow_state[output_key] = merged
-
-        # Compute state diff after reducer application
+        # Compute state diff after reducer application (reads from channel_store via property)
         state_diff: Dict[str, Any] = {}
         for key in ctx.workflow_state:
             if key not in pre_state or ctx.workflow_state[key] != pre_state.get(key):
@@ -742,7 +712,7 @@ class WorkflowExecutor:
                     resume_key=result.output.get("resume_key", "") if result.output else "",
                     channels=result.output.get("channels", ["terminal"]) if result.output else ["terminal"],
                     timeout=node_def.timeout,
-                    workflow_state=ctx.workflow_state.copy(),
+                    workflow_state=ctx.workflow_state.copy(),  # Reads from channel_store via property
                     pending_nodes=pending_nodes
                 )
                 checkpoint_store.save_interrupt(workflow_def.name, run_id, interrupt_checkpoint)
@@ -1060,7 +1030,7 @@ class WorkflowExecutor:
             inputs_to_resolve,
             ctx.node_outputs,
             ctx.workflow_inputs,
-            channel_store=None
+            channel_store=ctx.channel_store
         )
 
         return resolved  # type: ignore[no-any-return]
@@ -1155,6 +1125,7 @@ class WorkflowExecutor:
                 runner = runner_class()
                 # Merge workflow_state into workflow_inputs under "workflow_state" key
                 # to provide exit hooks access to state (e.g., worktree_path, pr_number)
+                # workflow_state reads from channel_store via property
                 exit_hook_inputs = {
                     **ctx.workflow_inputs,
                     "workflow_state": ctx.workflow_state,
@@ -1358,7 +1329,7 @@ class WorkflowExecutor:
         """
         outputs = {}
 
-        # First, extract outputs from workflow_state (reducer-merged values)
+        # First, extract outputs from workflow_state (reads from channel_store.to_dict())
         # These have priority since they're the aggregated results
         outputs.update(ctx.workflow_state)
 
