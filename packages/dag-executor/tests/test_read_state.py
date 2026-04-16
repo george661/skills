@@ -1,7 +1,10 @@
 """Tests for read_state filtering in validator and executor."""
 import pytest
+from unittest.mock import AsyncMock, patch
 from dag_executor.schema import (
     NodeDef,
+    NodeStatus,
+    NodeResult,
     WorkflowDef,
     WorkflowConfig,
     InputDef,
@@ -106,26 +109,43 @@ class TestReadStateExecutorFiltering:
                     id="filtered-node",
                     type="bash",
                     name="FilteredNode",
-                    # This script will fail if it receives key3
-                    script='if [ -n "$key3" ]; then exit 1; fi; echo "key1=$key1 key2=$key2"',
+                    script='echo "success"',
                     read_state=["key1", "key2"]
                 ),
             ],
             config=WorkflowConfig(checkpoint_prefix="test"),
         )
-        
-        executor = WorkflowExecutor()
-        result = await executor.execute(
-            workflow,
-            inputs={"key1": "val1", "key2": "val2", "key3": "val3"}
-        )
 
-        # The node should succeed because key3 was filtered out
-        # (if key3 was present, the script would exit 1)
+        # Mock the runner to capture the actual workflow_inputs passed to it
+        captured_ctx = []
+
+        class MockRunner:
+            def run(self, ctx):
+                # Note: run is synchronous because it's called via run_in_executor
+                captured_ctx.append(ctx)
+                return NodeResult(
+                    status=NodeStatus.COMPLETED,
+                    output={"result": "success"}
+                )
+
+        executor = WorkflowExecutor()
+        # get_runner returns a class, not an instance
+        with patch("dag_executor.executor.get_runner", return_value=MockRunner):
+            result = await executor.execute(
+                workflow,
+                inputs={"key1": "val1", "key2": "val2", "key3": "val3"}
+            )
+
+        # Verify the node succeeded
         assert result.status.value == "completed"
         assert "filtered-node" in result.node_results
-        # Note: We can't directly assert on RunnerContext contents from here,
-        # but the script behavior proves filtering worked
+
+        # Verify filtering: RunnerContext should only have key1 and key2, not key3
+        assert len(captured_ctx) > 0, "Runner was not called"
+        ctx = captured_ctx[0]
+        assert "key1" in ctx.workflow_inputs
+        assert "key2" in ctx.workflow_inputs
+        assert "key3" not in ctx.workflow_inputs, "key3 should be filtered out"
 
     @pytest.mark.asyncio
     async def test_node_without_read_state_gets_full_state(self):

@@ -12,7 +12,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from dag_executor.graph import topological_sort_with_layers, CycleDetectedError
 from dag_executor.schema import (
@@ -79,6 +79,8 @@ class WorkflowValidator:
         8. Environment variables — referenced DAG_* vars have values
         9. Reducer consistency — state keys referenced by nodes, custom funcs importable
         10. Trigger rule sanity — ONE_SUCCESS/ALL_DONE only on multi-dep nodes
+        11. Variable references — $node.field syntax is valid, nodes exist
+        12. Read state — nodes with read_state only receive declared workflow inputs
     """
 
     def __init__(
@@ -410,7 +412,7 @@ class WorkflowValidator:
                 fields_to_check.append(node.args)
 
             # Extract all variable references from these fields
-            all_refs: List[tuple[str, str]] = []
+            all_refs: List[Tuple[str, str]] = []
             for field_value in fields_to_check:
                 all_refs.extend(extract_variable_references(field_value))
 
