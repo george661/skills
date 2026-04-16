@@ -17,22 +17,6 @@ from dag_executor.executor import WorkflowResult
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def checkpoint_store(tmp_path: Path) -> CheckpointStore:
-    """Create a checkpoint store with temporary directory."""
-    return CheckpointStore(str(tmp_path / ".dag-checkpoints"))
-
-
-@pytest.fixture
-def sample_node_def() -> NodeDef:
-    """Create sample node definition."""
-    return NodeDef(
-        id="node1",
-        name="Test Node",
-        type="bash",
-        script="echo 'test'",
-    )
-
 
 @pytest.fixture
 def simple_workflow_def() -> WorkflowDef:
@@ -74,7 +58,7 @@ class TestListRuns:
 
     def test_list_runs_finds_runs(
         self, checkpoint_store: CheckpointStore, sample_metadata: CheckpointMetadata,
-        sample_node_result: NodeResult,
+        checkpoint_node_result: NodeResult,
     ) -> None:
         """Create 2 run dirs, verify both found."""
         meta1 = CheckpointMetadata(
@@ -122,11 +106,11 @@ class TestListRuns:
 
 class TestClearNodesAfter:
     def test_clear_nodes_after(
-        self, checkpoint_store: CheckpointStore, sample_node_result: NodeResult,
+        self, checkpoint_store: CheckpointStore, checkpoint_node_result: NodeResult,
     ) -> None:
         """Create 3 node checkpoints (a, b, c), clear after b, verify only c removed."""
         for nid in ("a", "b", "c"):
-            checkpoint_store.save_node("wf", "run1", nid, sample_node_result, f"h-{nid}")
+            checkpoint_store.save_node("wf", "run1", nid, checkpoint_node_result, f"h-{nid}")
 
         cleared = checkpoint_store.clear_nodes_after("wf", "run1", "b", ["a", "b", "c"])
         assert cleared == ["c"]
@@ -137,11 +121,11 @@ class TestClearNodesAfter:
         assert checkpoint_store.load_node("wf", "run1", "c") is None
 
     def test_clear_nodes_after_unknown_node(
-        self, checkpoint_store: CheckpointStore, sample_node_result: NodeResult,
+        self, checkpoint_store: CheckpointStore, checkpoint_node_result: NodeResult,
     ) -> None:
         """Pass non-existent node_id, verify no deletions."""
         for nid in ("a", "b", "c"):
-            checkpoint_store.save_node("wf", "run1", nid, sample_node_result, f"h-{nid}")
+            checkpoint_store.save_node("wf", "run1", nid, checkpoint_node_result, f"h-{nid}")
 
         cleared = checkpoint_store.clear_nodes_after("wf", "run1", "z", ["a", "b", "c"])
         assert cleared == []
@@ -175,7 +159,7 @@ class TestHistoryCLI:
 
     def test_history_lists_runs(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path,
-        sample_node_result: NodeResult,
+        checkpoint_node_result: NodeResult,
     ) -> None:
         """CLI history lists run metadata."""
         cp_dir = str(tmp_path / ".dag-cp")
@@ -186,7 +170,7 @@ class TestHistoryCLI:
             inputs={}, status="completed",
         )
         store.save_metadata("wf", "r1", meta)
-        store.save_node("wf", "r1", "a", sample_node_result, "h-a")
+        store.save_node("wf", "r1", "a", checkpoint_node_result, "h-a")
 
         with patch("dag_executor.cli.load_workflow") as mock_load:
             mock_load.return_value = WorkflowDef(
@@ -210,7 +194,7 @@ class TestHistoryCLI:
 class TestInspectCLI:
     def test_inspect_run(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path,
-        sample_node_result: NodeResult,
+        checkpoint_node_result: NodeResult,
     ) -> None:
         """CLI inspect shows metadata + node summaries."""
         cp_dir = str(tmp_path / ".dag-cp")
@@ -221,7 +205,7 @@ class TestInspectCLI:
             inputs={"x": 1}, status="completed",
         )
         store.save_metadata("wf", "r1", meta)
-        store.save_node("wf", "r1", "a", sample_node_result, "h-a")
+        store.save_node("wf", "r1", "a", checkpoint_node_result, "h-a")
 
         with patch("dag_executor.cli.load_workflow") as mock_load:
             mock_load.return_value = WorkflowDef(
@@ -238,7 +222,7 @@ class TestInspectCLI:
 
     def test_inspect_specific_node(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path,
-        sample_node_result: NodeResult,
+        checkpoint_node_result: NodeResult,
     ) -> None:
         """CLI inspect --node shows full node data."""
         cp_dir = str(tmp_path / ".dag-cp")
@@ -249,7 +233,7 @@ class TestInspectCLI:
             inputs={}, status="completed",
         )
         store.save_metadata("wf", "r1", meta)
-        store.save_node("wf", "r1", "a", sample_node_result, "h-a")
+        store.save_node("wf", "r1", "a", checkpoint_node_result, "h-a")
 
         with patch("dag_executor.cli.load_workflow") as mock_load:
             mock_load.return_value = WorkflowDef(
@@ -273,7 +257,7 @@ class TestInspectCLI:
 class TestReplayCLI:
     def test_replay_creates_new_run(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path,
-        sample_node_result: NodeResult,
+        checkpoint_node_result: NodeResult,
     ) -> None:
         """CLI replay creates new run directory, clears downstream nodes."""
         cp_dir = str(tmp_path / ".dag-cp")
@@ -284,7 +268,7 @@ class TestReplayCLI:
             started_at="2026-01-01T00:00:00+00:00",
             inputs={"x": 1}, status="completed",
         )
-        _save_three_node_run(store, wf_name, "r1", meta, sample_node_result)
+        _save_three_node_run(store, wf_name, "r1", meta, checkpoint_node_result)
 
         wf_def = WorkflowDef(
             name=wf_name, config=WorkflowConfig(checkpoint_prefix=cp_dir),
@@ -325,7 +309,7 @@ class TestReplayCLI:
 
     def test_replay_with_overrides(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path,
-        sample_node_result: NodeResult,
+        checkpoint_node_result: NodeResult,
     ) -> None:
         """CLI replay --with-override modifies inputs."""
         cp_dir = str(tmp_path / ".dag-cp")
@@ -336,7 +320,7 @@ class TestReplayCLI:
             started_at="2026-01-01T00:00:00+00:00",
             inputs={"x": 1}, status="completed",
         )
-        _save_three_node_run(store, wf_name, "r1", meta, sample_node_result)
+        _save_three_node_run(store, wf_name, "r1", meta, checkpoint_node_result)
 
         wf_def = WorkflowDef(
             name=wf_name, config=WorkflowConfig(checkpoint_prefix=cp_dir),
@@ -376,7 +360,7 @@ class TestReplayCLI:
         assert inputs["y"] == "hello"
 
     def test_replay_preserves_original(
-        self, tmp_path: Path, sample_node_result: NodeResult,
+        self, tmp_path: Path, checkpoint_node_result: NodeResult,
     ) -> None:
         """Original run directory unchanged after replay."""
         cp_dir = str(tmp_path / ".dag-cp")
@@ -387,7 +371,7 @@ class TestReplayCLI:
             started_at="2026-01-01T00:00:00+00:00",
             inputs={"x": 1}, status="completed",
         )
-        _save_three_node_run(store, wf_name, "r1", meta, sample_node_result)
+        _save_three_node_run(store, wf_name, "r1", meta, checkpoint_node_result)
 
         # Snapshot original node file contents
         original_nodes = store.load_all_nodes(wf_name, "r1")

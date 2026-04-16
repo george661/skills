@@ -1,30 +1,12 @@
 """Tests for checkpoint store functionality."""
 import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from dag_executor.checkpoint import CheckpointMetadata, CheckpointStore, NodeCheckpoint
 from dag_executor.schema import NodeDef, NodeResult, NodeStatus
-
-
-@pytest.fixture
-def checkpoint_store(tmp_path: Path) -> CheckpointStore:
-    """Create a checkpoint store with temporary directory."""
-    return CheckpointStore(str(tmp_path / ".dag-checkpoints"))
-
-
-@pytest.fixture
-def sample_node_def() -> NodeDef:
-    """Create sample node definition."""
-    return NodeDef(
-        id="node1",
-        name="Test Node",
-        type="bash",
-        script="echo 'test'"
-    )
 
 
 def test_save_creates_directory_structure(
