@@ -213,15 +213,35 @@ class InterruptConfig(BaseModel):
 
 
 class EdgeDef(BaseModel):
-    """Conditional edge definition for dynamic routing."""
+    """Conditional edge definition for dynamic routing.
+
+    Supports both single-target and multi-target (fan-out) edges:
+    - Single: EdgeDef(target="b", condition=...)
+    - Multi: EdgeDef(targets=["b", "c"], condition=...)
+    """
     model_config = {"extra": "forbid"}
 
-    target: str = Field(..., description="Target node ID")
+    target: Optional[str] = Field(default=None, description="Target node ID (single-target)")
+    targets: Optional[List[str]] = Field(default=None, description="Target node IDs (multi-target fan-out)")
     condition: Optional[str] = Field(default=None, description="simpleeval condition expression")
     default: bool = Field(default=False, description="Default fallback edge")
 
     def model_post_init(self, __context: Any) -> None:
-        """Validate condition-default mutual exclusivity."""
+        """Validate edge constraints."""
+        # Exactly one of target or targets must be set
+        if self.target is None and self.targets is None:
+            raise ValueError("Either target or targets must be specified")
+        if self.target is not None and self.targets is not None:
+            raise ValueError("target and targets are mutually exclusive")
+
+        # Validate multi-target list
+        if self.targets is not None:
+            if len(self.targets) == 0:
+                raise ValueError("targets list cannot be empty")
+            if len(self.targets) != len(set(self.targets)):
+                raise ValueError("targets list contains duplicate IDs")
+
+        # Validate condition-default mutual exclusivity
         if self.condition is not None and self.default is True:
             raise ValueError("condition and default are mutually exclusive")
         if self.condition is None and self.default is False:

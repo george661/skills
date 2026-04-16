@@ -151,14 +151,17 @@ class WorkflowValidator:
         for node in workflow_def.nodes:
             if node.edges:
                 for edge in node.edges:
-                    if edge.target not in all_ids:
-                        result.issues.append(ValidationIssue(
-                            severity="error",
-                            node_id=node.id,
-                            code="invalid_edge_target",
-                            message=f"Edge target '{edge.target}' does not exist",
-                        ))
-                        has_missing_refs = True
+                    # Support both single-target (target) and multi-target (targets)
+                    edge_targets = edge.targets if edge.targets else ([edge.target] if edge.target else [])
+                    for target_id in edge_targets:
+                        if target_id not in all_ids:
+                            result.issues.append(ValidationIssue(
+                                severity="error",
+                                node_id=node.id,
+                                code="invalid_edge_target",
+                                message=f"Edge target '{target_id}' does not exist",
+                            ))
+                            has_missing_refs = True
 
         # Cycle detection (skip if there are missing refs)
         if not has_missing_refs:
