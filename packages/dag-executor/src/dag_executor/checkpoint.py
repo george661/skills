@@ -25,6 +25,7 @@ class NodeCheckpoint(BaseModel):
         started_at: ISO timestamp when node started
         completed_at: ISO timestamp when node completed
         content_hash: SHA256 hash of node definition + dependency outputs
+        input_versions: Channel version snapshot at execution time (for precise resume)
     """
     model_config = {"extra": "forbid"}
 
@@ -35,6 +36,7 @@ class NodeCheckpoint(BaseModel):
     started_at: str
     completed_at: str
     content_hash: str
+    input_versions: Dict[str, int] = Field(default_factory=dict)
 
 
 class CheckpointMetadata(BaseModel):
@@ -182,7 +184,8 @@ class CheckpointStore:
         node_id: str,
         result: NodeResult,
         content_hash: str,
-        parent_ns: Optional[str] = None
+        parent_ns: Optional[str] = None,
+        input_versions: Optional[Dict[str, int]] = None
     ) -> None:
         """Save node execution checkpoint.
 
@@ -193,10 +196,11 @@ class CheckpointStore:
             result: Node execution result
             content_hash: Content-addressed hash for caching
             parent_ns: Optional parent namespace for sub-DAG checkpoints
+            input_versions: Channel version snapshot at execution time
         """
         nodes_dir = self._get_nodes_dir(workflow_name, run_id, parent_ns)
         nodes_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Convert datetime objects to ISO format strings
         started_at_str = (
             result.started_at.isoformat() if result.started_at
@@ -214,9 +218,10 @@ class CheckpointStore:
             error=result.error,
             started_at=started_at_str,
             completed_at=completed_at_str,
-            content_hash=content_hash
+            content_hash=content_hash,
+            input_versions=input_versions or {}
         )
-        
+
         node_path = nodes_dir / f"{node_id}.json"
         node_path.write_text(checkpoint.model_dump_json(indent=2))
         node_path.chmod(0o600)
@@ -342,6 +347,42 @@ class CheckpointStore:
         checkpoint = self.load_node(workflow_name, run_id, node_id)
         if checkpoint and checkpoint.content_hash == content_hash:
             return checkpoint
+        return None
+
+    def check_versions(
+        self,
+        workflow_name: str,
+        run_id: str,
+        node_id: str,
+        current_versions: Dict[str, int]
+    ) -> Optional[NodeCheckpoint]:
+        """Check if a cached result exists with matching input channel versions.
+
+        This is faster than check_cache (O(1) dict compare vs O(N) SHA256 hash).
+        Returns None for old checkpoints without input_versions (forces fallback
+        to content_hash check).
+
+        Args:
+            workflow_name: Name of the workflow
+            run_id: Unique run identifier
+            node_id: Node identifier
+            current_versions: Current channel version snapshot
+
+        Returns:
+            NodeCheckpoint if all input versions match, None otherwise
+        """
+        checkpoint = self.load_node(workflow_name, run_id, node_id)
+        if not checkpoint:
+            return None
+
+        # Old checkpoints without input_versions fall back to hash check
+        if not checkpoint.input_versions:
+            return None
+
+        # Compare versions - all must match for cache hit
+        if checkpoint.input_versions == current_versions:
+            return checkpoint
+
         return None
 
     def list_runs(self, workflow_name: str) -> List[str]:

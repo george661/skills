@@ -26,6 +26,7 @@ from dag_executor.variables import resolve_variables
 if TYPE_CHECKING:
     from dag_executor.events import EventEmitter
     from dag_executor.checkpoint import CheckpointStore, CheckpointMetadata
+    from dag_executor.channels import ChannelStore
 
 
 @dataclass
@@ -126,7 +127,8 @@ class WorkflowExecutor:
         concurrency_limit: int = 10,
         event_emitter: Optional["EventEmitter"] = None,
         checkpoint_store: Optional["CheckpointStore"] = None,
-        run_id: Optional[str] = None
+        run_id: Optional[str] = None,
+        channel_store: Optional["ChannelStore"] = None
     ) -> WorkflowResult:
         """Execute workflow from start to completion.
 
@@ -137,6 +139,7 @@ class WorkflowExecutor:
             event_emitter: Optional event emitter for workflow monitoring
             checkpoint_store: Optional checkpoint store for state persistence
             run_id: Optional run identifier (generated if not provided)
+            channel_store: Optional channel store for version-based checkpoint optimization
 
         Returns:
             WorkflowResult with execution status and node results
@@ -218,7 +221,7 @@ class WorkflowExecutor:
                 break
 
             await self._execute_layer(
-                layer, nodes_map, ctx, workflow_def, event_emitter, checkpoint_store, run_id
+                layer, nodes_map, ctx, workflow_def, event_emitter, checkpoint_store, run_id, channel_store
             )
 
             # Check if any node triggered a stop or interrupt
@@ -320,7 +323,8 @@ class WorkflowExecutor:
         workflow_def: WorkflowDef,
         event_emitter: Optional["EventEmitter"] = None,
         checkpoint_store: Optional["CheckpointStore"] = None,
-        run_id: str = ""
+        run_id: str = "",
+        channel_store: Optional["ChannelStore"] = None
     ) -> None:
         """Execute all nodes in a layer concurrently.
 
@@ -332,13 +336,14 @@ class WorkflowExecutor:
             event_emitter: Optional event emitter for workflow monitoring
             checkpoint_store: Optional checkpoint store
             run_id: Run identifier for checkpointing
+            channel_store: Optional channel store for version-based checkpoint optimization
         """
         # Create tasks for all nodes in layer
         tasks = []
         for node_id in layer_node_ids:
             node_def = nodes_map[node_id]
             task = self._execute_node(
-                node_def, ctx, nodes_map, workflow_def, event_emitter, checkpoint_store, run_id
+                node_def, ctx, nodes_map, workflow_def, event_emitter, checkpoint_store, run_id, channel_store
             )
             tasks.append(task)
 
@@ -353,7 +358,8 @@ class WorkflowExecutor:
         workflow_def: WorkflowDef,
         event_emitter: Optional["EventEmitter"] = None,
         checkpoint_store: Optional["CheckpointStore"] = None,
-        run_id: str = ""
+        run_id: str = "",
+        channel_store: Optional["ChannelStore"] = None
     ) -> None:
         """Execute a single node with all pre/post checks.
 
@@ -365,6 +371,7 @@ class WorkflowExecutor:
             event_emitter: Optional event emitter for workflow monitoring
             checkpoint_store: Optional checkpoint store
             run_id: Run identifier for checkpointing
+            channel_store: Optional channel store for version-based checkpoint optimization
         """
         from dag_executor.events import EventType, WorkflowEvent
 
@@ -381,9 +388,16 @@ class WorkflowExecutor:
                 if dep_id in ctx.node_outputs:
                     dependency_outputs[dep_id] = ctx.node_outputs[dep_id]
 
-            # Compute content hash and check cache
-            content_hash = checkpoint_store.compute_content_hash(node_def, dependency_outputs)
-            cached = checkpoint_store.check_cache(workflow_def.name, run_id, node_id, content_hash)
+            # Try version check first (O(1) dict compare, faster than hash)
+            cached = None
+            if channel_store:
+                current_versions = channel_store.get_versions()
+                cached = checkpoint_store.check_versions(workflow_def.name, run_id, node_id, current_versions)
+
+            # Fallback to content hash check if version check missed or no channel_store
+            if not cached:
+                content_hash = checkpoint_store.compute_content_hash(node_def, dependency_outputs)
+                cached = checkpoint_store.check_cache(workflow_def.name, run_id, node_id, content_hash)
 
             # Don't restore INTERRUPTED status from cache (node needs to re-execute with resume value)
             if cached and cached.status == NodeStatus.COMPLETED:
@@ -691,7 +705,13 @@ class WorkflowExecutor:
                 if dep_id in ctx.node_outputs:
                     dependency_outputs[dep_id] = ctx.node_outputs[dep_id]
             content_hash = checkpoint_store.compute_content_hash(node_def, dependency_outputs)
-            checkpoint_store.save_node(workflow_def.name, run_id, node_id, result, content_hash)
+
+            # Capture current channel versions if channel_store available
+            input_versions = channel_store.get_versions() if channel_store else None
+
+            checkpoint_store.save_node(
+                workflow_def.name, run_id, node_id, result, content_hash, input_versions=input_versions
+            )
 
         # Handle failure
         if result.status == NodeStatus.FAILED:

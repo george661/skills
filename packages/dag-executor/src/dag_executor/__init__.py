@@ -155,6 +155,7 @@ def execute_workflow(
     checkpoint_store: Optional[CheckpointStore] = None,
     run_id: Optional[str] = None,
     event_emitter: Optional[EventEmitter] = None,
+    channel_store: Optional["ChannelStore"] = None,
 ) -> WorkflowResult:
     """Execute a workflow from start to completion.
 
@@ -165,6 +166,7 @@ def execute_workflow(
         checkpoint_store: Optional checkpoint store for state persistence
         run_id: Optional run identifier (generated if not provided)
         event_emitter: Optional event emitter for streaming execution events
+        channel_store: Optional channel store for version-based checkpoint optimization
 
     Returns:
         WorkflowResult with execution status and node results
@@ -176,7 +178,8 @@ def execute_workflow(
     return asyncio.run(
         executor.execute(
             workflow_def, inputs or {}, concurrency_limit,
-            event_emitter=event_emitter, checkpoint_store=checkpoint_store, run_id=run_id
+            event_emitter=event_emitter, checkpoint_store=checkpoint_store, run_id=run_id,
+            channel_store=channel_store
         )
     )
 
@@ -190,6 +193,7 @@ def resume_workflow(
     resume_values: Optional[Dict[str, Any]] = None,
     concurrency_limit: int = 10,
     event_emitter: Optional[EventEmitter] = None,
+    channel_store: Optional["ChannelStore"] = None,
 ) -> WorkflowResult:
     """Resume a paused or failed workflow from its last state.
 
@@ -201,6 +205,8 @@ def resume_workflow(
         inputs: Workflow input values (from checkpoint metadata if not provided)
         resume_values: Values to inject for resume (keyed by resume_key from interrupt)
         concurrency_limit: Maximum concurrent node executions
+        event_emitter: Optional event emitter for streaming execution events
+        channel_store: Optional channel store for version-based checkpoint optimization
 
     Returns:
         WorkflowResult with execution status and node results
@@ -234,7 +240,8 @@ def resume_workflow(
     return asyncio.run(
         executor.execute(
             workflow_def, inputs, concurrency_limit,
-            event_emitter=event_emitter, checkpoint_store=checkpoint_store, run_id=run_id
+            event_emitter=event_emitter, checkpoint_store=checkpoint_store, run_id=run_id,
+            channel_store=channel_store
         )
     )
 

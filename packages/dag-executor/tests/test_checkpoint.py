@@ -313,8 +313,178 @@ def test_compute_content_hash_changes_with_dependency_output(
     """Test that content hash changes when upstream output changes."""
     deps1 = {"upstream": {"output": "value1"}}
     deps2 = {"upstream": {"output": "value2"}}
-    
+
     hash1 = checkpoint_store.compute_content_hash(sample_node_def, deps1)
     hash2 = checkpoint_store.compute_content_hash(sample_node_def, deps2)
-    
+
     assert hash1 != hash2
+
+
+# ---------------------------------------------------------------------------
+# Version-based checkpoint tests (GW-5025)
+# ---------------------------------------------------------------------------
+
+
+def test_node_checkpoint_has_input_versions_field(
+    checkpoint_store: CheckpointStore,
+    checkpoint_node_result: NodeResult,
+    tmp_path: Path
+):
+    """Test that NodeCheckpoint includes input_versions field with correct default."""
+    # Save with input_versions
+    input_versions = {"channel_a": 1, "channel_b": 2}
+    checkpoint_store.save_node(
+        "workflow1",
+        "run1",
+        "node1",
+        checkpoint_node_result,
+        "hash123",
+        input_versions=input_versions
+    )
+
+    # Load and verify field is persisted
+    checkpoint = checkpoint_store.load_node("workflow1", "run1", "node1")
+    assert checkpoint is not None
+    assert hasattr(checkpoint, "input_versions")
+    assert checkpoint.input_versions == input_versions
+
+    # Verify JSON structure
+    node_file = tmp_path / ".dag-checkpoints" / "workflow1-run1" / "nodes" / "node1.json"
+    data = json.loads(node_file.read_text())
+    assert "input_versions" in data
+    assert data["input_versions"] == input_versions
+
+
+def test_save_node_with_input_versions_roundtrip(
+    checkpoint_store: CheckpointStore,
+    checkpoint_node_result: NodeResult
+):
+    """Test that save_node with input_versions parameter roundtrips correctly."""
+    input_versions = {"state.user": 3, "state.config": 1}
+
+    checkpoint_store.save_node(
+        "workflow1",
+        "run1",
+        "node1",
+        checkpoint_node_result,
+        "hash123",
+        input_versions=input_versions
+    )
+
+    loaded = checkpoint_store.load_node("workflow1", "run1", "node1")
+    assert loaded is not None
+    assert loaded.input_versions == input_versions
+
+
+def test_check_versions_hit_when_all_versions_match(
+    checkpoint_store: CheckpointStore,
+    checkpoint_node_result: NodeResult
+):
+    """Test that check_versions returns cached result when all input versions match."""
+    input_versions = {"channel_a": 5, "channel_b": 3}
+
+    # Save checkpoint with specific versions
+    checkpoint_store.save_node(
+        "workflow1",
+        "run1",
+        "node1",
+        checkpoint_node_result,
+        "hash123",
+        input_versions=input_versions
+    )
+
+    # Check with same versions - should hit
+    cached = checkpoint_store.check_versions(
+        "workflow1",
+        "run1",
+        "node1",
+        current_versions={"channel_a": 5, "channel_b": 3}
+    )
+
+    assert cached is not None
+    assert cached.node_id == "node1"
+    assert cached.output == {"result": "test-output"}
+
+
+def test_check_versions_miss_when_versions_differ(
+    checkpoint_store: CheckpointStore,
+    checkpoint_node_result: NodeResult
+):
+    """Test that check_versions returns None when versions mismatch."""
+    input_versions = {"channel_a": 5, "channel_b": 3}
+
+    # Save checkpoint with specific versions
+    checkpoint_store.save_node(
+        "workflow1",
+        "run1",
+        "node1",
+        checkpoint_node_result,
+        "hash123",
+        input_versions=input_versions
+    )
+
+    # Check with different versions - should miss
+    cached = checkpoint_store.check_versions(
+        "workflow1",
+        "run1",
+        "node1",
+        current_versions={"channel_a": 6, "channel_b": 3}  # channel_a version changed
+    )
+
+    assert cached is None
+
+
+def test_check_versions_returns_none_for_empty_input_versions(
+    checkpoint_store: CheckpointStore,
+    checkpoint_node_result: NodeResult
+):
+    """Test that old checkpoints (empty input_versions) fall back to None."""
+    # Save checkpoint without input_versions (simulates old checkpoint)
+    checkpoint_store.save_node(
+        "workflow1",
+        "run1",
+        "node1",
+        checkpoint_node_result,
+        "hash123"
+        # no input_versions parameter
+    )
+
+    # Check with any versions - should return None (forces fallback to hash check)
+    cached = checkpoint_store.check_versions(
+        "workflow1",
+        "run1",
+        "node1",
+        current_versions={"channel_a": 1}
+    )
+
+    assert cached is None
+
+
+def test_old_checkpoint_without_input_versions_loads(
+    checkpoint_store: CheckpointStore,
+    tmp_path: Path
+):
+    """Test backwards compatibility: old checkpoints without input_versions still load."""
+    # Manually create an old-style checkpoint JSON without input_versions field
+    nodes_dir = tmp_path / ".dag-checkpoints" / "workflow1-run1" / "nodes"
+    nodes_dir.mkdir(parents=True)
+    node_file = nodes_dir / "node1.json"
+
+    old_checkpoint_data = {
+        "node_id": "node1",
+        "status": "completed",
+        "output": {"result": "old-output"},
+        "error": None,
+        "started_at": "2024-01-01T00:00:00Z",
+        "completed_at": "2024-01-01T00:01:00Z",
+        "content_hash": "oldhash123"
+        # NOTE: no input_versions field
+    }
+    node_file.write_text(json.dumps(old_checkpoint_data, indent=2))
+
+    # Load should succeed with default empty dict
+    checkpoint = checkpoint_store.load_node("workflow1", "run1", "node1")
+    assert checkpoint is not None
+    assert checkpoint.node_id == "node1"
+    assert checkpoint.output == {"result": "old-output"}
+    assert checkpoint.input_versions == {}  # default value
