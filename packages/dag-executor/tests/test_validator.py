@@ -669,10 +669,279 @@ nodes:
     
     # Should exit successfully
     assert result.returncode == 0
-    
+
     # Should print PASS
     assert "PASS" in result.stdout
-    
+
     # Should print execution plan
     assert "Execution Plan" in result.stdout
     assert "Layer 0" in result.stdout
+
+
+# ------------------------------------------------------------------
+# Test 11: Variable reference validation
+# ------------------------------------------------------------------
+
+def test_variable_resolution_valid_refs_pass():
+    """Valid upstream $node.field references pass validation."""
+    workflow = WorkflowDef(
+        name="valid-refs",
+        nodes=[
+            NodeDef(id="fetch-data", type="bash", name="Fetch", script="echo output"),
+            NodeDef(
+                id="process",
+                type="bash",
+                name="Process",
+                script="curl $fetch-data.output",
+                depends_on=["fetch-data"]
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    assert result.passed
+    assert not any(e.code == "dangling_variable_ref" for e in result.errors)
+    assert not any(e.code == "downstream_variable_ref" for e in result.errors)
+
+
+def test_variable_resolution_dangling_node_ref_fails():
+    """Reference to non-existent node produces dangling_variable_ref error."""
+    workflow = WorkflowDef(
+        name="dangling-ref",
+        nodes=[
+            NodeDef(
+                id="node1",
+                type="bash",
+                name="Node1",
+                script="echo $nonexistent.output"
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    assert not result.passed
+    errors = [e for e in result.errors if e.code == "dangling_variable_ref"]
+    assert len(errors) == 1
+    assert "nonexistent" in errors[0].message
+
+
+def test_variable_resolution_downstream_ref_fails():
+    """Reference to downstream node produces downstream_variable_ref error."""
+    workflow = WorkflowDef(
+        name="downstream-ref",
+        nodes=[
+            NodeDef(
+                id="node1",
+                type="bash",
+                name="Node1",
+                script="echo $node2.output",
+                depends_on=[]
+            ),
+            NodeDef(
+                id="node2",
+                type="bash",
+                name="Node2",
+                script="echo data",
+                depends_on=["node1"]
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    assert not result.passed
+    errors = [e for e in result.errors if e.code == "downstream_variable_ref"]
+    assert len(errors) == 1
+    assert "node2" in errors[0].message
+
+
+def test_variable_resolution_same_layer_ref_fails():
+    """Reference to same-layer node produces downstream_variable_ref error."""
+    workflow = WorkflowDef(
+        name="same-layer-ref",
+        nodes=[
+            NodeDef(
+                id="parallel1",
+                type="bash",
+                name="Parallel1",
+                script="echo $parallel2.output"
+            ),
+            NodeDef(
+                id="parallel2",
+                type="bash",
+                name="Parallel2",
+                script="echo data"
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    assert not result.passed
+    errors = [e for e in result.errors if e.code == "downstream_variable_ref"]
+    assert len(errors) == 1
+    assert "same-layer" in errors[0].message or "parallel2" in errors[0].message
+
+
+def test_variable_resolution_on_failure_continue_warns():
+    """Reference to node with on_failure=continue produces warning."""
+    from dag_executor.schema import OnFailure
+
+    workflow = WorkflowDef(
+        name="fragile-ref",
+        nodes=[
+            NodeDef(
+                id="fragile",
+                type="bash",
+                name="Fragile",
+                script="echo output",
+                on_failure=OnFailure.CONTINUE
+            ),
+            NodeDef(
+                id="consumer",
+                type="bash",
+                name="Consumer",
+                script="echo $fragile.output",
+                depends_on=["fragile"]
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    warnings = [w for w in result.warnings if w.code == "fragile_variable_ref"]
+    assert len(warnings) == 1
+    assert "fragile" in warnings[0].message
+    assert "continue" in warnings[0].message.lower()
+
+
+def test_variable_resolution_workflow_input_refs_pass():
+    """References to workflow inputs should not produce errors."""
+    workflow = WorkflowDef(
+        name="input-refs",
+        inputs={
+            "issue_key": InputDef(type="string", required=True),
+        },
+        nodes=[
+            NodeDef(
+                id="process",
+                type="bash",
+                name="Process",
+                script="echo Processing $issue_key"
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    assert result.passed
+    assert not any(e.code == "dangling_variable_ref" for e in result.errors)
+
+
+def test_variable_resolution_in_params():
+    """Variable references in node params are validated."""
+    workflow = WorkflowDef(
+        name="params-refs",
+        nodes=[
+            NodeDef(
+                id="node1",
+                type="skill",
+                name="Node1",
+                skill="some/skill",
+                params={"url": "$nonexistent.endpoint"}
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    assert not result.passed
+    errors = [e for e in result.errors if e.code == "dangling_variable_ref"]
+    assert len(errors) >= 1
+
+
+# ------------------------------------------------------------------
+# Test 12: read_state validation
+# ------------------------------------------------------------------
+
+def test_read_state_valid_keys_pass():
+    """read_state with valid workflow input keys passes."""
+    workflow = WorkflowDef(
+        name="read-state-valid",
+        inputs={
+            "issue_key": InputDef(type="string", required=True),
+        },
+        nodes=[
+            NodeDef(
+                id="node1",
+                type="bash",
+                name="Node1",
+                script="echo $issue_key",
+                read_state=["issue_key"]
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    assert result.passed
+    assert not any(e.code == "invalid_read_state_key" for e in result.errors)
+
+
+def test_read_state_invalid_key_fails():
+    """read_state with non-existent key produces error."""
+    workflow = WorkflowDef(
+        name="read-state-invalid",
+        nodes=[
+            NodeDef(
+                id="node1",
+                type="bash",
+                name="Node1",
+                script="echo test",
+                read_state=["nonexistent_key"]
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    assert not result.passed
+    errors = [e for e in result.errors if e.code == "invalid_read_state_key"]
+    assert len(errors) == 1
+    assert "nonexistent_key" in errors[0].message
+
+
+def test_read_state_state_reducer_keys_valid():
+    """read_state with state reducer keys passes."""
+    workflow = WorkflowDef(
+        name="read-state-reducer",
+        state={
+            "results": ReducerDef(strategy=ReducerStrategy.APPEND),
+        },
+        nodes=[
+            NodeDef(
+                id="node1",
+                type="bash",
+                name="Node1",
+                script="echo test",
+                read_state=["results"]
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    validator = WorkflowValidator()
+    result = validator.validate(workflow)
+
+    assert result.passed
+    assert not any(e.code == "invalid_read_state_key" for e in result.errors)

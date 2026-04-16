@@ -199,7 +199,7 @@ class TestHyphenatedNodeIds:
 
 class TestResolutionPriority:
     """Test resolution priority (node outputs before workflow inputs)."""
-    
+
     def test_node_outputs_take_priority(self) -> None:
         """Test node outputs are checked before workflow inputs."""
         node_outputs = {
@@ -211,7 +211,7 @@ class TestResolutionPriority:
         # $data.output should resolve from node_outputs, not inputs
         result = resolve_variables("$data.output", node_outputs, workflow_inputs)
         assert result == {"value": "from_node"}
-    
+
     def test_workflow_input_used_if_no_node_match(self) -> None:
         """Test workflow inputs used if node lookup fails."""
         node_outputs = {
@@ -222,3 +222,98 @@ class TestResolutionPriority:
         }
         result = resolve_variables("$issue_key", node_outputs, workflow_inputs)
         assert result == "GW-999"
+
+
+class TestExtractVariableReferences:
+    """Test static analysis of variable references."""
+
+    def test_extract_from_string(self) -> None:
+        """Test extracting references from a simple string."""
+        from dag_executor.variables import extract_variable_references
+
+        text = "Hello $node1.output and $node2.result"
+        refs = extract_variable_references(text)
+        assert set(refs) == {
+            ("node1", "output"),
+            ("node2", "result")
+        }
+
+    def test_extract_from_dict(self) -> None:
+        """Test extracting references from dict values."""
+        from dag_executor.variables import extract_variable_references
+
+        data = {
+            "field1": "$node1.output.data",
+            "field2": "static",
+            "field3": "$node2.value"
+        }
+        refs = extract_variable_references(data)
+        assert set(refs) == {
+            ("node1", "output.data"),
+            ("node2", "value")
+        }
+
+    def test_extract_from_list(self) -> None:
+        """Test extracting references from list items."""
+        from dag_executor.variables import extract_variable_references
+
+        data = ["$node1.output", "static", "$node2.result"]
+        refs = extract_variable_references(data)
+        assert set(refs) == {
+            ("node1", "output"),
+            ("node2", "result")
+        }
+
+    def test_extract_from_nested_structures(self) -> None:
+        """Test extracting from nested dicts and lists."""
+        from dag_executor.variables import extract_variable_references
+
+        data = {
+            "items": [
+                {"url": "$config.api_url"},
+                {"url": "https://backup.com"}
+            ],
+            "script": "curl $fetch-data.output.url"
+        }
+        refs = extract_variable_references(data)
+        assert set(refs) == {
+            ("config", "api_url"),
+            ("fetch-data", "output.url")
+        }
+
+    def test_extract_no_references(self) -> None:
+        """Test extracting from data with no references."""
+        from dag_executor.variables import extract_variable_references
+
+        data = {"key": "value", "list": [1, 2, 3]}
+        refs = extract_variable_references(data)
+        assert refs == []
+
+    def test_extract_workflow_input_references(self) -> None:
+        """Test extracting workflow input references (single part)."""
+        from dag_executor.variables import extract_variable_references
+
+        text = "Issue: $issue_key and $repo"
+        refs = extract_variable_references(text)
+        # Workflow inputs have empty field_path
+        assert set(refs) == {
+            ("issue_key", ""),
+            ("repo", "")
+        }
+
+    def test_extract_deduplicates(self) -> None:
+        """Test that duplicate references are deduplicated."""
+        from dag_executor.variables import extract_variable_references
+
+        text = "First $node.output and second $node.output"
+        refs = extract_variable_references(text)
+        assert len(refs) == 1
+        assert refs[0] == ("node", "output")
+
+    def test_extract_handles_primitives(self) -> None:
+        """Test that primitives don't crash extraction."""
+        from dag_executor.variables import extract_variable_references
+
+        assert extract_variable_references(123) == []
+        assert extract_variable_references(True) == []
+        assert extract_variable_references(None) == []
