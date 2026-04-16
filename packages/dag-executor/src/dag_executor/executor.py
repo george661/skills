@@ -951,11 +951,17 @@ class WorkflowExecutor:
                     continue
 
                 runner = runner_class()
+                # Merge workflow_state into workflow_inputs under "workflow_state" key
+                # to provide exit hooks access to state (e.g., worktree_path, pr_number)
+                exit_hook_inputs = {
+                    **ctx.workflow_inputs,
+                    "workflow_state": ctx.workflow_state,
+                }
                 runner_ctx = RunnerContext(
                     node_def=hook_node,
                     resolved_inputs={},
                     node_outputs=ctx.node_outputs,
-                    workflow_inputs=ctx.workflow_inputs,
+                    workflow_inputs=exit_hook_inputs,
                     workflow_id=workflow_def.name,
                 )
 
