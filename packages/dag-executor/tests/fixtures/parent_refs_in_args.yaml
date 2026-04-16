@@ -1,0 +1,25 @@
+name: Parent With Refs in Args
+config:
+  checkpoint_prefix: parent-test
+
+nodes:
+  - id: call_child
+    name: Call Child Workflow
+    type: command
+    command: child_simple
+    args:
+      - "arg1_value"
+      - "arg2_value"
+  
+  - id: call_another_child
+    name: Call Another Child with Invalid Ref
+    type: command
+    command: child_a
+    depends_on:
+      - call_child
+    args:
+      - "$call_child.invalid_output"
+
+outputs:
+  final:
+    node: call_another_child

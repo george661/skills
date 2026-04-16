@@ -1,0 +1,16 @@
+name: Parent With Insufficient Args
+config:
+  checkpoint_prefix: parent-test
+
+nodes:
+  - id: call_child
+    name: Call Child Workflow
+    type: command
+    command: child_simple
+    args:
+      - "only_one_arg"
+
+outputs:
+  child_result:
+    node: call_child
+    field: result

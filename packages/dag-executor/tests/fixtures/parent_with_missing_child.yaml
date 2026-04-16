@@ -1,0 +1,11 @@
+name: Parent With Missing Child
+config:
+  checkpoint_prefix: parent-test
+
+nodes:
+  - id: call_nonexistent
+    name: Call Nonexistent Child
+    type: command
+    command: nonexistent_child
+    args:
+      - "value"

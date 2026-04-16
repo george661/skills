@@ -1,0 +1,18 @@
+name: Parent With Multiple Children
+config:
+  checkpoint_prefix: parent-test
+
+nodes:
+  - id: call_child_a
+    name: Call Child A
+    type: command
+    command: child_a
+    args:
+      - "value_a"
+  
+  - id: call_child_b
+    name: Call Child B
+    type: command
+    command: child_b
+    args:
+      - "value_b"
