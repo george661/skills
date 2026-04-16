@@ -929,7 +929,7 @@ class TestProgressCallbackWiring:
 
 
 class TestChannelStoreInitialization:
-    """Tests for ChannelStore initialization in executor (GW-5023)."""
+    """Tests for ChannelStore initialization in executor."""
 
     def test_workflow_with_state_runs_successfully(self) -> None:
         """Test that workflows with state declarations execute successfully (channel_store initialized)."""
@@ -1001,7 +1001,7 @@ class TestChannelStoreInitialization:
 
 
 class TestVersionAwareTriggering:
-    """Tests for version-aware triggering (GW-5023)."""
+    """Tests for version-aware triggering."""
 
     def test_node_triggers_on_first_run(self) -> None:
         """Test that nodes trigger on first run (no previous versions)."""

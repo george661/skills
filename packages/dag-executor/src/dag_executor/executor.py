@@ -9,7 +9,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from simpleeval import SimpleEval  # type: ignore
 
@@ -186,7 +186,7 @@ class WorkflowExecutor:
             semaphore=asyncio.Semaphore(concurrency_limit),
         )
 
-        # Initialize ChannelStore if workflow has state declarations (GW-5023)
+        # Initialize ChannelStore if workflow has state declarations
         if workflow_def.state:
             ctx.channel_store = ChannelStore.from_workflow_def(workflow_def)
             # Populate workflow_state from channels for backwards compatibility
@@ -361,8 +361,8 @@ class WorkflowExecutor:
         node_def: NodeDef,
         nodes_map: Dict[str, NodeDef],
         workflow_def: WorkflowDef
-    ) -> tuple[List[str], List[str]]:
-        """Infer reads/writes from depends_on and state when not explicitly declared (GW-5023).
+    ) -> "Tuple[List[str], List[str]]":
+        """Infer reads/writes from depends_on and state when not explicitly declared.
 
         Args:
             node_def: Node definition
@@ -494,7 +494,7 @@ class WorkflowExecutor:
                 ))
             return
 
-        # Check trigger (trigger_rule + version-aware, GW-5023)
+        # Check trigger (trigger_rule + version-aware)
         if not self._check_trigger(node_def, nodes_map, workflow_def, ctx):
             ctx.node_results[node_id] = NodeResult(
                 status=NodeStatus.SKIPPED,
@@ -619,7 +619,7 @@ class WorkflowExecutor:
         ctx.node_results[node_id] = result
         ctx.node_statuses[node_id] = result.status
 
-        # Snapshot channel versions after node completion (GW-5023)
+        # Snapshot channel versions after node completion
         if ctx.channel_store is not None and result.status == NodeStatus.COMPLETED:
             reads, _ = self._infer_channel_subscriptions(node_def, nodes_map, workflow_def)
             current_versions = ctx.channel_store.get_versions()
@@ -651,7 +651,7 @@ class WorkflowExecutor:
                 self._evaluate_edges(node_def, ctx)
 
             # Apply reducers to merge outputs into workflow_state
-            # GW-5023: Route through channels when channel_store is available
+            # Route through channels when channel_store is available
             if workflow_def.state and isinstance(output_to_store, dict):
                 if ctx.channel_store is not None:
                     # Channel-based state management
@@ -935,7 +935,7 @@ class WorkflowExecutor:
         workflow_def: WorkflowDef,
         ctx: ExecutionContext
     ) -> bool:
-        """Check if node should trigger based on trigger_rule AND channel versions (GW-5023).
+        """Check if node should trigger based on trigger_rule AND channel versions.
 
         Args:
             node_def: Node definition

@@ -957,7 +957,7 @@ def test_read_state_state_reducer_keys_valid():
 
 
 def test_channel_subscriptions_valid_keys():
-    """Nodes with reads/writes matching workflow state keys pass validation (GW-5023)."""
+    """Nodes with reads/writes matching workflow state keys pass validation."""
     workflow = WorkflowDef(
         name="channel-test",
         state={
@@ -994,7 +994,7 @@ def test_channel_subscriptions_valid_keys():
 
 
 def test_channel_subscriptions_invalid_read_key():
-    """Nodes with reads keys not in workflow state generate warnings (GW-5023)."""
+    """Nodes with reads keys not in workflow state generate warnings."""
     workflow = WorkflowDef(
         name="channel-test",
         state={
@@ -1021,7 +1021,7 @@ def test_channel_subscriptions_invalid_read_key():
 
 
 def test_channel_subscriptions_invalid_write_key():
-    """Nodes with writes keys not in workflow state generate warnings (GW-5023)."""
+    """Nodes with writes keys not in workflow state generate warnings."""
     workflow = WorkflowDef(
         name="channel-test",
         state={

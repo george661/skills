@@ -378,7 +378,7 @@ class WorkflowValidator:
         nodes_map: Dict[str, NodeDef],
         result: ValidationResult,
     ) -> None:
-        """Check that reads/writes channel keys match declared state (GW-5023)."""
+        """Check that reads/writes channel keys match declared state."""
         if not workflow_def.state:
             # No state declared, skip channel subscription checks
             return
