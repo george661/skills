@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
 from simpleeval import SimpleEval  # type: ignore
 
+from dag_executor.channels import ChannelStore
 from dag_executor.graph import topological_sort_with_layers
 from dag_executor.reducers import ReducerRegistry
 from dag_executor.runners import get_runner
@@ -45,7 +46,9 @@ class ExecutionContext:
         node_statuses: Map of node_id -> current NodeStatus
         node_results: Map of node_id -> full NodeResult
         workflow_inputs: Global workflow inputs
-        workflow_state: Shared mutable state merged via reducers
+        workflow_state: Shared mutable state merged via reducers (backwards-compat view)
+        channel_store: Channel-based state management (None = legacy dict mode)
+        versions_seen: Per-node snapshot of channel versions at last execution
         _state_lock: Lock for thread-safe workflow_state mutations
         concurrency_limit: Max concurrent node executions
         stopped: Set to True when workflow should halt (on_failure=stop)
@@ -57,6 +60,8 @@ class ExecutionContext:
     node_results: Dict[str, NodeResult] = field(default_factory=dict)
     workflow_inputs: Dict[str, Any] = field(default_factory=dict)
     workflow_state: Dict[str, Any] = field(default_factory=dict)
+    channel_store: Optional[ChannelStore] = field(default=None)
+    versions_seen: Dict[str, Dict[str, int]] = field(default_factory=dict)
     _state_lock: threading.Lock = field(default_factory=threading.Lock)
     concurrency_limit: int = 10
     stopped: bool = False
