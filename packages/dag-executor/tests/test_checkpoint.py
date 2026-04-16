@@ -17,29 +17,6 @@ def checkpoint_store(tmp_path: Path) -> CheckpointStore:
 
 
 @pytest.fixture
-def sample_metadata() -> CheckpointMetadata:
-    """Create sample checkpoint metadata."""
-    return CheckpointMetadata(
-        workflow_name="test-workflow",
-        run_id="run-123",
-        started_at=datetime.now(timezone.utc).isoformat(),
-        inputs={"input1": "value1"},
-        status="running"
-    )
-
-
-@pytest.fixture
-def sample_node_result() -> NodeResult:
-    """Create sample node result."""
-    return NodeResult(
-        status=NodeStatus.COMPLETED,
-        output={"result": "test-output"},
-        started_at=datetime.now(timezone.utc),
-        completed_at=datetime.now(timezone.utc)
-    )
-
-
-@pytest.fixture
 def sample_node_def() -> NodeDef:
     """Create sample node definition."""
     return NodeDef(
@@ -52,7 +29,7 @@ def sample_node_def() -> NodeDef:
 
 def test_save_creates_directory_structure(
     checkpoint_store: CheckpointStore,
-    sample_node_result: NodeResult,
+    checkpoint_node_result: NodeResult,
     tmp_path: Path
 ):
     """Test that save creates the correct directory structure."""
@@ -60,7 +37,7 @@ def test_save_creates_directory_structure(
         "test-workflow",
         "run-123",
         "node1",
-        sample_node_result,
+        checkpoint_node_result,
         "hash123"
     )
     
@@ -76,7 +53,7 @@ def test_save_creates_directory_structure(
 
 def test_save_file_format(
     checkpoint_store: CheckpointStore,
-    sample_node_result: NodeResult,
+    checkpoint_node_result: NodeResult,
     tmp_path: Path
 ):
     """Test that saved JSON contains all NodeCheckpoint fields."""
@@ -84,7 +61,7 @@ def test_save_file_format(
         "test-workflow",
         "run-123",
         "node1",
-        sample_node_result,
+        checkpoint_node_result,
         "hash123"
     )
     
@@ -106,12 +83,12 @@ def test_save_file_format(
 
 def test_load_returns_completed_node_outputs(
     checkpoint_store: CheckpointStore,
-    sample_node_result: NodeResult
+    checkpoint_node_result: NodeResult
 ):
     """Test that load returns dict of all completed node outputs for a run."""
     # Save multiple node checkpoints
-    checkpoint_store.save_node("workflow1", "run1", "node1", sample_node_result, "hash1")
-    checkpoint_store.save_node("workflow1", "run1", "node2", sample_node_result, "hash2")
+    checkpoint_store.save_node("workflow1", "run1", "node1", checkpoint_node_result, "hash1")
+    checkpoint_store.save_node("workflow1", "run1", "node2", checkpoint_node_result, "hash2")
     
     # Load all nodes
     checkpoints = checkpoint_store.load_all_nodes("workflow1", "run1")
@@ -209,14 +186,14 @@ def test_resume_restores_outputs_for_downstream(checkpoint_store: CheckpointStor
 def test_content_cache_hit_skips_execution(
     checkpoint_store: CheckpointStore,
     sample_node_def: NodeDef,
-    sample_node_result: NodeResult
+    checkpoint_node_result: NodeResult
 ):
     """Test that when content hash matches, cache returns the checkpoint."""
     # Compute content hash
     content_hash = checkpoint_store.compute_content_hash(sample_node_def, {})
     
     # Save checkpoint with this hash
-    checkpoint_store.save_node("workflow1", "run1", "node1", sample_node_result, content_hash)
+    checkpoint_store.save_node("workflow1", "run1", "node1", checkpoint_node_result, content_hash)
     
     # Check cache with same hash - should hit
     cached = checkpoint_store.check_cache("workflow1", "run1", "node1", content_hash)
@@ -230,11 +207,11 @@ def test_content_cache_hit_skips_execution(
 def test_content_cache_miss_triggers_execution(
     checkpoint_store: CheckpointStore,
     sample_node_def: NodeDef,
-    sample_node_result: NodeResult
+    checkpoint_node_result: NodeResult
 ):
     """Test that when content hash differs, cache returns None."""
     # Save checkpoint with one hash
-    checkpoint_store.save_node("workflow1", "run1", "node1", sample_node_result, "hash1")
+    checkpoint_store.save_node("workflow1", "run1", "node1", checkpoint_node_result, "hash1")
     
     # Check cache with different hash - should miss
     cached = checkpoint_store.check_cache("workflow1", "run1", "node1", "hash2")
@@ -244,13 +221,13 @@ def test_content_cache_miss_triggers_execution(
 
 def test_file_permissions_0600(
     checkpoint_store: CheckpointStore,
-    sample_node_result: NodeResult,
+    checkpoint_node_result: NodeResult,
     sample_metadata: CheckpointMetadata,
     tmp_path: Path
 ):
     """Test that all checkpoint files are created with 0o600 permissions."""
     # Save node checkpoint
-    checkpoint_store.save_node("workflow1", "run1", "node1", sample_node_result, "hash1")
+    checkpoint_store.save_node("workflow1", "run1", "node1", checkpoint_node_result, "hash1")
     
     # Save metadata
     checkpoint_store.save_metadata("workflow1", "run1", sample_metadata)

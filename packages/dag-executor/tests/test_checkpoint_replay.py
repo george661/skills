@@ -24,29 +24,6 @@ def checkpoint_store(tmp_path: Path) -> CheckpointStore:
 
 
 @pytest.fixture
-def sample_metadata() -> CheckpointMetadata:
-    """Create sample checkpoint metadata."""
-    return CheckpointMetadata(
-        workflow_name="test-workflow",
-        run_id="run-123",
-        started_at=datetime.now(timezone.utc).isoformat(),
-        inputs={"input1": "value1"},
-        status="completed",
-    )
-
-
-@pytest.fixture
-def sample_node_result() -> NodeResult:
-    """Create sample node result."""
-    return NodeResult(
-        status=NodeStatus.COMPLETED,
-        output={"result": "test-output"},
-        started_at=datetime.now(timezone.utc),
-        completed_at=datetime.now(timezone.utc),
-    )
-
-
-@pytest.fixture
 def sample_node_def() -> NodeDef:
     """Create sample node definition."""
     return NodeDef(

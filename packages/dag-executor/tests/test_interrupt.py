@@ -63,7 +63,7 @@ nodes:
     workflow_file.write_text(workflow_yaml)
     
     workflow_def = load_workflow(str(workflow_file))
-    checkpoint_store = CheckpointStore(".dag-checkpoints")
+    checkpoint_store = CheckpointStore(str(tmp_path / ".dag-checkpoints"))
     
     result = execute_workflow(
         workflow_def,
@@ -106,7 +106,7 @@ nodes:
     workflow_file.write_text(workflow_yaml)
     
     workflow_def = load_workflow(str(workflow_file))
-    checkpoint_store = CheckpointStore(".dag-checkpoints")
+    checkpoint_store = CheckpointStore(str(tmp_path / ".dag-checkpoints"))
     
     result = execute_workflow(
         workflow_def,
@@ -114,9 +114,9 @@ nodes:
         checkpoint_store=checkpoint_store
     )
     assert result.status == WorkflowStatus.PAUSED
-    
+
     # Check interrupt checkpoint file exists
-    checkpoint_dir = Path(".dag-checkpoints") / f"interrupt_checkpoint_test-{result.run_id}"
+    checkpoint_dir = tmp_path / ".dag-checkpoints" / f"interrupt_checkpoint_test-{result.run_id}"
     interrupt_checkpoint = checkpoint_dir / "interrupt.json"
     assert interrupt_checkpoint.exists()
     
@@ -158,7 +158,7 @@ nodes:
     workflow_file.write_text(workflow_yaml)
     
     workflow_def = load_workflow(str(workflow_file))
-    checkpoint_store = CheckpointStore(".dag-checkpoints")
+    checkpoint_store = CheckpointStore(str(tmp_path / ".dag-checkpoints"))
     
     # First execution - should pause
     result1 = execute_workflow(
@@ -206,7 +206,7 @@ nodes:
     workflow_file.write_text(workflow_yaml)
     
     workflow_def = load_workflow(str(workflow_file))
-    checkpoint_store = CheckpointStore(".dag-checkpoints")
+    checkpoint_store = CheckpointStore(str(tmp_path / ".dag-checkpoints"))
     
     # Capture events
     events = []
@@ -264,7 +264,7 @@ nodes:
     workflow_file.write_text(workflow_yaml)
     
     workflow_def = load_workflow(str(workflow_file))
-    checkpoint_store = CheckpointStore(".dag-checkpoints")
+    checkpoint_store = CheckpointStore(str(tmp_path / ".dag-checkpoints"))
     
     result = execute_workflow(
         workflow_def,
@@ -300,7 +300,7 @@ nodes:
     workflow_file.write_text(workflow_yaml)
     
     workflow_def = load_workflow(str(workflow_file))
-    checkpoint_store = CheckpointStore(".dag-checkpoints")
+    checkpoint_store = CheckpointStore(str(tmp_path / ".dag-checkpoints"))
     
     result = execute_workflow(
         workflow_def,
@@ -332,7 +332,7 @@ nodes:
     workflow_file.write_text(workflow_yaml)
     
     workflow_def = load_workflow(str(workflow_file))
-    checkpoint_store = CheckpointStore(".dag-checkpoints")
+    checkpoint_store = CheckpointStore(str(tmp_path / ".dag-checkpoints"))
     
     result = execute_workflow(
         workflow_def,
@@ -340,9 +340,9 @@ nodes:
         checkpoint_store=checkpoint_store
     )
     assert result.status == WorkflowStatus.PAUSED
-    
+
     # Verify timeout in checkpoint
-    checkpoint_dir = Path(".dag-checkpoints") / f"timeout_test-{result.run_id}"
+    checkpoint_dir = tmp_path / ".dag-checkpoints" / f"timeout_test-{result.run_id}"
     interrupt_checkpoint = checkpoint_dir / "interrupt.json"
     
     with open(interrupt_checkpoint) as f:
