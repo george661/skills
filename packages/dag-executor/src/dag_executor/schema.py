@@ -108,6 +108,10 @@ class RetryConfig(BaseModel):
 
     max_attempts: int = Field(..., gt=0, description="Maximum retry attempts (must be > 0)")
     delay_ms: int = Field(default=0, ge=0, description="Delay between retries in milliseconds")
+    retry_on: Optional[List[str]] = Field(
+        default=None,
+        description="List of error patterns to retry on (substring match). If None, retry all failures."
+    )
 
 
 class ReducerDef(BaseModel):
