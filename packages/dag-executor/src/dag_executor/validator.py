@@ -118,6 +118,7 @@ class WorkflowValidator:
         self._check_reducer_consistency(workflow_def, nodes_map, result)
         self._check_variable_references(workflow_def, nodes_map, result)
         self._check_read_state(workflow_def, nodes_map, result)
+        self._check_contracts(workflow_def, result)
 
         return result
 
@@ -490,3 +491,22 @@ class WorkflowValidator:
                             message=f"read_state key '{key}' is not produced by any upstream node "
                                     f"or workflow input. Available: {sorted(available_keys)}",
                         ))
+
+    def _check_contracts(
+        self,
+        workflow_def: WorkflowDef,
+        result: ValidationResult,
+    ) -> None:
+        """Validate cross-DAG input/output contracts between parent and sub-DAGs.
+
+        Uses deferred import to avoid circular dependency between validator.py and contracts.py.
+        """
+        # Deferred import to avoid circular dependency (contracts.py imports ValidationIssue from validator.py)
+        from dag_executor.contracts import ContractValidator
+
+        if self.workflows_dir is None:
+            return  # No workflows directory → cannot validate contracts
+
+        contract_validator = ContractValidator(workflows_dir=self.workflows_dir)
+        contract_issues = contract_validator.check_contracts(workflow_def)
+        result.issues.extend(contract_issues)

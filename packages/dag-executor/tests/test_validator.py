@@ -258,7 +258,16 @@ def test_valid_command_in_workflows_dir(tmp_path: Path):
     """.yaml file found in workflows/."""
     workflows_dir = tmp_path / "workflows"
     workflows_dir.mkdir()
-    (workflows_dir / "sub-dag.yaml").write_text("name: sub-dag\nnodes: []")
+    (workflows_dir / "sub-dag.yaml").write_text(
+        "name: sub-dag\n"
+        "config:\n"
+        "  checkpoint_prefix: sub-dag\n"
+        "nodes:\n"
+        "  - id: dummy\n"
+        "    type: bash\n"
+        "    name: Dummy\n"
+        "    script: echo test\n"
+    )
     
     workflow = WorkflowDef(
         name="valid-subdas-workflow",

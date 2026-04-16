@@ -1,0 +1,23 @@
+name: Parent With Bad Output Ref
+config:
+  checkpoint_prefix: parent-test
+
+nodes:
+  - id: call_child
+    name: Call Child Workflow
+    type: command
+    command: child_simple
+    args:
+      - "arg1_value"
+      - "arg2_value"
+  
+  - id: use_output
+    name: Use Child Output
+    type: bash
+    depends_on:
+      - call_child
+    script: "echo 'Result: $call_child.nonexistent'"
+
+outputs:
+  final:
+    node: use_output

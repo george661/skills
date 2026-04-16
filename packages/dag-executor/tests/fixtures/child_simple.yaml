@@ -1,0 +1,24 @@
+name: Simple Child Workflow
+config:
+  checkpoint_prefix: child-simple
+
+inputs:
+  arg0:
+    type: string
+    required: true
+  arg1:
+    type: string
+    required: true
+
+nodes:
+  - id: process
+    name: Process Data
+    type: bash
+    script: echo "Processing"
+
+outputs:
+  result:
+    node: process
+  status:
+    node: process
+    field: exit_code

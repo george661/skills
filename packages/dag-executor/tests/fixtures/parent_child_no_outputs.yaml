@@ -1,0 +1,16 @@
+name: Parent Calling Child With No Outputs
+config:
+  checkpoint_prefix: parent-test
+
+nodes:
+  - id: call_child
+    name: Call Child Workflow
+    type: command
+    command: child_no_outputs
+
+  - id: follow_up
+    name: Follow Up
+    type: bash
+    depends_on:
+      - call_child
+    script: echo "Done"

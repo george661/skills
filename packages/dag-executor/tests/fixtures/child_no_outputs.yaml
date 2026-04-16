@@ -1,0 +1,9 @@
+name: Child With No Outputs
+config:
+  checkpoint_prefix: child-no-outputs
+
+nodes:
+  - id: process
+    name: Process Data
+    type: bash
+    script: echo "Processing"

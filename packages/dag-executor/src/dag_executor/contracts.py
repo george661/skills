@@ -15,6 +15,7 @@ Usage:
     validator = ContractValidator(workflows_dir=Path("workflows/"))
     issues = validator.check_contracts(parent_def, child_name="implement")
 """
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -135,7 +136,6 @@ class ContractValidator:
             for field_value in [node.script, node.prompt, node.condition]:
                 if field_value and prefix in field_value:
                     # Extract referenced field names
-                    import re
                     refs = re.findall(
                         rf"\${re.escape(command_node_id)}\.(\w+)",
                         field_value,
