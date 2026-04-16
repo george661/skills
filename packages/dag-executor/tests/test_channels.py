@@ -10,6 +10,7 @@ from dag_executor.channels import (
     BarrierChannel,
     ChannelStore,
     ConflictError,
+    ChannelConflictError,
 )
 from dag_executor.schema import ReducerStrategy, ReducerDef, WorkflowDef, WorkflowConfig
 
@@ -49,6 +50,25 @@ class TestLastValueChannel:
         channel.write("value1", "node_a")
         with pytest.raises(ConflictError) as exc_info:
             channel.write("value2", "node_b")
+        assert "node_a" in str(exc_info.value)
+        assert "node_b" in str(exc_info.value)
+
+    def test_conflict_error_includes_channel_key(self) -> None:
+        """ChannelConflictError includes channel key in message and as attribute."""
+        channel = LastValueChannel(key="user_count")
+        channel.write(10, "node_a")
+        with pytest.raises(ChannelConflictError) as exc_info:
+            channel.write(20, "node_b")
+
+        # Check channel_key attribute
+        assert exc_info.value.channel_key == "user_count"
+
+        # Check writers attribute
+        assert "node_a" in exc_info.value.writers
+        assert "node_b" in exc_info.value.writers
+
+        # Check message includes channel key
+        assert "user_count" in str(exc_info.value)
         assert "node_a" in str(exc_info.value)
         assert "node_b" in str(exc_info.value)
 
@@ -357,6 +377,31 @@ class TestChannelStore:
         """to_dict() returns empty dict for empty store."""
         store = ChannelStore()
         assert store.to_dict() == {}
+
+    def test_reset_all_clears_all_channel_writers(self) -> None:
+        """reset_all() calls reset() on all channels, clearing writers."""
+        store = ChannelStore()
+        store.channels["key1"] = LastValueChannel(key="key1")
+        store.channels["key2"] = LastValueChannel(key="key2")
+
+        # Write from different nodes
+        store.write("key1", "value_a", "node_a")
+        store.write("key2", "value_b", "node_b")
+
+        # Verify writers are tracked
+        assert "node_a" in store.channels["key1"].writers
+        assert "node_b" in store.channels["key2"].writers
+
+        # Reset all channels
+        store.reset_all()
+
+        # Verify writers are cleared
+        assert len(store.channels["key1"].writers) == 0
+        assert len(store.channels["key2"].writers) == 0
+
+        # Verify new nodes can now write (no conflict)
+        store.write("key1", "value_c", "node_c")
+        store.write("key2", "value_d", "node_d")
 
     def test_to_dict_with_none_values(self) -> None:
         """to_dict() includes channels with None values."""
