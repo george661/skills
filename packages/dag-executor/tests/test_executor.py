@@ -998,3 +998,57 @@ class TestChannelStoreInitialization:
         assert len(items) == 2
         assert "value1" in items
         assert "value2" in items
+
+
+class TestVersionAwareTriggering:
+    """Tests for version-aware triggering (GW-5023)."""
+
+    def test_node_triggers_on_first_run(self) -> None:
+        """Test that nodes trigger on first run (no previous versions)."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        nodes = [
+            NodeDef(id="producer", name="Producer", type="bash", script='echo \'{"data": "initial"}\'', output_format="json", writes=["data"]),
+            NodeDef(id="consumer", name="Consumer", type="bash", script="echo 'consumed'", depends_on=["producer"], reads=["data"]),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "data": ReducerDef(strategy=ReducerStrategy.OVERWRITE),
+            }
+        )
+
+        executor = WorkflowExecutor()
+        result = asyncio.run(executor.execute(workflow_def, {}))
+
+        # Both nodes should execute on first run
+        assert result.status == WorkflowStatus.COMPLETED
+        assert result.node_results["producer"].status == NodeStatus.COMPLETED
+        assert result.node_results["consumer"].status == NodeStatus.COMPLETED
+
+    def test_backwards_compatible_no_reads_writes(self) -> None:
+        """Test that nodes without reads/writes declarations work unchanged."""
+        from dag_executor.schema import ReducerDef, ReducerStrategy
+
+        nodes = [
+            NodeDef(id="task1", name="Task 1", type="bash", script='echo \'{"count": 1}\'', output_format="json"),
+            NodeDef(id="task2", name="Task 2", type="bash", script="echo 'done'", depends_on=["task1"]),
+        ]
+        workflow_def = WorkflowDef(
+            name="test-workflow",
+            config=WorkflowConfig(checkpoint_prefix="test"),
+            nodes=nodes,
+            state={
+                "count": ReducerDef(strategy=ReducerStrategy.OVERWRITE),
+            }
+        )
+
+        executor = WorkflowExecutor()
+        result = asyncio.run(executor.execute(workflow_def, {}))
+
+        # Should complete successfully with inferred reads/writes
+        assert result.status == WorkflowStatus.COMPLETED
+        assert result.node_results["task1"].status == NodeStatus.COMPLETED
+        assert result.node_results["task2"].status == NodeStatus.COMPLETED

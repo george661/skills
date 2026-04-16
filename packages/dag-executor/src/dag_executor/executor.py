@@ -355,7 +355,51 @@ class WorkflowExecutor:
 
         # Execute all nodes in parallel
         await asyncio.gather(*tasks)
-    
+
+    def _infer_channel_subscriptions(
+        self,
+        node_def: NodeDef,
+        nodes_map: Dict[str, NodeDef],
+        workflow_def: WorkflowDef
+    ) -> tuple[List[str], List[str]]:
+        """Infer reads/writes from depends_on and state when not explicitly declared (GW-5023).
+
+        Args:
+            node_def: Node definition
+            nodes_map: Map of node_id -> NodeDef
+            workflow_def: Workflow definition
+
+        Returns:
+            Tuple of (reads, writes) channel key lists
+        """
+        # Infer reads
+        if node_def.reads is not None:
+            reads = node_def.reads
+        else:
+            # Collect all writes from upstream dependencies
+            reads_set: Set[str] = set()
+            for dep_id in node_def.depends_on:
+                if dep_id in nodes_map:
+                    dep_node = nodes_map[dep_id]
+                    # Recursively infer if upstream also has no writes declaration
+                    _, dep_writes = self._infer_channel_subscriptions(dep_node, nodes_map, workflow_def)
+                    reads_set.update(dep_writes)
+
+            # If no upstream writes found, node reads all state keys (full backwards compat)
+            if not reads_set and workflow_def.state:
+                reads = list(workflow_def.state.keys())
+            else:
+                reads = list(reads_set)
+
+        # Infer writes
+        if node_def.writes is not None:
+            writes = node_def.writes
+        else:
+            # Default: node writes nothing (will be updated dynamically based on outputs)
+            writes = []
+
+        return reads, writes
+
     async def _execute_node(
         self,
         node_def: NodeDef,
@@ -450,11 +494,11 @@ class WorkflowExecutor:
                 ))
             return
 
-        # Check trigger rule
-        if not self._check_trigger_rule(node_def, ctx):
+        # Check trigger (trigger_rule + version-aware, GW-5023)
+        if not self._check_trigger(node_def, nodes_map, workflow_def, ctx):
             ctx.node_results[node_id] = NodeResult(
                 status=NodeStatus.SKIPPED,
-                error="Trigger rule not satisfied"
+                error="Trigger rule not satisfied or no channel updates"
             )
             ctx.node_statuses[node_id] = NodeStatus.SKIPPED
             # Emit NODE_SKIPPED event
@@ -574,6 +618,15 @@ class WorkflowExecutor:
         # Store result
         ctx.node_results[node_id] = result
         ctx.node_statuses[node_id] = result.status
+
+        # Snapshot channel versions after node completion (GW-5023)
+        if ctx.channel_store is not None and result.status == NodeStatus.COMPLETED:
+            reads, _ = self._infer_channel_subscriptions(node_def, nodes_map, workflow_def)
+            current_versions = ctx.channel_store.get_versions()
+            # Store only the versions of channels this node reads
+            ctx.versions_seen[node_id] = {
+                key: current_versions[key] for key in reads if key in current_versions
+            }
 
         # Store output for downstream variable resolution
         if result.status == NodeStatus.COMPLETED and result.output:
@@ -874,7 +927,65 @@ class WorkflowExecutor:
             return all(status in terminal_states for status in upstream_statuses)
         
         return True
-    
+
+    def _check_trigger(
+        self,
+        node_def: NodeDef,
+        nodes_map: Dict[str, NodeDef],
+        workflow_def: WorkflowDef,
+        ctx: ExecutionContext
+    ) -> bool:
+        """Check if node should trigger based on trigger_rule AND channel versions (GW-5023).
+
+        Args:
+            node_def: Node definition
+            nodes_map: Map of node_id -> NodeDef
+            workflow_def: Workflow definition
+            ctx: Execution context
+
+        Returns:
+            True if node should trigger, False to skip
+        """
+        # First check traditional trigger rule (ALL_SUCCESS, ONE_SUCCESS, etc)
+        if not self._check_trigger_rule(node_def, ctx):
+            return False
+
+        # If no channel_store, fall back to trigger_rule only (backwards compat)
+        if ctx.channel_store is None:
+            return True
+
+        # Version-aware triggering: check if subscribed channels have new versions
+        node_id = node_def.id
+        reads, _ = self._infer_channel_subscriptions(node_def, nodes_map, workflow_def)
+
+        # If node reads no channels, always trigger (after trigger_rule passes)
+        if not reads:
+            return True
+
+        # Get versions this node saw on its last execution (empty dict on first run)
+        last_seen = ctx.versions_seen.get(node_id, {})
+
+        # On first run (no previous versions), always trigger
+        if not last_seen:
+            return True
+
+        # Get current channel versions
+        current_versions = ctx.channel_store.get_versions()
+
+        # Check if ANY subscribed channel has a newer version
+        for channel_key in reads:
+            if channel_key not in current_versions:
+                # Channel doesn't exist yet, trigger (first write to this channel)
+                return True
+            current_ver = current_versions[channel_key]
+            last_ver = last_seen.get(channel_key, 0)
+            if current_ver > last_ver:
+                # At least one channel updated, node should trigger
+                return True
+
+        # All subscribed channels have same versions as last run, skip execution
+        return False
+
     def _resolve_node_inputs(
         self,
         node_def: NodeDef,
