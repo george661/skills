@@ -100,30 +100,50 @@ class CheckpointStore:
         """
         self.checkpoint_prefix = Path(checkpoint_prefix)
     
-    def _get_run_dir(self, workflow_name: str, run_id: str) -> Path:
-        """Get checkpoint directory for a specific workflow run."""
-        return self.checkpoint_prefix / f"{workflow_name}-{run_id}"
+    def _get_run_dir(
+        self, workflow_name: str, run_id: str, parent_ns: Optional[str] = None
+    ) -> Path:
+        """Get checkpoint directory for a specific workflow run.
+
+        Args:
+            workflow_name: Name of the workflow
+            run_id: Unique run identifier
+            parent_ns: Optional parent namespace for sub-DAG checkpoints
+
+        Returns:
+            Path to checkpoint directory
+        """
+        if parent_ns:
+            # Nested structure for sub-DAGs: {prefix}/{parent_ns}/sub/{workflow_name}-{run_id}/
+            return self.checkpoint_prefix / parent_ns / "sub" / f"{workflow_name}-{run_id}"
+        else:
+            # Flat structure for top-level workflows: {prefix}/{workflow_name}-{run_id}/
+            return self.checkpoint_prefix / f"{workflow_name}-{run_id}"
     
-    def _get_nodes_dir(self, workflow_name: str, run_id: str) -> Path:
+    def _get_nodes_dir(
+        self, workflow_name: str, run_id: str, parent_ns: Optional[str] = None
+    ) -> Path:
         """Get nodes directory for a specific workflow run."""
-        return self._get_run_dir(workflow_name, run_id) / "nodes"
+        return self._get_run_dir(workflow_name, run_id, parent_ns) / "nodes"
     
     def save_metadata(
         self,
         workflow_name: str,
         run_id: str,
-        metadata: CheckpointMetadata
+        metadata: CheckpointMetadata,
+        parent_ns: Optional[str] = None
     ) -> None:
         """Save workflow run metadata.
-        
+
         Args:
             workflow_name: Name of the workflow
             run_id: Unique run identifier
             metadata: Metadata to save
+            parent_ns: Optional parent namespace for sub-DAG checkpoints
         """
-        run_dir = self._get_run_dir(workflow_name, run_id)
+        run_dir = self._get_run_dir(workflow_name, run_id, parent_ns)
         run_dir.mkdir(parents=True, exist_ok=True)
-        
+
         meta_path = run_dir / "meta.json"
         meta_path.write_text(metadata.model_dump_json(indent=2))
         meta_path.chmod(0o600)
@@ -131,21 +151,23 @@ class CheckpointStore:
     def load_metadata(
         self,
         workflow_name: str,
-        run_id: str
+        run_id: str,
+        parent_ns: Optional[str] = None
     ) -> Optional[CheckpointMetadata]:
         """Load workflow run metadata.
-        
+
         Args:
             workflow_name: Name of the workflow
             run_id: Unique run identifier
-        
+            parent_ns: Optional parent namespace for sub-DAG checkpoints
+
         Returns:
             CheckpointMetadata if found, None if missing or corrupted
         """
-        meta_path = self._get_run_dir(workflow_name, run_id) / "meta.json"
+        meta_path = self._get_run_dir(workflow_name, run_id, parent_ns) / "meta.json"
         if not meta_path.exists():
             return None
-        
+
         try:
             data = json.loads(meta_path.read_text())
             return CheckpointMetadata.model_validate(data)
@@ -159,18 +181,20 @@ class CheckpointStore:
         run_id: str,
         node_id: str,
         result: NodeResult,
-        content_hash: str
+        content_hash: str,
+        parent_ns: Optional[str] = None
     ) -> None:
         """Save node execution checkpoint.
-        
+
         Args:
             workflow_name: Name of the workflow
             run_id: Unique run identifier
             node_id: Node identifier
             result: Node execution result
             content_hash: Content-addressed hash for caching
+            parent_ns: Optional parent namespace for sub-DAG checkpoints
         """
-        nodes_dir = self._get_nodes_dir(workflow_name, run_id)
+        nodes_dir = self._get_nodes_dir(workflow_name, run_id, parent_ns)
         nodes_dir.mkdir(parents=True, exist_ok=True)
         
         # Convert datetime objects to ISO format strings
@@ -201,19 +225,21 @@ class CheckpointStore:
         self,
         workflow_name: str,
         run_id: str,
-        node_id: str
+        node_id: str,
+        parent_ns: Optional[str] = None
     ) -> Optional[NodeCheckpoint]:
         """Load node execution checkpoint.
-        
+
         Args:
             workflow_name: Name of the workflow
             run_id: Unique run identifier
             node_id: Node identifier
-        
+            parent_ns: Optional parent namespace for sub-DAG checkpoints
+
         Returns:
             NodeCheckpoint if found, None if missing or corrupted
         """
-        node_path = self._get_nodes_dir(workflow_name, run_id) / f"{node_id}.json"
+        node_path = self._get_nodes_dir(workflow_name, run_id, parent_ns) / f"{node_id}.json"
         if not node_path.exists():
             return None
         
@@ -422,3 +448,23 @@ class CheckpointStore:
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Corrupted interrupt checkpoint at {interrupt_path}: {e}")
             return None
+
+    def list_children(self, parent_ns: str) -> List[str]:
+        """List child checkpoint directories for a parent workflow.
+
+        Args:
+            parent_ns: Parent namespace (e.g., "work-run-abc")
+
+        Returns:
+            List of child checkpoint directory names (e.g., ["implement-run-def", "validate-run-ghi"])
+        """
+        parent_dir = self.checkpoint_prefix / parent_ns / "sub"
+        if not parent_dir.exists():
+            return []
+
+        children = []
+        for child_dir in parent_dir.iterdir():
+            if child_dir.is_dir() and (child_dir / "meta.json").exists():
+                children.append(child_dir.name)
+
+        return children
