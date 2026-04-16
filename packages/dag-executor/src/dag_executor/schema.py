@@ -1,9 +1,11 @@
 """Pydantic v2 models for DAG executor workflow definitions."""
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic.functional_validators import BeforeValidator
+from typing_extensions import Annotated
 
 
 class NodeStatus(str, Enum):
@@ -134,6 +136,54 @@ class ReducerDef(BaseModel):
             raise ValueError("function field is required when strategy=custom")
         if self.strategy != ReducerStrategy.CUSTOM and self.function is not None:
             raise ValueError("function field is only allowed when strategy=custom")
+
+
+class ChannelFieldDef(BaseModel):
+    """Channel field definition with type hint, optional reducer, and optional default.
+
+    This model unifies type information with reducer configuration for state channels.
+    Supports bare string reducer shorthand (e.g., reducer: "append") via field_validator.
+    """
+    model_config = {"extra": "forbid"}
+
+    type: str = Field(..., description="Channel type (e.g., list, float, dict, string)")
+    reducer: Optional[ReducerDef] = Field(
+        default=None,
+        description="Reducer for merging values. None = LastValueChannel (conflict on parallel write)"
+    )
+    default: Optional[Any] = Field(
+        default=None,
+        description="Default value to write to channel after creation"
+    )
+
+    @field_validator("reducer", mode="before")
+    @classmethod
+    def _convert_bare_string_reducer(cls, v: Any) -> Any:
+        """Accept bare string like 'append' and convert to ReducerDef(strategy='append')."""
+        if isinstance(v, str):
+            return {"strategy": v}
+        return v
+
+
+def _state_field_discriminator(v: Any) -> str:
+    """Discriminator for StateFieldDef union type.
+
+    Returns 'channel' for ChannelFieldDef (has 'type' key), 'reducer' for ReducerDef.
+    """
+    if isinstance(v, dict):
+        if "type" in v:
+            return "channel"
+        return "reducer"
+    if isinstance(v, ChannelFieldDef):
+        return "channel"
+    return "reducer"
+
+
+# Union type for state field definitions (backwards compatible)
+StateFieldDef = Annotated[
+    Union[ChannelFieldDef, ReducerDef],
+    BeforeValidator(_state_field_discriminator)
+]
 
 
 class InputDef(BaseModel):
@@ -415,9 +465,9 @@ class WorkflowDef(BaseModel):
     inputs: Dict[str, InputDef] = Field(default_factory=dict, description="Input definitions")
     nodes: List[NodeDef] = Field(..., min_length=1, description="Workflow nodes (at least one required)")
     outputs: Dict[str, OutputDef] = Field(default_factory=dict, description="Output definitions")
-    state: Dict[str, ReducerDef] = Field(
+    state: Dict[str, Union[ChannelFieldDef, ReducerDef]] = Field(
         default_factory=dict,
-        description="State reducer definitions (key = state key name)"
+        description="State field definitions (ChannelFieldDef or ReducerDef for backwards compat)"
     )
 
 
