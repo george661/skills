@@ -39,7 +39,7 @@ nodes:
     label: "step:planning"
     script: |
       # Load AgentDB patterns for planning context
-      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts \
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/reflexion/reflexion_retrieve.ts \
         "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"plan-$epic_key\", \"k\": 3}"
       # Set step label on Jira
       issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
@@ -452,7 +452,7 @@ nodes:
     depends_on:
       - transition_grooming
     script: |
-      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/reflexion/reflexion_store.ts "{
         \"session_id\": \"${TENANT_NAMESPACE}\",
         \"task\": \"plan-$epic_key\",
         \"outcome\": \"success\",
