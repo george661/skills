@@ -30,9 +30,9 @@ nodes:
       cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts \
         "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"plan-$epic_key\", \"k\": 3}"
       # Set step label on Jira
-      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
+      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
       labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not)) + ["step:planning"] | @json')
-      npx tsx ~/.claude/skills/jira/update_issue.ts "{\"issue_key\": \"$epic_key\", \"labels\": $labels, \"notify_users\": false}"
+      npx tsx ~/.claude/skills/issues/update_issue.ts "{\"issue_key\": \"$epic_key\", \"labels\": $labels, \"notify_users\": false}"
 
   # ──────────────────────────────────────────────────────────
   # Phase 0.5: Design Discovery
@@ -66,7 +66,7 @@ nodes:
     on_failure: stop
     output_format: json
     script: |
-      npx tsx ~/.claude/skills/jira/get_issue.ts \
+      npx tsx ~/.claude/skills/issues/get_issue.ts \
         "{\"issue_key\": \"$epic_key\", \"fields\": \"summary,description,labels,status,issuelinks,subtasks\"}"
 
   # ──────────────────────────────────────────────────────────
@@ -308,7 +308,7 @@ nodes:
       git push origin $(git branch --show-current)
       # Link PRP commit to Jira
       prp_path="plans/$(echo $epic_key | tr '[:upper:]' '[:lower:]')/prp.md"
-      npx tsx ~/.claude/skills/jira/add_comment.ts "{
+      npx tsx ~/.claude/skills/issues/add_comment.ts "{
         \"issue_key\": \"$epic_key\",
         \"body\": \"PRP committed: $prp_path\"
       }"
@@ -345,12 +345,12 @@ nodes:
       - cross_epic_sequencing
     script: |
       # Update labels: remove step:*, add outcome
-      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
+      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
       labels=$(echo "$issue" | jq -r '
         .fields.labels // [] |
         map(select(startswith("step:") | not)) +
         ["outcome:success-prp-created"] | @json')
-      npx tsx ~/.claude/skills/jira/update_issue.ts "{
+      npx tsx ~/.claude/skills/issues/update_issue.ts "{
         \"issue_key\": \"$epic_key\",
         \"labels\": $labels,
         \"notify_users\": false

@@ -25,9 +25,9 @@ tools:
 
 permissions:
   allow:
-    - "Bash(npx tsx .claude/skills/jira/get_*)"
-    - "Bash(npx tsx .claude/skills/jira/search_*)"
-    - "Bash(npx tsx .claude/skills/jira/list_*)"
+    - "Bash(npx tsx .claude/skills/issues/get_*)"
+    - "Bash(npx tsx .claude/skills/issues/search_*)"
+    - "Bash(npx tsx .claude/skills/issues/list_*)"
     - "Bash(npx tsx .claude/skills/agentdb/*)"
     - "Bash(npx tsx .claude/skills/bitbucket/get_*)"
     - "Bash(npx tsx .claude/skills/bitbucket/list_*)"

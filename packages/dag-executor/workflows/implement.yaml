@@ -74,7 +74,7 @@ nodes:
     script: |
       # Compare worktree plan against latest Jira plan comment
       worktree_plan=$(cat implementation-plan.md 2>/dev/null || echo "NO_FILE")
-      cd $PROJECT_ROOT && issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
+      cd $PROJECT_ROOT && issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
         "{\"issue_key\": \"$issue_key\", \"fields\": \"comment\"}")
       echo "{\"plan_status\": \"fresh\"}"
     output_format: json
@@ -107,9 +107,9 @@ nodes:
     depends_on:
       - plan_freshness
     script: |
-      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"labels\"}")
+      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"labels\"}")
       labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not)) + ["step:implementing"] | @json')
-      npx tsx ~/.claude/skills/jira/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
+      npx tsx ~/.claude/skills/issues/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
 
   # Phase 6: TDD Implementation (RED-GREEN-REFACTOR)
   - id: tdd_implement
@@ -225,11 +225,11 @@ nodes:
     reads:
       - pr_info
     script: |
-      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"labels\"}")
+      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"labels\"}")
       # Use direct channel field references to get string values
       pr_info_str="${pr_info.repo}/${pr_info.pr_number}"
       labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not) | select(startswith("pr:") | not)) + ["step:awaiting-ci", "pr:'"$pr_info_str"'"] | @json')
-      npx tsx ~/.claude/skills/jira/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
+      npx tsx ~/.claude/skills/issues/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
 
 outputs:
   repo:
