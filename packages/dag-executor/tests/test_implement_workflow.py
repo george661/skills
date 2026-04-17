@@ -60,12 +60,13 @@ class TestWorkflowParsing:
     def test_outputs_defined(self, workflow: WorkflowDef) -> None:
         """Workflow outputs reference correct nodes and fields matching work.yaml contract."""
         # Critical: work.yaml uses $implement.repo, $implement.pr_number (no .output.)
+        # After channel conversion, outputs reference channel fields
         assert workflow.outputs["repo"].node == "push_and_create_pr"
-        assert workflow.outputs["repo"].field == "repo"
+        assert workflow.outputs["repo"].field == "pr_info.repo"
         assert workflow.outputs["pr_number"].node == "push_and_create_pr"
-        assert workflow.outputs["pr_number"].field == "pr_number"
+        assert workflow.outputs["pr_number"].field == "pr_info.pr_number"
         assert workflow.outputs["branch"].node == "push_and_create_pr"
-        assert workflow.outputs["branch"].field == "branch"
+        assert workflow.outputs["branch"].field == "pr_info.branch"
 
     def test_labels_config(self, workflow: WorkflowDef) -> None:
         """Workflow has labels config for failure handling."""
@@ -149,9 +150,10 @@ class TestOutputContract:
     def test_output_types(self, workflow: WorkflowDef) -> None:
         """Outputs have correct data types."""
         # repo and branch are strings, pr_number is number
-        assert workflow.outputs["repo"].field == "repo"
-        assert workflow.outputs["pr_number"].field == "pr_number"
-        assert workflow.outputs["branch"].field == "branch"
+        # After channel conversion, outputs reference channel fields
+        assert workflow.outputs["repo"].field == "pr_info.repo"
+        assert workflow.outputs["pr_number"].field == "pr_info.pr_number"
+        assert workflow.outputs["branch"].field == "pr_info.branch"
 
     def test_all_outputs_from_same_node(self, workflow: WorkflowDef) -> None:
         """All outputs come from push_and_create_pr node."""
@@ -171,4 +173,127 @@ class TestSubDagOutputBubbling:
         actual_outputs = set(workflow.outputs.keys())
         assert expected_outputs == actual_outputs, (
             f"Outputs mismatch: expected {expected_outputs}, got {actual_outputs}"
+        )
+
+
+class TestChannelDeclarations:
+    """Test 8: State channels are declared with correct types and reducers."""
+
+    def test_state_block_exists(self, workflow: WorkflowDef) -> None:
+        """Workflow declares state channels."""
+        assert workflow.state is not None, "State block must be declared"
+        assert len(workflow.state) > 0, "State block must contain channels"
+
+    def test_channel_types_and_reducers(self, workflow: WorkflowDef) -> None:
+        """All channels have correct types and reducer strategies."""
+        expected_channels = {
+            "plan": ("dict", "overwrite"),
+            "plan_status": ("string", "overwrite"),
+            "impl_result": ("dict", "overwrite"),
+            "validation_result": ("dict", "overwrite"),
+            "pr_info": ("dict", "overwrite"),
+            "errors": ("list", "append"),
+        }
+
+        for channel_name, (expected_type, expected_reducer) in expected_channels.items():
+            assert channel_name in workflow.state, (
+                f"Channel '{channel_name}' must be declared in state"
+            )
+            channel = workflow.state[channel_name]
+            assert channel.type == expected_type, (
+                f"Channel '{channel_name}' type should be {expected_type}, got {channel.type}"
+            )
+            # Check reducer strategy (can be string or ReducerDef)
+            if hasattr(channel.reducer, 'strategy'):
+                assert channel.reducer.strategy == expected_reducer, (
+                    f"Channel '{channel_name}' reducer should be {expected_reducer}, got {channel.reducer.strategy}"
+                )
+            else:
+                assert channel.reducer == expected_reducer, (
+                    f"Channel '{channel_name}' reducer should be {expected_reducer}, got {channel.reducer}"
+                )
+
+
+class TestNodeChannelSubscriptions:
+    """Test 9: All nodes declare reads/writes subscriptions."""
+
+    def test_all_nodes_declare_reads_or_writes(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Every node that produces or consumes channel data declares reads/writes."""
+        # Nodes that should declare writes
+        nodes_with_writes = {
+            "load_plan": ["plan"],
+            "plan_freshness": ["plan_status"],
+            "tdd_implement": ["impl_result"],
+            "run_validation": ["validation_result", "errors"],
+            "file_location_guard": ["errors"],
+            "push_and_create_pr": ["pr_info"],
+        }
+
+        for node_id, expected_writes in nodes_with_writes.items():
+            node = nodes_by_id[node_id]
+            assert node.writes is not None, (
+                f"Node '{node_id}' must declare writes"
+            )
+            for channel in expected_writes:
+                assert channel in node.writes, (
+                    f"Node '{node_id}' must write to channel '{channel}'"
+                )
+
+    def test_node_reads_declarations(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Nodes that consume channel data declare reads."""
+        nodes_with_reads = {
+            "plan_freshness": ["plan"],
+            "tdd_implement": ["plan", "plan_status"],
+            "run_validation": ["impl_result"],
+            "file_location_guard": ["validation_result"],
+            "push_and_create_pr": ["errors"],
+            "step_label_awaiting_ci": ["pr_info"],
+        }
+
+        for node_id, expected_reads in nodes_with_reads.items():
+            node = nodes_by_id[node_id]
+            assert node.reads is not None, (
+                f"Node '{node_id}' must declare reads"
+            )
+            for channel in expected_reads:
+                assert channel in node.reads, (
+                    f"Node '{node_id}' must read from channel '{channel}'"
+                )
+
+
+class TestExitHooks:
+    """Test 10: Exit hooks are declared for worktree cleanup."""
+
+    def test_exit_hook_declared(self, workflow: WorkflowDef) -> None:
+        """Workflow config declares exit hooks."""
+        assert workflow.config.on_exit is not None, (
+            "Config must declare on_exit hooks"
+        )
+        assert len(workflow.config.on_exit) > 0, (
+            "At least one exit hook must be declared"
+        )
+
+    def test_worktree_cleanup_hook(self, workflow: WorkflowDef) -> None:
+        """Worktree cleanup exit hook runs on completed and failed."""
+        cleanup_hook = None
+        for hook in workflow.config.on_exit:
+            if "cleanup" in hook.id.lower() or "worktree" in hook.id.lower():
+                cleanup_hook = hook
+                break
+
+        assert cleanup_hook is not None, (
+            "Exit hook for worktree cleanup must be declared"
+        )
+        assert cleanup_hook.type == "bash", (
+            "Cleanup hook should be bash type"
+        )
+        assert "completed" in cleanup_hook.run_on, (
+            "Cleanup hook must run on completed"
+        )
+        assert "failed" in cleanup_hook.run_on, (
+            "Cleanup hook must run on failed"
         )
