@@ -17,17 +17,33 @@ inputs:
     required: true
     pattern: "^[A-Z]+-\\d+$"
 
+state:
+  classification:
+    strategy: overwrite
+  visual_impact:
+    strategy: overwrite
+  test_results:
+    strategy: overwrite
+  evidence:
+    strategy: overwrite
+  verdict:
+    strategy: overwrite
+  transition_result:
+    strategy: overwrite
+
 # ──────────────────────────────────────────────────────────────────────
 # Routing overview:
 #
 #   resume_check → code_review_blocker → classify_type → visual_impact
 #                                             │
+#                                           edges:
 #              ┌──────────────────────────────┼────────────────────────┐
 #              │                              │                        │
-#        fast_path_gate              pipeline_path_gate          deploy_check
-#              │                              │                   (full path)
-#        file_verification          pipeline_verification            │
-#              │                              │                  run_tests
+#       file_verification          pipeline_verification          deploy_check
+#       (condition:                (condition:                     (default: true)
+#        file-verification)         pipeline-verification)         (full path)
+#              │                              │                        │
+#              │                              │                   run_tests
 #              │                              │                   │     │
 #              │                              │          e2e_green_gate │
 #              │                              │                   auth_quality_gate
@@ -52,9 +68,8 @@ inputs:
 #   2. Pipeline path: pipeline_verification  (pipeline-verification type)
 #   3. Full path:     smoke_regression  (runtime validation)
 #
-# Gates use on_failure: continue so a failed gate does NOT propagate
-# failure to siblings. Only the downstream node gated by trigger_rule:
-# all_success is blocked. The other paths proceed independently.
+# Routing uses edges: syntax on classify_type. The executor evaluates
+# conditions and marks non-matching targets for skipping.
 # evaluate_results uses trigger_rule: one_success — whichever path
 # completes successfully feeds the verdict.
 # ──────────────────────────────────────────────────────────────────────
@@ -71,6 +86,8 @@ nodes:
     script: |
       python3 ~/.claude/hooks/checkpoint.py load $issue_key 2>/dev/null || echo '{"found":false}'
     output_format: json
+    writes:
+      - classification
 
   # Hard gate: if the most recent code review verdict is REQUIRES REWORK,
   # short-circuit to TRANSITION_TODO. Runs inline on Opus (~100 tokens).
@@ -99,6 +116,8 @@ nodes:
     output_format: json
     checkpoint: true
     on_failure: stop
+    reads:
+      - classification
 
   # ════════════════════════════════════════════════════════════════════
   # Phase 0.5: Classification
@@ -135,6 +154,15 @@ nodes:
     dispatch: inline
     output_format: json
     checkpoint: true
+    writes:
+      - classification
+    edges:
+      - target: file_verification
+        condition: "classify_type.validation_type == \"file-verification\""
+      - target: pipeline_verification
+        condition: "classify_type.validation_type == \"pipeline-verification\""
+      - target: deploy_check
+        default: true
 
   # Determine if backend changes produce user-visible UI effects.
   # Saves has_visual_effects + ui_paths for dispatch-local.py enrichment.
@@ -161,41 +189,20 @@ nodes:
     model: opus
     dispatch: inline
     output_format: json
+    reads:
+      - classification
+    writes:
+      - visual_impact
 
   # ════════════════════════════════════════════════════════════════════
-  # Phase 1: Deploy + Routing Gates
-  #
-  # Three mutually exclusive gates control which path executes.
-  # Each gate uses on_failure: continue so that a failed condition
-  # does NOT poison sibling gates or the deploy_check node.
+  # Phase 1: Routing Paths (via edges from classify_type)
   # ════════════════════════════════════════════════════════════════════
-
-  # Gate: fast path (file-verification repos with no deploy pipeline)
-  - id: fast_path_gate
-    name: Fast Path Gate
-    type: gate
-    depends_on:
-      - classify_type
-    condition: "$classify_type.validation_type == \"file-verification\""
-    on_failure: continue
-
-  # Gate: pipeline path (pipeline-verification repos)
-  - id: pipeline_path_gate
-    name: Pipeline Path Gate
-    type: gate
-    depends_on:
-      - classify_type
-    condition: "$classify_type.validation_type == \"pipeline-verification\""
-    on_failure: continue
 
   # Fast path: verify PR merged + check file contents against AC.
-  # Only runs when fast_path_gate passes (trigger_rule: all_success).
+  # Reached via edge from classify_type when validation_type == "file-verification".
   - id: file_verification
     name: File Verification (Fast Path)
     type: prompt
-    depends_on:
-      - fast_path_gate
-    trigger_rule: all_success
     prompt: |
       Fast-path file verification for $issue_key (deploy-strategy: none).
 
@@ -217,15 +224,16 @@ nodes:
     dispatch: inline
     output_format: json
     checkpoint: true
+    reads:
+      - classification
+    writes:
+      - test_results
 
   # Pipeline path: verify post-merge pipeline green + read source against AC.
-  # Only runs when pipeline_path_gate passes (trigger_rule: all_success).
+  # Reached via edge from classify_type when validation_type == "pipeline-verification".
   - id: pipeline_verification
     name: Pipeline Verification
     type: prompt
-    depends_on:
-      - pipeline_path_gate
-    trigger_rule: all_success
     prompt: |
       Pipeline-verification for $issue_key.
 
@@ -245,12 +253,13 @@ nodes:
     dispatch: inline
     output_format: json
     checkpoint: true
+    reads:
+      - classification
+    writes:
+      - test_results
 
-  # Full path + pipeline path: check deployment status.
-  # trigger_rule: all_done means this runs after both gates reach terminal
-  # state (passed or failed). For the full path, both gates fail and this
-  # proceeds. For the pipeline path, pipeline_path_gate passes but this
-  # still runs (pipeline path needs deploy check too).
+  # Full path: check deployment status.
+  # Reached via default edge from classify_type (when validation_type != file/pipeline).
   # on_failure: continue allows run_tests to decide how to handle deploy issues.
   - id: deploy_check
     name: Check Deployment Status
@@ -258,13 +267,11 @@ nodes:
     command: validate-deploy-status
     args:
       - "$issue_key"
-    depends_on:
-      - fast_path_gate
-      - pipeline_path_gate
-    trigger_rule: all_done
     dispatch: local
     on_failure: continue
     checkpoint: true
+    reads:
+      - classification
 
   # ════════════════════════════════════════════════════════════════════
   # Phase 2: Run Tests (full path only)
@@ -282,6 +289,10 @@ nodes:
     dispatch: local
     on_failure: continue
     checkpoint: true
+    reads:
+      - classification
+    writes:
+      - test_results
 
   # E2E GREEN gate: only fires when checkpoint has e2e.green-deferred: true.
   # If E2E GREEN fails, verdict is TRANSITION_TODO immediately.
@@ -293,6 +304,8 @@ nodes:
       - run_tests
     condition: "$run_tests.e2e_green_deferred == true"
     on_failure: continue
+    reads:
+      - test_results
 
   # Auth quality gate: catches local model SRP auth failures.
   # Runs inline on Opus to verify AUTH_STATUS and remediate if needed.
@@ -325,6 +338,8 @@ nodes:
     model: opus
     dispatch: inline
     output_format: json
+    reads:
+      - test_results
 
   # ════════════════════════════════════════════════════════════════════
   # Phase 3: Evidence (full path only)
@@ -346,6 +361,10 @@ nodes:
     trigger_rule: all_done
     dispatch: local
     checkpoint: true
+    reads:
+      - test_results
+    writes:
+      - evidence
 
   # Smoke regression: compare current smoke results vs AgentDB baseline.
   # Only meaningful on the full path; fast/pipeline paths skip to evaluate.
@@ -371,6 +390,9 @@ nodes:
     model: opus
     dispatch: inline
     output_format: json
+    reads:
+      - evidence
+      - test_results
 
   # ════════════════════════════════════════════════════════════════════
   # Phase 4: Evaluate
@@ -420,6 +442,12 @@ nodes:
     dispatch: inline
     output_format: json
     checkpoint: true
+    reads:
+      - test_results
+      - evidence
+      - classification
+    writes:
+      - verdict
 
   # ════════════════════════════════════════════════════════════════════
   # Phase 5: Transition
@@ -462,6 +490,10 @@ nodes:
     model: opus
     dispatch: inline
     output_format: json
+    reads:
+      - verdict
+    writes:
+      - transition_result
 
   # ════════════════════════════════════════════════════════════════════
   # Phase 6-7: Cleanup + Summary
@@ -495,6 +527,9 @@ nodes:
             \"verdict\": \"$evaluate_results.verdict\", \
             \"duration_seconds\": 0 \
           }}" 2>/dev/null || true
+    reads:
+      - verdict
+      - transition_result
 
   # Final summary: print a phase-by-phase table and key lesson.
   - id: print_summary
@@ -502,6 +537,10 @@ nodes:
     type: prompt
     depends_on:
       - store_episode
+    reads:
+      - verdict
+      - transition_result
+      - evidence
     prompt: |
       Print a validation summary for $issue_key.
 
