@@ -2,6 +2,17 @@
  * DAG Dashboard SPA - Router and State Management
  */
 
+// Security: HTML escaping helper to prevent XSS
+function escapeHtml(unsafe) {
+    if (unsafe === null || unsafe === undefined) return '';
+    return String(unsafe)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
 // State Store (simple pub/sub pattern)
 class Store {
     constructor() {
@@ -94,55 +105,300 @@ class Router {
 }
 
 // Route handlers
-function renderDashboard() {
+async function renderDashboard() {
     const container = document.getElementById('route-container');
-    const state = store.getState();
-    
-    if (state.workflows.length === 0) {
-        container.innerHTML = `
-            <div class="empty-state">
-                <div class="empty-state-icon">📊</div>
-                <div class="empty-state-text">No workflows yet</div>
+
+    // Fetch status summary
+    let statusSummary = { running: 0, completed: 0, failed: 0, pending: 0, cancelled: 0 };
+    try {
+        const response = await fetch('/api/workflows/summary');
+        if (response.ok) {
+            statusSummary = await response.json();
+        }
+    } catch (error) {
+        console.error('Failed to load status summary:', error);
+    }
+
+    // Fetch running workflows
+    let runningWorkflows = [];
+    try {
+        const response = await fetch('/api/workflows?status=running&limit=10');
+        if (response.ok) {
+            const data = await response.json();
+            runningWorkflows = data.items || [];
+        }
+    } catch (error) {
+        console.error('Failed to load running workflows:', error);
+    }
+
+    // Render status summary cards
+    const summaryCards = `
+        <div class="status-summary">
+            <div class="status-card status-card-running" data-status="running">
+                <div class="status-card-count">${statusSummary.running}</div>
+                <div class="status-card-label">Running</div>
+            </div>
+            <div class="status-card status-card-completed" data-status="completed">
+                <div class="status-card-count">${statusSummary.completed}</div>
+                <div class="status-card-label">Completed</div>
+            </div>
+            <div class="status-card status-card-failed" data-status="failed">
+                <div class="status-card-count">${statusSummary.failed}</div>
+                <div class="status-card-label">Failed</div>
+            </div>
+            <div class="status-card status-card-pending" data-status="pending">
+                <div class="status-card-count">${statusSummary.pending}</div>
+                <div class="status-card-label">Pending</div>
+            </div>
+            <div class="status-card status-card-cancelled" data-status="cancelled">
+                <div class="status-card-count">${statusSummary.cancelled}</div>
+                <div class="status-card-label">Cancelled</div>
+            </div>
+        </div>
+    `;
+
+    // Render active workflows section
+    let activeWorkflowsHTML = '';
+    if (runningWorkflows.length > 0) {
+        const workflowCards = runningWorkflows.map(wf => `
+            <div class="workflow-card">
+                <div class="workflow-title">${escapeHtml(wf.workflow_name)}</div>
+                <span class="workflow-status ${escapeHtml(wf.status)}">${escapeHtml(wf.status)}</span>
+                <div style="margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.875rem;">
+                    ${wf.started_at ? new Date(wf.started_at).toLocaleString() : 'No start time'}
+                </div>
+            </div>
+        `).join('');
+
+        activeWorkflowsHTML = `
+            <h3 style="margin-top: 2rem; margin-bottom: 1rem;">Active Workflows</h3>
+            <div class="workflow-list">
+                ${workflowCards}
             </div>
         `;
-        return;
-    }
-    
-    const workflowCards = state.workflows.map(wf => `
-        <div class="workflow-card">
-            <div class="workflow-title">${wf.run_id || wf.id}</div>
-            <span class="workflow-status ${wf.status}">${wf.status}</span>
-            <div style="margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.875rem;">
-                ${wf.started_at ? new Date(wf.started_at).toLocaleString() : 'No start time'}
+    } else {
+        activeWorkflowsHTML = `
+            <h3 style="margin-top: 2rem; margin-bottom: 1rem;">Active Workflows</h3>
+            <div class="empty-state" style="padding: 2rem 1rem;">
+                <div class="empty-state-icon">📊</div>
+                <div class="empty-state-text">No active workflows</div>
             </div>
-        </div>
-    `).join('');
-    
+        `;
+    }
+
     container.innerHTML = `
-        <h2 style="margin-bottom: 1.5rem;">Active Workflows</h2>
-        <div class="workflow-list">
-            ${workflowCards}
-        </div>
+        <h2 style="margin-bottom: 1.5rem;">Dashboard</h2>
+        ${summaryCards}
+        ${activeWorkflowsHTML}
     `;
+
+    // Add click handlers to status cards
+    document.querySelectorAll('.status-card').forEach(card => {
+        card.addEventListener('click', () => {
+            const status = card.dataset.status;
+            window.location.hash = `/history?status=${status}`;
+        });
+    });
 }
 
-function renderHistory() {
+async function renderHistory() {
     const container = document.getElementById('route-container');
-    const state = store.getState();
-    
-    container.innerHTML = `
-        <h2 style="margin-bottom: 1.5rem;">Workflow History</h2>
-        <div class="empty-state">
-            <div class="empty-state-icon">📜</div>
-            <div class="empty-state-text">History view - Coming soon</div>
+
+    // Parse query parameters
+    const hash = window.location.hash.slice(1);
+    const urlParams = new URLSearchParams(hash.split('?')[1] || '');
+    const currentStatus = urlParams.get('status') || '';
+    const currentName = urlParams.get('name') || '';
+    const currentPage = parseInt(urlParams.get('page') || '0');
+    const currentSort = urlParams.get('sort') || 'started_at';
+    const currentStartDate = urlParams.get('start_date') || '';
+    const currentEndDate = urlParams.get('end_date') || '';
+    const limit = 20;
+    const offset = currentPage * limit;
+
+    // Build API query
+    const apiParams = new URLSearchParams({
+        limit: limit.toString(),
+        offset: offset.toString(),
+        sort_by: currentSort
+    });
+    if (currentStatus) apiParams.set('status', currentStatus);
+    if (currentName) apiParams.set('name', currentName);
+    if (currentStartDate) apiParams.set('started_after', currentStartDate);
+    if (currentEndDate) apiParams.set('started_before', currentEndDate);
+
+    // Fetch workflows
+    let workflows = [];
+    let total = 0;
+    try {
+        const response = await fetch(`/api/workflows?${apiParams}`);
+        if (response.ok) {
+            const data = await response.json();
+            workflows = data.items || [];
+            total = data.total || 0;
+        }
+    } catch (error) {
+        console.error('Failed to load workflows:', error);
+    }
+
+    // Calculate pagination
+    const totalPages = Math.ceil(total / limit);
+    const hasPrev = currentPage > 0;
+    const hasNext = currentPage < totalPages - 1;
+
+    // Render filters
+    const filtersHTML = `
+        <div class="history-filters">
+            <div class="filter-group">
+                <label for="status-filter">Status:</label>
+                <select id="status-filter" class="filter-select">
+                    <option value="">All</option>
+                    <option value="running" ${currentStatus === 'running' ? 'selected' : ''}>Running</option>
+                    <option value="completed" ${currentStatus === 'completed' ? 'selected' : ''}>Completed</option>
+                    <option value="failed" ${currentStatus === 'failed' ? 'selected' : ''}>Failed</option>
+                    <option value="pending" ${currentStatus === 'pending' ? 'selected' : ''}>Pending</option>
+                    <option value="cancelled" ${currentStatus === 'cancelled' ? 'selected' : ''}>Cancelled</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label for="name-filter">Name:</label>
+                <input type="text" id="name-filter" class="filter-input" placeholder="Filter by name..." value="${escapeHtml(currentName)}">
+            </div>
+            <div class="filter-group">
+                <label for="start-date-filter">Start Date:</label>
+                <input type="date" id="start-date-filter" class="filter-input" value="${escapeHtml(currentStartDate)}">
+            </div>
+            <div class="filter-group">
+                <label for="end-date-filter">End Date:</label>
+                <input type="date" id="end-date-filter" class="filter-input" value="${escapeHtml(currentEndDate)}">
+            </div>
+            <div class="filter-group">
+                <label for="sort-filter">Sort by:</label>
+                <select id="sort-filter" class="filter-select">
+                    <option value="started_at" ${currentSort === 'started_at' ? 'selected' : ''}>Start Time</option>
+                    <option value="finished_at" ${currentSort === 'finished_at' ? 'selected' : ''}>Finish Time</option>
+                    <option value="duration" ${currentSort === 'duration' ? 'selected' : ''}>Duration</option>
+                </select>
+            </div>
         </div>
     `;
+
+    // Render table
+    let tableHTML = '';
+    if (workflows.length > 0) {
+        const rows = workflows.map(wf => {
+            const startTime = wf.started_at ? new Date(wf.started_at).toLocaleString() : 'N/A';
+            const duration = wf.finished_at && wf.started_at
+                ? Math.round((new Date(wf.finished_at) - new Date(wf.started_at)) / 1000) + 's'
+                : 'N/A';
+            return `
+                <tr class="history-row" data-run-id="${escapeHtml(wf.id)}">
+                    <td class="history-cell">${escapeHtml(wf.workflow_name)}</td>
+                    <td class="history-cell"><span class="workflow-status ${escapeHtml(wf.status)}">${escapeHtml(wf.status)}</span></td>
+                    <td class="history-cell">${startTime}</td>
+                    <td class="history-cell">${duration}</td>
+                </tr>
+            `;
+        }).join('');
+
+        tableHTML = `
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th class="history-header">Workflow Name</th>
+                        <th class="history-header">Status</th>
+                        <th class="history-header">Started At</th>
+                        <th class="history-header">Duration</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows}
+                </tbody>
+            </table>
+        `;
+    } else {
+        tableHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">📜</div>
+                <div class="empty-state-text">No workflows found</div>
+            </div>
+        `;
+    }
+
+    // Render pagination
+    const paginationHTML = total > 0 ? `
+        <div class="pagination">
+            <button class="pagination-btn" id="prev-page" ${!hasPrev ? 'disabled' : ''}>← Previous</button>
+            <span class="pagination-info">Page ${currentPage + 1} of ${totalPages} (${total} total)</span>
+            <button class="pagination-btn" id="next-page" ${!hasNext ? 'disabled' : ''}>Next →</button>
+        </div>
+    ` : '';
+
+    container.innerHTML = `
+        <h2 style="margin-bottom: 1.5rem;">Workflow History</h2>
+        ${filtersHTML}
+        ${tableHTML}
+        ${paginationHTML}
+    `;
+
+    // Add event listeners for filters
+    const statusFilter = document.getElementById('status-filter');
+    const nameFilter = document.getElementById('name-filter');
+    const startDateFilter = document.getElementById('start-date-filter');
+    const endDateFilter = document.getElementById('end-date-filter');
+    const sortFilter = document.getElementById('sort-filter');
+
+    const applyFilters = () => {
+        const params = new URLSearchParams();
+        if (statusFilter.value) params.set('status', statusFilter.value);
+        if (nameFilter.value) params.set('name', nameFilter.value);
+        if (startDateFilter.value) params.set('start_date', startDateFilter.value);
+        if (endDateFilter.value) params.set('end_date', endDateFilter.value);
+        if (sortFilter.value !== 'started_at') params.set('sort', sortFilter.value);
+        params.set('page', '0');
+        window.location.hash = `/history?${params}`;
+    };
+
+    statusFilter.addEventListener('change', applyFilters);
+    startDateFilter.addEventListener('change', applyFilters);
+    endDateFilter.addEventListener('change', applyFilters);
+    sortFilter.addEventListener('change', applyFilters);
+
+    // Debounce name filter input
+    let nameFilterTimeout;
+    nameFilter.addEventListener('input', () => {
+        clearTimeout(nameFilterTimeout);
+        nameFilterTimeout = setTimeout(applyFilters, 500);
+    });
+
+    // Pagination handlers
+    document.getElementById('prev-page')?.addEventListener('click', () => {
+        if (hasPrev) {
+            urlParams.set('page', (currentPage - 1).toString());
+            window.location.hash = `/history?${urlParams}`;
+        }
+    });
+
+    document.getElementById('next-page')?.addEventListener('click', () => {
+        if (hasNext) {
+            urlParams.set('page', (currentPage + 1).toString());
+            window.location.hash = `/history?${urlParams}`;
+        }
+    });
+
+    // Row click to navigate
+    document.querySelectorAll('.history-row').forEach(row => {
+        row.addEventListener('click', () => {
+            const runId = row.dataset.runId;
+            window.location.hash = `/workflow/${runId}`;
+        });
+    });
 }
 
 function renderWorkflowDetail(runId) {
     const container = document.getElementById('route-container');
     const state = store.getState();
-    
+
     container.innerHTML = `
         <div>
             <a href="#/" style="color: var(--primary); text-decoration: none; display: inline-block; margin-bottom: 1rem;">
@@ -150,7 +406,7 @@ function renderWorkflowDetail(runId) {
             </a>
             <h2 style="margin-bottom: 1.5rem;">Workflow Detail</h2>
             <div class="workflow-card">
-                <div class="workflow-title">Run ID: ${runId}</div>
+                <div class="workflow-title">Run ID: ${escapeHtml(runId)}</div>
                 <div style="margin-top: 0.5rem; color: var(--text-secondary);">
                     Details will be populated from API
                 </div>
@@ -176,19 +432,3 @@ store.subscribe((state) => {
     // Re-render current route when state changes
     router.handleRoute();
 });
-
-// Fetch initial data
-async function loadWorkflows() {
-    try {
-        const response = await fetch('/api/workflows');
-        if (response.ok) {
-            const workflows = await response.json();
-            store.setState({ workflows });
-        }
-    } catch (error) {
-        console.error('Failed to load workflows:', error);
-    }
-}
-
-// Load data on startup
-loadWorkflows();

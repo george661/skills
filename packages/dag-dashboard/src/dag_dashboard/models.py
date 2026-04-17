@@ -10,6 +10,7 @@ class SortBy(str, Enum):
     """Whitelisted sortBy values for list queries."""
     STARTED_AT = "started_at"
     FINISHED_AT = "finished_at"
+    DURATION = "duration"
     # Note: total_cost removed - column doesn't exist in schema
     # Note: Using finished_at to match actual schema column name
 
@@ -20,6 +21,7 @@ class RunStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    PENDING = "pending"
 
 
 class WorkflowRunResponse(BaseModel):
@@ -80,3 +82,17 @@ class ListParams(BaseModel):
     offset: int = Field(default=0, ge=0)
     status: Optional[RunStatus] = None
     sort_by: SortBy = Field(default=SortBy.STARTED_AT)
+    name: Optional[str] = None
+    started_after: Optional[str] = None
+    started_before: Optional[str] = None
+
+
+class StatusSummary(BaseModel):
+    """Status summary counts for dashboard."""
+    model_config = {"extra": "forbid"}
+
+    running: int
+    completed: int
+    failed: int
+    pending: int
+    cancelled: int
