@@ -17,6 +17,18 @@ inputs:
     required: true
     pattern: "^[A-Z]+-\\d+$"
 
+state:
+  prp_state:
+    type: dict
+    reducer: overwrite
+  review_verdicts:
+    type: list
+    reducer: append
+    default: []
+  skeleton_output:
+    type: dict
+    reducer: overwrite
+
 nodes:
   # ──────────────────────────────────────────────────────────
   # Phase 0: Initialize
@@ -124,6 +136,8 @@ nodes:
     dispatch: local
     checkpoint: true
     label: "step:authoring"
+    writes:
+      - prp_state
     prompt: |
       Draft a Product Requirements Plan (PRP) for Epic $epic_key.
       Use the Epic description, domain model analysis, repo
@@ -143,6 +157,10 @@ nodes:
     type: prompt
     depends_on:
       - create_prp
+    reads:
+      - prp_state
+    writes:
+      - prp_state
     prompt: |
       Compare the PRP for $epic_key against prior design sessions
       from design_discovery. Flag any deviations from established
@@ -172,6 +190,10 @@ nodes:
       - "$epic_key"
     depends_on:
       - design_integration
+    reads:
+      - prp_state
+    writes:
+      - skeleton_output
     dispatch: local
 
   - id: review_skeleton
@@ -182,6 +204,10 @@ nodes:
       - "$epic_key"
     depends_on:
       - create_skeleton
+    reads:
+      - skeleton_output
+    writes:
+      - review_verdicts
     dispatch: inline
 
   - id: skeleton_gate
@@ -201,6 +227,10 @@ nodes:
     depends_on:
       - skeleton_gate
     trigger_rule: all_done
+    reads:
+      - skeleton_output
+    writes:
+      - skeleton_output
     retry:
       max_attempts: 2
       delay_ms: 0
@@ -226,6 +256,11 @@ nodes:
     trigger_rule: one_success
     on_failure: stop
     label: "step:reviewing"
+    reads:
+      - prp_state
+      - review_verdicts
+    writes:
+      - review_verdicts
     prompt: |
       Review the PRP for $epic_key for completeness, clarity, and
       structure. Verify: all stories have acceptance criteria, the
@@ -244,6 +279,11 @@ nodes:
     depends_on:
       - first_review
     on_failure: stop
+    reads:
+      - prp_state
+      - review_verdicts
+    writes:
+      - review_verdicts
     prompt: |
       Review the PRP for $epic_key for architectural correctness.
       Verify: domain boundaries are respected, API contracts follow
@@ -262,6 +302,11 @@ nodes:
     depends_on:
       - arch_review
     on_failure: stop
+    reads:
+      - prp_state
+      - review_verdicts
+    writes:
+      - review_verdicts
     prompt: |
       Perform a security audit of the PRP for $epic_key.
       Apply STRIDE threat model to each component. Check OWASP
@@ -273,6 +318,23 @@ nodes:
     dispatch: inline
 
   # ──────────────────────────────────────────────────────────
+  # Phase 5.5: Security Sign-off Interrupt
+  # Human approval after security audit before final review.
+  # ──────────────────────────────────────────────────────────
+  - id: security_signoff_interrupt
+    name: Security Audit Sign-off
+    type: interrupt
+    depends_on:
+      - security_audit
+    message: "Security audit complete for $epic_key. Review STRIDE findings and approve to proceed."
+    resume_key: security_signoff
+    channels:
+      - terminal
+    reads:
+      - prp_state
+      - review_verdicts
+
+  # ──────────────────────────────────────────────────────────
   # Phase 6: Final Review
   # Verify all feedback from phases 3-5 was incorporated.
   # ──────────────────────────────────────────────────────────
@@ -280,9 +342,14 @@ nodes:
     name: Final Review
     type: prompt
     depends_on:
-      - security_audit
+      - security_signoff_interrupt
     on_failure: stop
     checkpoint: true
+    reads:
+      - prp_state
+      - review_verdicts
+    writes:
+      - review_verdicts
     prompt: |
       Final review of the PRP for $epic_key. Verify that all
       feedback from completeness review, architectural review,
@@ -293,14 +360,33 @@ nodes:
     dispatch: inline
 
   # ──────────────────────────────────────────────────────────
+  # Phase 6.5: PRP Final Approval Interrupt
+  # Human approval before committing PRP.
+  # ──────────────────────────────────────────────────────────
+  - id: prp_approval_interrupt
+    name: PRP Final Approval
+    type: interrupt
+    depends_on:
+      - final_review
+    message: "PRP for $epic_key has passed all reviews. Approve to commit and push?"
+    resume_key: prp_approval
+    channels:
+      - terminal
+    reads:
+      - prp_state
+      - review_verdicts
+
+  # ──────────────────────────────────────────────────────────
   # Phase 7: Commit PRP
   # ──────────────────────────────────────────────────────────
   - id: commit_prp
     name: Commit and Push PRP
     type: bash
     depends_on:
-      - final_review
+      - prp_approval_interrupt
     on_failure: stop
+    reads:
+      - prp_state
     script: |
       cd $PROJECT_ROOT/gw-docs
       git add plans/
