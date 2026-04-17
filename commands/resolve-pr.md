@@ -81,8 +81,8 @@ echo "PR job: $pr_job"
 ### Step 1.2 — Run wait-for-ci and evaluate
 
 ```bash
-ci_result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/fly/wait-for-ci.ts \
-  "{\"pipeline\": \"$repo\", \"job\": \"$pr_job\", \"timeout_seconds\": 900}")
+ci_result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/ci/wait_for_ci.ts \
+  "{\"repo\": \"$repo\", \"job\": \"$pr_job\", \"timeout_seconds\": 900}")
 
 ci_success=$(echo "$ci_result" | jq -r '.success')
 ci_status=$(echo "$ci_result"  | jq -r '.status')

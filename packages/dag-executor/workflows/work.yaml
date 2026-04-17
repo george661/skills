@@ -284,8 +284,8 @@ nodes:
     trigger_rule: one_success
     label: "step:awaiting-ci"
     script: |
-      ci_result=$(npx tsx ~/.claude/skills/fly/wait-for-ci.ts \
-        "{\"pipeline\": \"$repo\", \"timeout_seconds\": 900}")
+      ci_result=$(npx tsx ~/.claude/skills/ci/wait_for_ci.ts \
+        "{\"repo\": \"$repo\", \"timeout_seconds\": 900}")
       echo "$ci_result"
     output_format: json
 

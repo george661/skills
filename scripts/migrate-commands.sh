@@ -174,7 +174,7 @@ echo ""
 echo "=== NOT migrated (Concourse-specific ops) ==="
 for pattern in "skills/fly/validate_pipeline" "skills/fly/set_pipeline" "skills/fly/login" \
                "skills/fly/abort_build" "skills/fly/containers" "skills/fly/land_worker" \
-               "skills/fly/prune_worker" "skills/fly/workers" "skills/fly/wait-for-ci" \
+               "skills/fly/prune_worker" "skills/fly/workers" \
                "skills/concourse/list_pipelines" "skills/concourse/get_pipeline" \
                "skills/concourse/get_pipeline_config" "skills/concourse/list_jobs" \
                "skills/concourse/list_resources" "skills/concourse/pause_pipeline" \
