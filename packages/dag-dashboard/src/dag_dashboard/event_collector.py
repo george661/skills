@@ -43,16 +43,16 @@ class EventCollector:
         
         # Create event handler
         handler = _EventFileHandler(self)
-        self.observer.schedule(handler, str(events_dir), recursive=False)
+        self.observer.schedule(handler, str(events_dir), recursive=False)  # type: ignore[no-untyped-call]
 
     def start(self) -> None:
         """Start watching the events directory."""
-        self.observer.start()
+        self.observer.start()  # type: ignore[no-untyped-call]
         logger.info(f"Event collector started watching {self.events_dir}")
 
     def stop(self) -> None:
         """Stop watching the events directory."""
-        self.observer.stop()
+        self.observer.stop()  # type: ignore[no-untyped-call]
         self.observer.join(timeout=2.0)
         logger.info("Event collector stopped")
 
