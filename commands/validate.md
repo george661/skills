@@ -663,8 +663,8 @@ After evidence collection, run the functional smoke test and compare against the
 AgentDB baseline to surface any regressions introduced by this or adjacent changes:
 
 ```bash
-if [ -f "$PROJECT_ROOT/lambda-functions/tests/smoke/smoke-test.js" ]; then
-  node "$PROJECT_ROOT/lambda-functions/tests/smoke/smoke-test.js" \
+if [ -f "$PROJECT_ROOT/$TENANT_SMOKE_TEST_PATH" ]; then
+  node "$PROJECT_ROOT/$TENANT_SMOKE_TEST_PATH" \
     --env dev --output /tmp/smoke-$ARGUMENTS.issue.json 2>&1 || true
 
   # Compare against baseline stored in AgentDB

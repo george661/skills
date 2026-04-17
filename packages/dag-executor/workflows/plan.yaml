@@ -388,7 +388,7 @@ nodes:
     reads:
       - prp_state
     script: |
-      cd $PROJECT_ROOT/gw-docs
+      cd $PROJECT_ROOT/$TENANT_DOCS_REPO
       git add plans/
       git commit -m "$epic_key: Add Product Requirements Plan"
       git push origin $(git branch --show-current)

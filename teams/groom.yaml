@@ -23,7 +23,7 @@ agents:
       implementation tasks from the PRP document.
 
       Tasks:
-      1. Locate and read the PRP document from project-docs
+      1. Locate and read the PRP document from $TENANT_DOCS_REPO
       2. Extract all implementation tasks with their:
          - Title and description
          - Acceptance criteria

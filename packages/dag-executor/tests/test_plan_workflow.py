@@ -62,6 +62,14 @@ class TestWorkflowParsing:
         """Workflow has labels config for failure handling."""
         assert workflow.config.labels is not None
 
+    def test_no_hardcoded_gw_docs_path(self, workflow: WorkflowDef) -> None:
+        """plan.yaml should not contain hardcoded 'gw-docs' paths."""
+        # Read the raw YAML file to check for hardcoded paths
+        with open(WORKFLOW_PATH, 'r') as f:
+            content = f.read()
+        assert 'gw-docs' not in content, \
+            "Found hardcoded 'gw-docs' path - should use $TENANT_DOCS_REPO env var"
+
 
 class TestTopologicalOrdering:
     """Test 2: Topological sort produces correct phase ordering."""
