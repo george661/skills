@@ -11,6 +11,7 @@ from dag_dashboard.queries import (
     update_run,
     get_run,
     list_runs,
+    get_status_counts,
     insert_node,
     update_node,
     get_node,
@@ -310,3 +311,96 @@ def test_workflow_name_injection_blocked(db_path: Path):
     result = cursor.fetchone()
     conn.close()
     assert result is not None
+
+
+def test_get_status_counts_empty(db_path: Path):
+    """Test get_status_counts returns zeros when no runs exist."""
+    counts = get_status_counts(db_path)
+    assert counts["running"] == 0
+    assert counts["completed"] == 0
+    assert counts["failed"] == 0
+    assert counts["pending"] == 0
+
+
+def test_get_status_counts_mixed(db_path: Path):
+    """Test get_status_counts with mixed workflow statuses."""
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_run(db_path, "run-2", "wf1", "running", "2026-04-17T12:01:00Z")
+    insert_run(db_path, "run-3", "wf1", "completed", "2026-04-17T12:02:00Z")
+    insert_run(db_path, "run-4", "wf1", "failed", "2026-04-17T12:03:00Z")
+    insert_run(db_path, "run-5", "wf1", "pending", "2026-04-17T12:04:00Z")
+    insert_run(db_path, "run-6", "wf1", "completed", "2026-04-17T12:05:00Z")
+
+    counts = get_status_counts(db_path)
+    assert counts["running"] == 2
+    assert counts["completed"] == 2
+    assert counts["failed"] == 1
+    assert counts["pending"] == 1
+
+
+def test_list_runs_name_filter(db_path: Path):
+    """Test list_runs with name filter."""
+    insert_run(db_path, "run-1", "data-pipeline", "running", "2026-04-17T12:00:00Z")
+    insert_run(db_path, "run-2", "ml-training", "running", "2026-04-17T12:01:00Z")
+    insert_run(db_path, "run-3", "data-export", "completed", "2026-04-17T12:02:00Z")
+
+    # Search for "data" should match data-pipeline and data-export
+    result = list_runs(db_path, limit=50, offset=0, name="data")
+    assert result["total"] == 2
+    assert len(result["items"]) == 2
+    workflow_names = [item["workflow_name"] for item in result["items"]]
+    assert "data-pipeline" in workflow_names
+    assert "data-export" in workflow_names
+    assert "ml-training" not in workflow_names
+
+
+def test_list_runs_date_range_filter(db_path: Path):
+    """Test list_runs with date range filter."""
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T10:00:00Z")
+    insert_run(db_path, "run-2", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_run(db_path, "run-3", "wf1", "running", "2026-04-17T14:00:00Z")
+    insert_run(db_path, "run-4", "wf1", "running", "2026-04-17T16:00:00Z")
+
+    # Filter for runs between 11:00 and 15:00
+    result = list_runs(
+        db_path,
+        limit=50,
+        offset=0,
+        started_after="2026-04-17T11:00:00Z",
+        started_before="2026-04-17T15:00:00Z",
+    )
+    assert result["total"] == 2
+    assert len(result["items"]) == 2
+    run_ids = [item["id"] for item in result["items"]]
+    assert "run-2" in run_ids
+    assert "run-3" in run_ids
+
+
+def test_list_runs_date_range_only_after(db_path: Path):
+    """Test list_runs with only started_after filter."""
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T10:00:00Z")
+    insert_run(db_path, "run-2", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_run(db_path, "run-3", "wf1", "running", "2026-04-17T14:00:00Z")
+
+    result = list_runs(db_path, limit=50, offset=0, started_after="2026-04-17T11:00:00Z")
+    assert result["total"] == 2
+    assert len(result["items"]) == 2
+
+
+def test_list_runs_sort_by_duration(db_path: Path):
+    """Test list_runs sorting by duration."""
+    # Insert runs with different durations
+    insert_run(db_path, "run-1", "wf1", "completed", "2026-04-17T12:00:00Z")
+    update_run(db_path, "run-1", finished_at="2026-04-17T12:05:00Z")  # 5 min duration
+
+    insert_run(db_path, "run-2", "wf1", "completed", "2026-04-17T12:10:00Z")
+    update_run(db_path, "run-2", finished_at="2026-04-17T12:20:00Z")  # 10 min duration
+
+    insert_run(db_path, "run-3", "wf1", "completed", "2026-04-17T12:30:00Z")
+    update_run(db_path, "run-3", finished_at="2026-04-17T12:32:00Z")  # 2 min duration
+
+    # Sort by duration - should be desc (longest first)
+    result = list_runs(db_path, sort_by=SortBy.DURATION)
+    assert result["items"][0]["id"] == "run-2"  # 10 min
+    assert result["items"][1]["id"] == "run-1"  # 5 min
+    assert result["items"][2]["id"] == "run-3"  # 2 min

@@ -117,6 +117,9 @@ def list_runs(
     offset: int = 0,
     status: Optional[RunStatus] = None,
     sort_by: SortBy = SortBy.STARTED_AT,
+    name: Optional[str] = None,
+    started_after: Optional[str] = None,
+    started_before: Optional[str] = None,
 ) -> Dict[str, Any]:
     """List workflow runs with pagination and filtering."""
     # Validate sort_by is from whitelist enum
@@ -125,48 +128,91 @@ def list_runs(
             sort_by = SortBy(sort_by)
         except ValueError:
             raise ValueError(f"Invalid sort_by value. Must be one of: {[e.value for e in SortBy]}")
-    
+
     # Validate status is from whitelist enum if provided
     if status is not None and isinstance(status, str):
         try:
             status = RunStatus(status)
         except ValueError:
             raise ValueError(f"Invalid status value. Must be one of: {[e.value for e in RunStatus]}")
-    
+
     conn = get_connection(db_path)
     try:
         # Build WHERE clause
-        where_clause = ""
+        where_clauses: List[str] = []
         params: List[Any] = []
-        
+
         if status is not None:
-            where_clause = "WHERE status = ?"
+            where_clauses.append("status = ?")
             params.append(status.value if isinstance(status, RunStatus) else status)
-        
+
+        if name is not None:
+            where_clauses.append("workflow_name LIKE ?")
+            params.append(f"%{name}%")
+
+        if started_after is not None:
+            where_clauses.append("started_at >= ?")
+            params.append(started_after)
+
+        if started_before is not None:
+            where_clauses.append("started_at < ?")
+            params.append(started_before)
+
+        where_clause = ""
+        if where_clauses:
+            where_clause = "WHERE " + " AND ".join(where_clauses)
+
         # Get total count
         count_query = f"SELECT COUNT(*) FROM workflow_runs {where_clause}"
         cursor = conn.execute(count_query, params)
         total = cursor.fetchone()[0]
-        
+
         # Build ORDER BY clause using whitelisted enum value
         # Safe to interpolate because sort_by is validated enum
-        order_column = sort_by.value
-        
+        if sort_by == SortBy.DURATION:
+            # Compute duration as julianday difference
+            order_clause = "ORDER BY (julianday(finished_at) - julianday(started_at)) DESC"
+        else:
+            order_column = sort_by.value
+            order_clause = f"ORDER BY {order_column} DESC"
+
         # Get paginated items
         items_query = f"""
             SELECT * FROM workflow_runs
             {where_clause}
-            ORDER BY {order_column} DESC
+            {order_clause}
             LIMIT ? OFFSET ?
         """
         cursor = conn.execute(items_query, params + [limit, offset])
         items = [_row_to_dict(row) for row in cursor.fetchall()]
-        
+
         return {
             "items": items,
             "total": total,
             "limit": limit,
             "offset": offset,
+        }
+    finally:
+        conn.close()
+
+
+def get_status_counts(db_path: Path) -> Dict[str, int]:
+    """Get counts of workflow runs by status."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute("""
+            SELECT status, COUNT(*) as count
+            FROM workflow_runs
+            GROUP BY status
+        """)
+        counts_dict = {row["status"]: row["count"] for row in cursor.fetchall()}
+
+        # Ensure all statuses are present with 0 for missing ones
+        return {
+            "running": counts_dict.get("running", 0),
+            "completed": counts_dict.get("completed", 0),
+            "failed": counts_dict.get("failed", 0),
+            "pending": counts_dict.get("pending", 0),
         }
     finally:
         conn.close()
