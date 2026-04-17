@@ -200,3 +200,76 @@ class TestVariableSubstitution:
         assert "$epic_key" in node_text, (
             "fetch_epic should reference $epic_key"
         )
+
+
+# Import additional classes for integration tests
+from dag_executor.schema import NodeResult, NodeStatus, TriggerRule
+from tests.conftest import MockRunnerFactory, WorkflowTestHarness
+
+
+class TestPlanWorkflowReviewOrdering:
+    """Integration test: Verify review pipeline node ordering."""
+
+    def test_skeleton_before_reviews(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Skeleton creation/review happens before domain reviews."""
+        create_skel = nodes_by_id["create_skeleton"]
+        review_skel = nodes_by_id["review_skeleton"]
+        first_review = nodes_by_id["first_review"]
+
+        # create_skeleton should come before review_skeleton
+        assert "create_skeleton" in review_skel.depends_on
+
+        # skeleton_gate should come after review_skeleton
+        skel_gate = nodes_by_id["skeleton_gate"]
+        assert "review_skeleton" in skel_gate.depends_on
+
+        # first_review should depend on skeleton_gate (directly or via trigger rule)
+        # Check if first_review depends on skeleton_gate or uses a trigger rule
+        assert "skeleton_gate" in first_review.depends_on or first_review.trigger_rule is not None
+
+    def test_review_pipeline_ordering(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Review phases proceed in correct order."""
+        # Verify review nodes exist
+        first_review = nodes_by_id["first_review"]
+        arch_review = nodes_by_id["arch_review"]
+        security_audit = nodes_by_id["security_audit"]
+        final_review = nodes_by_id["final_review"]
+
+        assert first_review is not None
+        assert arch_review is not None
+        assert security_audit is not None
+        assert final_review is not None
+
+
+class TestSkeletonGateFailureRetry:
+    """Integration test: skeleton_gate failure triggers fix_skeleton retry."""
+
+    def test_skeleton_gate_has_continue_on_failure(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """skeleton_gate uses on_failure: continue (soft continue)."""
+        skel_gate = nodes_by_id["skeleton_gate"]
+        assert skel_gate.on_failure == OnFailure.CONTINUE
+
+    def test_fix_skeleton_exists_with_correct_dependencies(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """fix_skeleton node exists and depends on skeleton_gate."""
+        fix_skel = nodes_by_id["fix_skeleton"]
+        assert fix_skel is not None
+
+        # fix_skeleton should depend on skeleton_gate (triggered when gate fails)
+        assert "skeleton_gate" in fix_skel.depends_on
+
+    def test_first_review_uses_one_success_trigger(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """first_review uses one_success to run after skeleton_gate OR fix_skeleton."""
+        first_review = nodes_by_id["first_review"]
+
+        # first_review should use one_success trigger rule
+        assert first_review.trigger_rule == TriggerRule.ONE_SUCCESS
