@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8100
     db_dir: Path = Path.home() / ".dag-dashboard"
+    events_dir: Path = Path("dag-events")
+    max_sse_connections: int = 50
 
     def validate_host(self) -> None:
         """Warn if binding to wildcard address."""
