@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DAG Dashboard</title>
+    <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+    <div id="app">
+        <header class="header">
+            <div class="header-content">
+                <h1 class="header-title">DAG Dashboard</h1>
+                <button id="mobile-menu-toggle" class="mobile-menu-toggle" aria-label="Toggle menu">
+                    <span class="hamburger"></span>
+                </button>
+            </div>
+        </header>
+        
+        <div class="container">
+            <aside id="sidebar" class="sidebar">
+                <nav class="nav">
+                    <a href="#/" class="nav-link active" data-route="/">
+                        <span class="nav-icon">📊</span>
+                        <span class="nav-text">Dashboard</span>
+                    </a>
+                    <a href="#/history" class="nav-link" data-route="/history">
+                        <span class="nav-icon">📜</span>
+                        <span class="nav-text">History</span>
+                    </a>
+                </nav>
+            </aside>
+            
+            <main id="main-content" class="main-content">
+                <div id="route-container"></div>
+            </main>
+        </div>
+        
+        <nav id="mobile-nav" class="mobile-nav hidden">
+            <a href="#/" class="mobile-nav-link" data-route="/">
+                <span class="nav-icon">📊</span>
+                <span class="nav-text">Dashboard</span>
+            </a>
+            <a href="#/history" class="mobile-nav-link" data-route="/history">
+                <span class="nav-icon">📜</span>
+                <span class="nav-text">History</span>
+            </a>
+        </nav>
+    </div>
+    
+    <script src="/js/app.js"></script>
+    <script src="/js/sse.js"></script>
+</body>
+</html>
