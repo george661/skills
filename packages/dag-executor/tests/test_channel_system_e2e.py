@@ -502,13 +502,15 @@ def test_state_diff_shows_channel_changes(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(reason="Version-based skip not fully implemented yet - will pass when feature is complete")
 def test_version_resume_skips_unchanged_nodes(
     test_harness, mock_runner_factory, checkpoint_store
 ):
     """Version-based resume skips nodes whose input channel versions match checkpoint.
 
     2-node chain with checkpoint. First run creates checkpoint.
-    Second run (same inputs): consumer skipped via version match.
+    Second run (same inputs): consumer should be skipped via version match.
+    Uses a shared call counter to verify skip behavior.
     """
     workflow = WorkflowDef(
         name="resume-skip-workflow",
@@ -534,38 +536,45 @@ def test_version_resume_skips_unchanged_nodes(
     )
 
     factory = mock_runner_factory
-    test_harness.mock_runner(
-        "bash",
-        factory.create(output={"data": "initial"})
-    )
+    # Create a stateful runner that counts invocations to verify skip behavior
+    call_count = [0]  # mutable list shared across runner instances
+
+    from dag_executor.runners.base import BaseRunner, RunnerContext
+
+    class CountingMockRunner(BaseRunner):
+        """Mock runner that counts calls and returns appropriate results."""
+        def run(self, ctx: RunnerContext) -> NodeResult:
+            call_count[0] += 1
+            # Producer always returns same data, consumer returns empty
+            if ctx.node_def.id == "producer":
+                return NodeResult(status=NodeStatus.COMPLETED, output={"data": "initial"})
+            else:  # consumer
+                return NodeResult(status=NodeStatus.COMPLETED, output={})
+
+    test_harness.mock_runner("bash", CountingMockRunner)
+    test_harness.checkpoint_store = checkpoint_store
 
     # First execution: creates checkpoint
     result1 = test_harness.execute(workflow, inputs={"run_id": "run-1"})
     test_harness.assert_workflow_completed()
     test_harness.assert_node_completed("producer")
     test_harness.assert_node_completed("consumer")
+    first_run_calls = call_count[0]
+    assert first_run_calls == 2, "First execution should call producer + consumer"
 
     # Second execution with same workflow and inputs (resume scenario)
-    # Reset the harness for a new execution
-    test_harness2 = test_harness.__class__(test_harness.checkpoint_store.checkpoint_prefix)
-    test_harness2.checkpoint_store = test_harness.checkpoint_store
-    test_harness2.mock_runner(
-        "bash",
-        factory.create(output={"data": "initial"})
+    result2 = test_harness.execute(workflow, inputs={"run_id": "run-1"})
+    test_harness.assert_workflow_completed()
+
+    # Verify consumer was skipped on second run via call count
+    # With version-based skip: expect 3 calls total (producer runs twice, consumer once)
+    # NOTE: This will fail until version-based skip is fully implemented.
+    # When implemented, consumer should not re-run since its input versions match checkpoint.
+    second_run_calls = call_count[0] - first_run_calls
+    assert second_run_calls == 1, (
+        f"Consumer should be skipped on version-based resume with unchanged inputs. "
+        f"Expected 1 call in second run (producer only), got {second_run_calls}"
     )
-
-    result2 = test_harness2.execute(workflow, inputs={"run_id": "run-1"})
-    test_harness2.assert_workflow_completed()
-
-    # With version-based resume, if inputs haven't changed, consumer should be skipped
-    # Note: The current implementation may not have full version-based skip yet,
-    # so this test validates the expected behavior when it's fully implemented
-    consumer_events = test_harness2.get_events_for_node("consumer")
-    # If skipped, there should be a SKIPPED event
-    skipped_events = [e for e in consumer_events if e.event_type == EventType.NODE_SKIPPED]
-    # This assertion may need adjustment based on actual implementation
-    # For now, just verify the workflow completed
-    assert result2.status.value == "completed"
 
 
 # ---------------------------------------------------------------------------
@@ -644,26 +653,25 @@ def test_validator_catches_unknown_channel_refs(
 ):
     """Channel declarations validated at dry-run time catch unknown refs.
 
-    Build workflow with reads/writes referencing nonexistent state key.
-    Verify validator returns unknown_read_channel/unknown_write_channel warnings.
-    
-    Note: This test validates the validator's ability to catch channel errors.
-    Since the validator runs during workflow definition validation (not at execute time),
-    we verify the workflow can be constructed but would fail validation if checked.
+    Build workflow with reads referencing nonexistent state key.
+    Verify validator returns unknown_read_channel warnings.
     """
     from dag_executor.validator import WorkflowValidator
 
-    # Workflow that writes to undeclared channel
+    # Workflow with node reading from undeclared channel
     workflow = WorkflowDef(
         name="invalid-channel-workflow",
         config=WorkflowConfig(checkpoint_prefix=".dag-checkpoints"),
-        # No state declared, but nodes will try to write
+        state={
+            "valid_channel": ChannelFieldDef(type="string"),
+        },
         nodes=[
             NodeDef(
-                id="writer",
-                name="Writer",
+                id="reader",
+                name="Reader",
                 type="bash",
-                script="echo write",
+                script="echo read",
+                reads=["nonexistent_channel"],
             ),
         ],
     )
@@ -672,20 +680,14 @@ def test_validator_catches_unknown_channel_refs(
     validator = WorkflowValidator()
     validation_result = validator.validate(workflow)
 
-    # Note: The validator may not catch writes to undeclared channels if nodes
-    # don't explicitly declare their channel interactions in the schema.
-    # This test documents the expected behavior once validation is enhanced.
-    # For now, verify the workflow can be constructed and validated
-    assert validation_result.passed or not validation_result.passed
-
-    # Check for unknown channel warnings if validator supports it
-    unknown_warnings = [
-        w for w in validation_result.warnings
-        if 'unknown' in getattr(w, 'code', '').lower() and 'channel' in getattr(w, 'code', '').lower()
+    # Verify validator catches the unknown read channel reference
+    unknown_read_warnings = [
+        w for w in validation_result.issues
+        if w.code == "unknown_read_channel"
     ]
-    # This assertion documents expected behavior; may be empty until feature is fully implemented
-    # For now, we just verify the validator runs without errors
-    assert isinstance(validation_result.warnings, list)
+    assert len(unknown_read_warnings) == 1
+    assert "nonexistent_channel" in unknown_read_warnings[0].message
+    assert "valid_channel" in unknown_read_warnings[0].message
 
 
 # ---------------------------------------------------------------------------
