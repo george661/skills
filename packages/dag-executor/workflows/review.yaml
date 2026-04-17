@@ -41,6 +41,18 @@ inputs:
     type: string
     required: true
 
+state:
+  verdict:
+    type: string
+    reducer: max
+  findings:
+    type: list
+    reducer: append
+    default: []
+  review_metadata:
+    type: dict
+    reducer: merge_dict
+
 nodes:
   # --------------------------------------------------------------------------
   # Phase 0.5: Branch Sync
@@ -51,6 +63,8 @@ nodes:
   - id: branch_sync
     name: Branch Sync
     type: bash
+    writes:
+      - review_metadata
     script: |
       cd $PROJECT_ROOT/$repo
       git fetch origin main
@@ -76,6 +90,10 @@ nodes:
     type: bash
     depends_on:
       - branch_sync
+    reads:
+      - review_metadata
+    writes:
+      - review_metadata
     script: |
       # Determine VCS provider from repo config
       cd $PROJECT_ROOT/$repo
@@ -100,6 +118,10 @@ nodes:
     type: bash
     depends_on:
       - parse_input
+    reads:
+      - review_metadata
+    writes:
+      - review_metadata
     script: |
       cd $PROJECT_ROOT && pr=$(npx tsx ~/.claude/skills/vcs/get_pull_request.ts \
         "{\"repo\": \"$repo\", \"pr_number\": $pr_number}")
@@ -120,6 +142,10 @@ nodes:
     type: bash
     depends_on:
       - fetch_pr
+    reads:
+      - review_metadata
+    writes:
+      - review_metadata
     script: |
       # Extract issue key from PR title or description
       pr_title=$(echo '$fetch_pr' | jq -r '.title // ""')
@@ -150,6 +176,10 @@ nodes:
     depends_on:
       - find_jira_issue
     trigger_rule: all_done
+    reads:
+      - review_metadata
+    writes:
+      - review_metadata
     script: |
       cd $PROJECT_ROOT/$repo
       # Source validation commands from TESTING.md or VALIDATION.md if present
@@ -229,6 +259,30 @@ nodes:
     output_format: json
     checkpoint: true
     label: "step:reviewing"
+    reads:
+      - review_metadata
+    writes:
+      - verdict
+      - findings
+    edges:
+      - target: verdict_approved_pass
+        condition: code_quality.verdict == "APPROVED"
+      - targets: [requirements_coverage, test_adequacy]
+        condition: code_quality.verdict == "REQUIRES_REWORK"
+      - targets: [requirements_coverage, test_adequacy]
+        default: true
+
+  # --------------------------------------------------------------------------
+  # Phase 5.5: Verdict Approved Pass-Through
+  # No-op node reached on the APPROVED fast path. Allows the conditional
+  # edge to skip requirements_coverage and test_adequacy without affecting
+  # post_inline_comments (which converges via depends_on + all_done).
+  # --------------------------------------------------------------------------
+  - id: verdict_approved_pass
+    name: Verdict Approved Pass
+    type: bash
+    script: 'echo "{\"pass\": true}"'
+    output_format: json
 
   # --------------------------------------------------------------------------
   # Phase 6: Verify Requirements Coverage
@@ -240,9 +294,14 @@ nodes:
     name: Verify Requirements Coverage
     type: prompt
     depends_on:
-      - code_quality
       - find_jira_issue
     trigger_rule: all_done
+    reads:
+      - verdict
+      - findings
+    writes:
+      - verdict
+      - findings
     prompt: |
       Verify that the PR implementation satisfies the Jira requirements.
 
@@ -277,8 +336,12 @@ nodes:
   - id: test_adequacy
     name: Check Test Adequacy
     type: prompt
-    depends_on:
-      - code_quality
+    reads:
+      - verdict
+      - findings
+    writes:
+      - verdict
+      - findings
     prompt: |
       Assess whether the test changes in this PR adequately cover the
       code changes.
@@ -318,6 +381,9 @@ nodes:
       - code_quality
       - requirements_coverage
       - test_adequacy
+    trigger_rule: all_done
+    reads:
+      - findings
     script: |
       cd $PROJECT_ROOT
       count=0
@@ -356,6 +422,10 @@ nodes:
     type: bash
     depends_on:
       - post_inline_comments
+    reads:
+      - verdict
+      - findings
+      - review_metadata
     script: |
       cd $PROJECT_ROOT
 
@@ -413,6 +483,9 @@ nodes:
       - post_pr_summary
       - find_jira_issue
     trigger_rule: all_done
+    reads:
+      - verdict
+      - review_metadata
     script: |
       cd $PROJECT_ROOT
       issue_key=$(echo '$find_jira_issue' | jq -r '.issue_key // empty')
