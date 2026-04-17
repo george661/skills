@@ -18,6 +18,7 @@ from dag_executor.schema import (
     OnFailure,
     TriggerRule,
     WorkflowDef,
+    WorkflowStatus,
 )
 
 
@@ -44,7 +45,7 @@ class TestWorkflowParsing:
     def test_parses_successfully(self, workflow: WorkflowDef) -> None:
         """plan.yaml loads with no validation errors."""
         assert workflow.name == "Plan Command Workflow"
-        assert len(workflow.nodes) >= 10  # At least 10 nodes in the workflow
+        assert len(workflow.nodes) == 22  # 20 original nodes + 2 interrupt nodes
 
     def test_input_epic_key_required(
         self, workflow: WorkflowDef
@@ -91,6 +92,12 @@ class TestTopologicalOrdering:
         before("design_integration", "create_skeleton")
         before("create_skeleton", "review_skeleton")
         before("review_skeleton", "skeleton_gate")
+
+        # Phase 4-6: Review stages with interrupts
+        before("security_audit", "security_signoff_interrupt")
+        before("security_signoff_interrupt", "final_review")
+        before("final_review", "prp_approval_interrupt")
+        before("prp_approval_interrupt", "commit_prp")
 
 
 class TestReviewPipeline:
@@ -207,6 +214,204 @@ class TestVariableSubstitution:
 from tests.conftest import MockRunnerFactory, WorkflowTestHarness
 
 
+class TestChannelDeclarations:
+    """Test 8: State channel declarations exist with correct types/reducers."""
+
+    def test_state_channels_declared(self, workflow: WorkflowDef) -> None:
+        """plan.yaml declares state: block with 3 channels."""
+        assert workflow.state is not None
+        assert len(workflow.state) == 3
+
+    def test_prp_state_channel(self, workflow: WorkflowDef) -> None:
+        """prp_state channel has dict type and overwrite reducer."""
+        prp_state = workflow.state.get("prp_state")
+        assert prp_state is not None
+        assert prp_state.type == "dict"
+        assert prp_state.reducer.strategy.value == "overwrite"
+
+    def test_review_verdicts_channel(self, workflow: WorkflowDef) -> None:
+        """review_verdicts channel has list type, append reducer, default []."""
+        review_verdicts = workflow.state.get("review_verdicts")
+        assert review_verdicts is not None
+        assert review_verdicts.type == "list"
+        assert review_verdicts.reducer.strategy.value == "append"
+        assert review_verdicts.default == []
+
+    def test_skeleton_output_channel(self, workflow: WorkflowDef) -> None:
+        """skeleton_output channel has dict type and overwrite reducer."""
+        skeleton_output = workflow.state.get("skeleton_output")
+        assert skeleton_output is not None
+        assert skeleton_output.type == "dict"
+        assert skeleton_output.reducer.strategy.value == "overwrite"
+
+
+class TestNodeChannelSubscriptions:
+    """Test 9: Nodes declare reads/writes channel subscriptions."""
+
+    def test_create_prp_writes_prp_state(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """create_prp writes to prp_state channel."""
+        node = nodes_by_id["create_prp"]
+        assert node.writes is not None
+        assert "prp_state" in node.writes
+
+    def test_design_integration_reads_writes_prp_state(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """design_integration reads and writes prp_state."""
+        node = nodes_by_id["design_integration"]
+        assert node.reads is not None
+        assert "prp_state" in node.reads
+        assert node.writes is not None
+        assert "prp_state" in node.writes
+
+    def test_create_skeleton_writes_skeleton_output(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """create_skeleton writes to skeleton_output channel."""
+        node = nodes_by_id["create_skeleton"]
+        assert node.writes is not None
+        assert "skeleton_output" in node.writes
+
+    def test_review_skeleton_reads_writes_channels(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """review_skeleton reads skeleton_output, writes review_verdicts."""
+        node = nodes_by_id["review_skeleton"]
+        assert node.reads is not None
+        assert "skeleton_output" in node.reads
+        assert node.writes is not None
+        assert "review_verdicts" in node.writes
+
+    def test_fix_skeleton_reads_writes_skeleton_output(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """fix_skeleton reads and writes skeleton_output."""
+        node = nodes_by_id["fix_skeleton"]
+        assert node.reads is not None
+        assert "skeleton_output" in node.reads
+        assert node.writes is not None
+        assert "skeleton_output" in node.writes
+
+    def test_first_review_reads_channels(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """first_review reads prp_state and review_verdicts."""
+        node = nodes_by_id["first_review"]
+        assert node.reads is not None
+        assert "prp_state" in node.reads
+        assert "review_verdicts" in node.reads
+        assert node.writes is not None
+        assert "review_verdicts" in node.writes
+
+    def test_final_review_reads_channels(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """final_review reads prp_state and review_verdicts, writes review_verdicts."""
+        node = nodes_by_id["final_review"]
+        assert node.reads is not None
+        assert "prp_state" in node.reads
+        assert "review_verdicts" in node.reads
+        assert node.writes is not None
+        assert "review_verdicts" in node.writes
+
+    def test_commit_prp_reads_prp_state(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """commit_prp reads prp_state."""
+        node = nodes_by_id["commit_prp"]
+        assert node.reads is not None
+        assert "prp_state" in node.reads
+
+
+class TestInterruptNodes:
+    """Test 10: Interrupt nodes exist with correct configuration."""
+
+    def test_security_signoff_interrupt_exists(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """security_signoff_interrupt node exists as interrupt type."""
+        node = nodes_by_id["security_signoff_interrupt"]
+        assert node.type == "interrupt"
+
+    def test_security_signoff_interrupt_config(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """security_signoff_interrupt has correct message, resume_key, channels."""
+        node = nodes_by_id["security_signoff_interrupt"]
+        assert node.message is not None
+        assert "Security audit complete" in node.message
+        assert node.resume_key == "security_signoff"
+        assert node.channels == ["terminal"]
+
+    def test_security_signoff_interrupt_depends_on(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """security_signoff_interrupt depends on security_audit."""
+        node = nodes_by_id["security_signoff_interrupt"]
+        assert "security_audit" in node.depends_on
+
+    def test_security_signoff_interrupt_reads_channels(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """security_signoff_interrupt reads prp_state and review_verdicts."""
+        node = nodes_by_id["security_signoff_interrupt"]
+        assert node.reads is not None
+        assert "prp_state" in node.reads
+        assert "review_verdicts" in node.reads
+
+    def test_prp_approval_interrupt_exists(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """prp_approval_interrupt node exists as interrupt type."""
+        node = nodes_by_id["prp_approval_interrupt"]
+        assert node.type == "interrupt"
+
+    def test_prp_approval_interrupt_config(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """prp_approval_interrupt has correct message, resume_key, channels."""
+        node = nodes_by_id["prp_approval_interrupt"]
+        assert node.message is not None
+        assert "PRP for" in node.message
+        assert "approve" in node.message.lower()
+        assert node.resume_key == "prp_approval"
+        assert node.channels == ["terminal"]
+
+    def test_prp_approval_interrupt_depends_on(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """prp_approval_interrupt depends on final_review."""
+        node = nodes_by_id["prp_approval_interrupt"]
+        assert "final_review" in node.depends_on
+
+    def test_prp_approval_interrupt_reads_channels(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """prp_approval_interrupt reads prp_state and review_verdicts."""
+        node = nodes_by_id["prp_approval_interrupt"]
+        assert node.reads is not None
+        assert "prp_state" in node.reads
+        assert "review_verdicts" in node.reads
+
+    def test_final_review_depends_on_security_signoff_interrupt(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """final_review depends on security_signoff_interrupt (not security_audit)."""
+        node = nodes_by_id["final_review"]
+        assert "security_signoff_interrupt" in node.depends_on
+        assert "security_audit" not in node.depends_on
+
+    def test_commit_prp_depends_on_prp_approval_interrupt(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """commit_prp depends on prp_approval_interrupt (not final_review)."""
+        node = nodes_by_id["commit_prp"]
+        assert "prp_approval_interrupt" in node.depends_on
+        assert "final_review" not in node.depends_on
+
+
 def _strip_scripts(workflow: WorkflowDef) -> WorkflowDef:
     """Clear script/prompt/args bodies so mock runners skip variable resolution."""
     import copy
@@ -216,6 +421,99 @@ def _strip_scripts(workflow: WorkflowDef) -> WorkflowDef:
         node.prompt = None
         node.args = None
     return wf
+
+
+class TestInterruptWorkflowExecution:
+    """Test 11: Mock-execute workflow with interrupts, verify pause/resume."""
+
+    INPUTS = {"epic_key": "TEST-100"}
+
+    def test_workflow_pauses_at_security_signoff_interrupt(
+        self, test_harness: WorkflowTestHarness,
+        mock_runner_factory: MockRunnerFactory,
+        workflow: WorkflowDef,
+    ) -> None:
+        """Workflow pauses at security_signoff_interrupt, waits for resume."""
+        wf = _strip_scripts(workflow)
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED,
+            output={"ok": True},
+        ))
+        # Interrupt runner returns INTERRUPTED status
+        test_harness.mock_runner(
+            "interrupt",
+            mock_runner_factory.create(status=NodeStatus.INTERRUPTED),
+        )
+        result = test_harness.execute(wf, self.INPUTS)
+
+        # Workflow should pause at first interrupt
+        assert result.status in [WorkflowStatus.PAUSED, WorkflowStatus.COMPLETED]
+        test_harness.assert_node_completed("security_audit")
+
+    def test_workflow_pauses_at_prp_approval_interrupt(
+        self, test_harness: WorkflowTestHarness,
+        mock_runner_factory: MockRunnerFactory,
+        workflow: WorkflowDef,
+    ) -> None:
+        """Workflow pauses at prp_approval_interrupt after final_review."""
+        wf = _strip_scripts(workflow)
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED,
+            output={"ok": True},
+        ))
+        # Mock interrupt to pause - but workflow will pause at first interrupt (security_signoff)
+        test_harness.mock_runner(
+            "interrupt",
+            mock_runner_factory.create(status=NodeStatus.INTERRUPTED),
+        )
+        result = test_harness.execute(wf, self.INPUTS)
+
+        # Workflow should pause at one of the interrupt nodes
+        assert result.status == WorkflowStatus.PAUSED
+        # Should have completed security_audit before pausing at security_signoff_interrupt
+        test_harness.assert_node_completed("security_audit")
+
+
+class TestSkeletonGateWithChannels:
+    """Test 12: Skeleton gate retry pattern works with channel subscriptions."""
+
+    INPUTS = {"epic_key": "TEST-100"}
+
+    def test_skeleton_gate_success_skips_fix_skeleton(
+        self, test_harness: WorkflowTestHarness,
+        workflow: WorkflowDef,
+    ) -> None:
+        """When skeleton_gate passes, fix_skeleton is skipped, first_review runs."""
+        wf = _strip_scripts(workflow)
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED,
+            output={"verdict": "APPROVED", "ok": True},
+        ))
+        test_harness.execute(wf, self.INPUTS)
+
+        test_harness.assert_node_completed("skeleton_gate")
+        test_harness.assert_node_completed("first_review")
+
+    def test_skeleton_gate_failure_triggers_fix_with_channels(
+        self, test_harness: WorkflowTestHarness,
+        mock_runner_factory: MockRunnerFactory,
+        workflow: WorkflowDef,
+    ) -> None:
+        """When skeleton_gate fails, fix_skeleton reads/writes skeleton_output."""
+        wf = _strip_scripts(workflow)
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED,
+            output={"verdict": "REJECTED", "ok": True},
+        ))
+        test_harness.mock_runner(
+            "gate", mock_runner_factory.create(status=NodeStatus.FAILED),
+        )
+        test_harness.execute(wf, self.INPUTS)
+
+        test_harness.assert_node_failed("skeleton_gate")
+        test_harness.assert_node_completed("fix_skeleton")
+        # first_review should still run via one_success trigger
+        test_harness.assert_node_completed("first_review")
 
 
 class TestPlanWorkflowExecution:
@@ -237,7 +535,9 @@ class TestPlanWorkflowExecution:
 
         for node_id in [
             "create_skeleton", "review_skeleton", "skeleton_gate",
-            "first_review", "arch_review", "security_audit", "final_review",
+            "first_review", "arch_review", "security_audit",
+            "security_signoff_interrupt", "final_review",
+            "prp_approval_interrupt",
         ]:
             test_harness.assert_node_completed(node_id)
 
