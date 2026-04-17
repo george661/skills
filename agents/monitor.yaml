@@ -24,8 +24,8 @@ permissions:
     - "Bash(npx tsx .claude/skills/bitbucket/get_pipeline*)"
     - "Bash(npx tsx .claude/skills/bitbucket/list_pipeline*)"
     - "Bash(npx tsx .claude/skills/bitbucket/list_commit_statuses*)"
-    - "Bash(npx tsx .claude/skills/jira/get_issue*)"
-    - "Bash(npx tsx .claude/skills/jira/update_issue*)"
+    - "Bash(npx tsx .claude/skills/issues/get_issue*)"
+    - "Bash(npx tsx .claude/skills/issues/update_issue*)"
     - "Bash(curl *)"
     - "Bash(sleep *)"
   deny:
