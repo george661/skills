@@ -12,9 +12,11 @@ import pytest
 from dag_executor.graph import topological_sort_with_layers
 from dag_executor.parser import load_workflow
 from dag_executor.schema import (
+    ChannelFieldDef,
     DispatchMode,
     NodeDef,
     OnFailure,
+    ReducerStrategy,
     TriggerRule,
     WorkflowDef,
 )
@@ -168,27 +170,159 @@ class TestJiraFailureContinuePath:
 
 
 class TestVerdictFlow:
-    """Test 5: Verdict flow through code quality pipeline."""
+    """Test 5: Verdict flow through conditional edges."""
 
-    def test_verdict_pipeline_ordering(
+    def test_code_quality_has_conditional_edges(
         self, nodes_by_id: Dict[str, NodeDef]
     ) -> None:
-        """Verdict nodes form a proper pipeline."""
-        # code_quality → test_adequacy
-        test_adeq = nodes_by_id["test_adequacy"]
-        assert "code_quality" in test_adeq.depends_on
+        """code_quality has conditional edges for verdict routing."""
+        cq = nodes_by_id["code_quality"]
+        assert cq.edges is not None
+        assert len(cq.edges) == 3
 
-        # code_quality → requirements_coverage (parallel to test_adequacy)
-        req_cov = nodes_by_id["requirements_coverage"]
-        assert "code_quality" in req_cov.depends_on
+    def test_approved_edge_routes_to_pass_through(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """APPROVED verdict routes to pass-through node."""
+        cq = nodes_by_id["code_quality"]
+        assert cq.edges is not None
+        approved = cq.edges[0]
+        assert approved.condition == 'code_quality.verdict == "APPROVED"'
+        assert approved.target == "verdict_approved_pass"
 
-        # test_adequacy → post_inline_comments
-        inline_comments = nodes_by_id["post_inline_comments"]
-        assert "test_adequacy" in inline_comments.depends_on
+    def test_rework_edge_fans_out_to_analysis(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """REQUIRES_REWORK verdict fans out to analysis nodes."""
+        cq = nodes_by_id["code_quality"]
+        assert cq.edges is not None
+        rework = cq.edges[1]
+        assert rework.condition == 'code_quality.verdict == "REQUIRES_REWORK"'
+        assert set(rework.targets or []) == {
+            "requirements_coverage", "test_adequacy",
+        }
 
-        # post_inline_comments → post_pr_summary
-        pr_summary = nodes_by_id["post_pr_summary"]
-        assert "post_inline_comments" in pr_summary.depends_on
+    def test_exactly_one_default_edge(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Exactly one edge has default=True (escalate path)."""
+        cq = nodes_by_id["code_quality"]
+        assert cq.edges is not None
+        defaults = [e for e in cq.edges if e.default]
+        assert len(defaults) == 1
+        assert set(defaults[0].targets or []) == {
+            "requirements_coverage", "test_adequacy",
+        }
+
+    def test_analysis_nodes_not_hard_dependent_on_code_quality(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Analysis nodes use conditional edges, not depends_on, for code_quality."""
+        assert "code_quality" not in nodes_by_id["requirements_coverage"].depends_on
+        assert "code_quality" not in nodes_by_id["test_adequacy"].depends_on
+
+    def test_requirements_coverage_keeps_jira_dependency(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """requirements_coverage still depends on find_jira_issue."""
+        assert "find_jira_issue" in nodes_by_id["requirements_coverage"].depends_on
+
+    def test_post_inline_comments_converges_with_all_done(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """post_inline_comments waits for all analysis via all_done trigger."""
+        pic = nodes_by_id["post_inline_comments"]
+        assert "code_quality" in pic.depends_on
+        assert "requirements_coverage" in pic.depends_on
+        assert "test_adequacy" in pic.depends_on
+        assert pic.trigger_rule == TriggerRule.ALL_DONE
+
+    def test_post_pr_summary_depends_on_inline_comments(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """post_pr_summary depends on post_inline_comments."""
+        assert "post_inline_comments" in nodes_by_id["post_pr_summary"].depends_on
+
+
+class TestStateChannels:
+    """Test: State channel declarations with reducers."""
+
+    def test_state_declarations_present(
+        self, workflow: WorkflowDef
+    ) -> None:
+        """Workflow declares verdict, findings, and review_metadata channels."""
+        assert "verdict" in workflow.state
+        assert "findings" in workflow.state
+        assert "review_metadata" in workflow.state
+
+    def test_verdict_reducer_is_max(self, workflow: WorkflowDef) -> None:
+        """verdict channel uses max reducer for escalation (R > A)."""
+        ch = workflow.state["verdict"]
+        assert isinstance(ch, ChannelFieldDef)
+        assert ch.reducer is not None
+        assert ch.reducer.strategy == ReducerStrategy.MAX
+
+    def test_findings_reducer_is_append(self, workflow: WorkflowDef) -> None:
+        """findings channel uses append reducer to accumulate."""
+        ch = workflow.state["findings"]
+        assert isinstance(ch, ChannelFieldDef)
+        assert ch.reducer is not None
+        assert ch.reducer.strategy == ReducerStrategy.APPEND
+        assert ch.default == []
+
+    def test_review_metadata_reducer_is_merge_dict(
+        self, workflow: WorkflowDef
+    ) -> None:
+        """review_metadata uses merge_dict to combine from multiple nodes."""
+        ch = workflow.state["review_metadata"]
+        assert isinstance(ch, ChannelFieldDef)
+        assert ch.reducer is not None
+        assert ch.reducer.strategy == ReducerStrategy.MERGE_DICT
+
+
+class TestReadsWrites:
+    """Test: All nodes declare reads or writes subscriptions."""
+
+    def test_code_quality_writes_verdict_and_findings(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """code_quality writes to verdict and findings channels."""
+        cq = nodes_by_id["code_quality"]
+        assert cq.writes is not None
+        assert "verdict" in cq.writes
+        assert "findings" in cq.writes
+
+    def test_post_pr_summary_reads_verdict(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """post_pr_summary reads verdict for final determination."""
+        pps = nodes_by_id["post_pr_summary"]
+        assert pps.reads is not None
+        assert "verdict" in pps.reads
+
+    def test_analysis_nodes_read_and_write_verdict(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """requirements_coverage and test_adequacy both read+write verdict."""
+        for nid in ("requirements_coverage", "test_adequacy"):
+            node = nodes_by_id[nid]
+            assert node.reads is not None
+            assert "verdict" in node.reads
+            assert node.writes is not None
+            assert "verdict" in node.writes
+
+    def test_all_nodes_have_reads_or_writes(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Every node except verdict_approved_pass has reads or writes."""
+        for nid, node in nodes_by_id.items():
+            if nid == "verdict_approved_pass":
+                continue
+            has_reads = node.reads is not None and len(node.reads) > 0
+            has_writes = node.writes is not None and len(node.writes) > 0
+            assert has_reads or has_writes, (
+                f"Node {nid} has neither reads nor writes"
+            )
 
 
 class TestDispatchConfig:
