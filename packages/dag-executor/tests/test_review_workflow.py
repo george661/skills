@@ -89,7 +89,16 @@ class TestTopologicalOrdering:
         
         # Phase 3: Verdict flow
         before("code_quality", "requirements_coverage")
-        before("requirements_coverage", "test_adequacy")
+        before("code_quality", "test_adequacy")
+        # requirements_coverage and test_adequacy are parallel (same layer)
+        # both depend only on code_quality, so verify they're in the same layer
+        req_cov_layer = next(i for i, layer in enumerate(layers) if "requirements_coverage" in layer)
+        test_adeq_layer = next(i for i, layer in enumerate(layers) if "test_adequacy" in layer)
+        assert req_cov_layer == test_adeq_layer, (
+            f"requirements_coverage and test_adequacy must be in same layer, "
+            f"got layers {req_cov_layer} and {test_adeq_layer}"
+        )
+        before("requirements_coverage", "post_inline_comments")
         before("test_adequacy", "post_inline_comments")
         before("post_inline_comments", "post_pr_summary")
 
