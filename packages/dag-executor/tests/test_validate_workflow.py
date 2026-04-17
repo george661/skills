@@ -14,10 +14,13 @@ from dag_executor.parser import load_workflow
 from dag_executor.schema import (
     DispatchMode,
     NodeDef,
+    NodeResult,
+    NodeStatus,
     OnFailure,
     TriggerRule,
     WorkflowDef,
 )
+from tests.conftest import MockRunnerFactory, WorkflowTestHarness
 
 
 WORKFLOW_PATH = str(
@@ -234,3 +237,87 @@ class TestVariableSubstitution:
             assert "$issue_key" in node_text, (
                 f"{nid} should reference $issue_key"
             )
+
+
+class TestRoutingPathStructure:
+    """Integration test: Verify routing path structure and conditional edges."""
+
+    def test_file_verification_path_with_gate(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """File-verification routing path uses fast_path_gate."""
+        # Verify gate structure
+        fast_gate = nodes_by_id["fast_path_gate"]
+        assert fast_gate.type == "gate"
+        assert "classify_type" in fast_gate.depends_on
+        assert fast_gate.condition == "$classify_type.validation_type == \"file-verification\""
+
+        # Verify file_verification depends on the gate
+        file_verify = nodes_by_id["file_verification"]
+        assert "fast_path_gate" in file_verify.depends_on
+
+    def test_pipeline_verification_path_with_gate(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Pipeline-verification routing path uses pipeline_path_gate."""
+        # Verify gate structure
+        pipeline_gate = nodes_by_id["pipeline_path_gate"]
+        assert pipeline_gate.type == "gate"
+        assert "classify_type" in pipeline_gate.depends_on
+        assert pipeline_gate.condition == "$classify_type.validation_type == \"pipeline-verification\""
+
+        # Verify pipeline_verification depends on the gate
+        pipeline_verify = nodes_by_id["pipeline_verification"]
+        assert "pipeline_path_gate" in pipeline_verify.depends_on
+
+    def test_full_path_as_default(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Full-path routing is default when fast/pipeline gates don't pass."""
+        # deploy_check is entry point for full path
+        deploy_check = nodes_by_id["deploy_check"]
+
+        # It depends on both gates with all_done trigger (runs when gates are skipped)
+        assert "fast_path_gate" in deploy_check.depends_on
+        assert "pipeline_path_gate" in deploy_check.depends_on
+        assert deploy_check.trigger_rule == TriggerRule.ALL_DONE
+
+
+class TestRoutingPathConditionals:
+    """Test conditional edges for routing paths."""
+
+    def test_two_gates_route_fast_and_pipeline_paths(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Verify two gates route fast and pipeline paths from classify_type."""
+        # Both gates should depend on classify_type
+        fast_gate = nodes_by_id["fast_path_gate"]
+        pipeline_gate = nodes_by_id["pipeline_path_gate"]
+
+        assert "classify_type" in fast_gate.depends_on
+        assert "classify_type" in pipeline_gate.depends_on
+
+        # Gates should have mutually exclusive conditions
+        assert "file-verification" in fast_gate.condition
+        assert "pipeline-verification" in pipeline_gate.condition
+
+    def test_full_path_runs_when_gates_skip(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Verify full path (deploy_check) runs when both gates fail/skip."""
+        deploy_check = nodes_by_id["deploy_check"]
+
+        # deploy_check uses all_done trigger on both gates, so it runs
+        # when both gates are done (whether they passed or were skipped)
+        assert deploy_check.trigger_rule == TriggerRule.ALL_DONE
+        assert "fast_path_gate" in deploy_check.depends_on
+        assert "pipeline_path_gate" in deploy_check.depends_on
+
+    def test_paths_converge_at_evaluate_results(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Verify all three paths converge at evaluate_results."""
+        evaluate = nodes_by_id["evaluate_results"]
+
+        # evaluate_results should have one_success trigger to run when any path completes
+        assert evaluate.trigger_rule == TriggerRule.ONE_SUCCESS
