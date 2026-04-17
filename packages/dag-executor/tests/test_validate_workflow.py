@@ -46,7 +46,7 @@ class TestWorkflowParsing:
     def test_parses_successfully(self, workflow: WorkflowDef) -> None:
         """validate.yaml loads with no validation errors."""
         assert workflow.name == "Validate Command Workflow"
-        assert len(workflow.nodes) >= 15  # At least 15 nodes in the workflow
+        assert len(workflow.nodes) >= 14  # 16 nodes after removing 2 gates
 
     def test_input_issue_key_required_with_pattern(
         self, workflow: WorkflowDef
@@ -96,14 +96,12 @@ class TestTopologicalOrdering:
         before("code_review_blocker", "classify_type")
         before("classify_type", "visual_impact")
 
-        # Phase 1: Gates depend on visual_impact
-        before("visual_impact", "fast_path_gate")
-        before("visual_impact", "pipeline_path_gate")
-        before("visual_impact", "deploy_check")
+        # Phase 1: classify_type routes via edges (no gates)
+        before("classify_type", "file_verification")
+        before("classify_type", "pipeline_verification")
+        before("classify_type", "deploy_check")
 
-        # Phase 2: Each gate → its downstream path
-        before("fast_path_gate", "file_verification")
-        before("pipeline_path_gate", "pipeline_verification")
+        # Phase 2: deploy_check → run_tests
         before("deploy_check", "run_tests")
 
         # Phase 3: All paths converge at evaluate_results
@@ -119,44 +117,69 @@ class TestTopologicalOrdering:
 
 
 class TestRoutingPaths:
-    """Test 3: Three mutually exclusive routing paths."""
+    """Test 3: Three mutually exclusive routing paths via edges."""
 
-    def test_fast_path_gate_exists(
+    def test_classify_type_has_edges(
         self, nodes_by_id: Dict[str, NodeDef]
     ) -> None:
-        """fast_path_gate is a gate node with continue on failure."""
-        gate = nodes_by_id["fast_path_gate"]
-        assert gate.type == "gate"
-        assert gate.on_failure == OnFailure.CONTINUE
+        """classify_type has edges for 3-way routing."""
+        node = nodes_by_id["classify_type"]
+        assert node.edges is not None, "classify_type should have edges"
+        assert len(node.edges) == 3, "classify_type should have 3 edges"
 
-    def test_pipeline_path_gate_exists(
+    def test_classify_type_edges_structure(
         self, nodes_by_id: Dict[str, NodeDef]
     ) -> None:
-        """pipeline_path_gate is a gate node with continue on failure."""
-        gate = nodes_by_id["pipeline_path_gate"]
-        assert gate.type == "gate"
-        assert gate.on_failure == OnFailure.CONTINUE
+        """classify_type edges have correct targets and conditions."""
+        node = nodes_by_id["classify_type"]
+        targets = {edge.target for edge in node.edges}
+        assert targets == {
+            "file_verification",
+            "pipeline_verification",
+            "deploy_check",
+        }, "classify_type edges should route to 3 targets"
 
-    def test_deploy_check_exists(
+    def test_classify_type_has_default_edge(
         self, nodes_by_id: Dict[str, NodeDef]
     ) -> None:
-        """deploy_check exists and starts full path."""
-        node = nodes_by_id["deploy_check"]
-        assert node.type == "command"  # deploy_check is a command node, not gate
+        """classify_type has exactly one default edge."""
+        node = nodes_by_id["classify_type"]
+        default_edges = [e for e in node.edges if e.default]
+        assert len(default_edges) == 1, "Should have exactly one default edge"
+        assert default_edges[0].target == "deploy_check", (
+            "Default edge should route to deploy_check (full path)"
+        )
 
-    def test_file_verification_gated_by_fast_path(
+    def test_fast_path_gate_removed(
         self, nodes_by_id: Dict[str, NodeDef]
     ) -> None:
-        """file_verification depends on fast_path_gate."""
+        """fast_path_gate node removed (replaced by edges)."""
+        assert "fast_path_gate" not in nodes_by_id
+
+    def test_pipeline_path_gate_removed(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """pipeline_path_gate node removed (replaced by edges)."""
+        assert "pipeline_path_gate" not in nodes_by_id
+
+    def test_file_verification_no_explicit_depends_on(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """file_verification depends on classify_type via edge (not explicit)."""
         node = nodes_by_id["file_verification"]
-        assert "fast_path_gate" in node.depends_on
+        # Edge-implied dependency, so depends_on should be empty or only list classify_type
+        assert (
+            not node.depends_on or "classify_type" in node.depends_on
+        ), "file_verification should not have gate in depends_on"
 
-    def test_pipeline_verification_gated_by_pipeline_path(
+    def test_pipeline_verification_no_explicit_depends_on(
         self, nodes_by_id: Dict[str, NodeDef]
     ) -> None:
-        """pipeline_verification depends on pipeline_path_gate."""
+        """pipeline_verification depends on classify_type via edge (not explicit)."""
         node = nodes_by_id["pipeline_verification"]
-        assert "pipeline_path_gate" in node.depends_on
+        assert (
+            not node.depends_on or "classify_type" in node.depends_on
+        ), "pipeline_verification should not have gate in depends_on"
 
 
 class TestConvergenceNode:
@@ -183,18 +206,28 @@ class TestConvergenceNode:
         )
 
 
-class TestGateFailureStrategy:
-    """Test 5: Gates use on_failure: continue so failed gates don't propagate."""
+class TestStateChannels:
+    """Test 5: State channel declarations exist."""
 
-    def test_routing_gates_continue_on_failure(
-        self, nodes_by_id: Dict[str, NodeDef]
-    ) -> None:
-        """Routing gate nodes use on_failure: continue."""
-        gate_ids = ["fast_path_gate", "pipeline_path_gate"]
-        for gate_id in gate_ids:
-            gate = nodes_by_id[gate_id]
-            assert gate.type == "gate"
-            # Gates should continue on failure (allowing other paths to proceed)
+    def test_state_channels_declared(self, workflow: WorkflowDef) -> None:
+        """Workflow has state channel declarations."""
+        assert workflow.state is not None, "Workflow should have state channels"
+        assert len(workflow.state) >= 6, "Should have at least 6 state channels"
+
+    def test_state_channel_names(self, workflow: WorkflowDef) -> None:
+        """Required state channels are declared."""
+        channel_names = set(workflow.state.keys())
+        required_channels = {
+            "classification",
+            "visual_impact",
+            "test_results",
+            "evidence",
+            "verdict",
+            "transition_result",
+        }
+        assert required_channels.issubset(channel_names), (
+            f"Missing channels: {required_channels - channel_names}"
+        )
 
 
 class TestDispatchConfig:
@@ -267,64 +300,73 @@ class TestRoutingPathExecution:
 
     INPUTS = {"issue_key": "TEST-1", "PROJECT_ROOT": "/tmp/test"}
 
-    def test_all_nodes_complete_on_happy_path(
+    def test_workflow_structure_valid(
+        self, workflow: WorkflowDef,
+    ) -> None:
+        """AC1: Workflow structure validates correctly."""
+        # Verify all required nodes exist
+        node_ids = {n.id for n in workflow.nodes}
+        required_nodes = {
+            "resume_check", "code_review_blocker", "classify_type",
+            "visual_impact", "file_verification", "pipeline_verification",
+            "deploy_check", "run_tests", "evaluate_results",
+            "transition_jira", "store_episode", "print_summary",
+        }
+        assert required_nodes.issubset(node_ids), (
+            f"Missing nodes: {required_nodes - node_ids}"
+        )
+
+        # Verify gate nodes removed
+        assert "fast_path_gate" not in node_ids
+        assert "pipeline_path_gate" not in node_ids
+
+    def test_edge_routing_skips_non_matching_paths(
         self, test_harness: WorkflowTestHarness,
         workflow: WorkflowDef,
     ) -> None:
-        """AC1: Dry-run — all nodes complete when every runner succeeds."""
+        """AC2: Edge-based routing skips non-matching paths."""
         wf = _strip_scripts(workflow)
+        # Return "full" validation type to route to deploy_check (default edge)
         test_harness.mock_all_runners(NodeResult(
             status=NodeStatus.COMPLETED,
-            output={"validation_type": "file-verification", "code_repo": "t",
-                    "verdict": "TRANSITION_DONE", "ok": True},
+            output={"validation_type": "full", "ok": True},
         ))
         test_harness.execute(wf, self.INPUTS)
 
-        for node_id in [
-            "resume_check", "code_review_blocker", "classify_type",
-            "visual_impact", "fast_path_gate", "pipeline_path_gate",
-            "file_verification", "pipeline_verification",
-            "deploy_check", "evaluate_results",
-            "transition_jira", "store_episode", "print_summary",
-        ]:
-            test_harness.assert_node_completed(node_id)
-
-    def test_gate_failure_skips_downstream(
-        self, test_harness: WorkflowTestHarness,
-        mock_runner_factory: MockRunnerFactory,
-        workflow: WorkflowDef,
-    ) -> None:
-        """AC2: When both gates fail, file/pipeline verification are skipped."""
-        wf = _strip_scripts(workflow)
-        test_harness.mock_all_runners(NodeResult(
-            status=NodeStatus.COMPLETED, output={"ok": True},
-        ))
-        test_harness.mock_runner(
-            "gate", mock_runner_factory.create(status=NodeStatus.FAILED),
-        )
-        test_harness.execute(wf, self.INPUTS)
-
-        test_harness.assert_node_failed("fast_path_gate")
-        test_harness.assert_node_failed("pipeline_path_gate")
+        # Fast and pipeline paths should be skipped (edges don't match)
         test_harness.assert_node_skipped("file_verification")
         test_harness.assert_node_skipped("pipeline_verification")
         test_harness.assert_node_completed("deploy_check")
 
     def test_convergence_with_one_path(
         self, test_harness: WorkflowTestHarness,
-        mock_runner_factory: MockRunnerFactory,
         workflow: WorkflowDef,
     ) -> None:
         """AC3: evaluate_results runs via one_success when full path completes."""
         wf = _strip_scripts(workflow)
         test_harness.mock_all_runners(NodeResult(
-            status=NodeStatus.COMPLETED, output={"ok": True},
+            status=NodeStatus.COMPLETED,
+            output={"validation_type": "full", "ok": True},
         ))
-        test_harness.mock_runner(
-            "gate", mock_runner_factory.create(status=NodeStatus.FAILED),
-        )
         test_harness.execute(wf, self.INPUTS)
 
         test_harness.assert_node_completed("evaluate_results")
         test_harness.assert_node_completed("transition_jira")
         test_harness.assert_node_completed("print_summary")
+
+
+    def test_full_path_routing(
+        self, test_harness: WorkflowTestHarness,
+        workflow: WorkflowDef,
+    ) -> None:
+        """AC7: Full path routes to deploy_check as default."""
+        wf = _strip_scripts(workflow)
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED,
+            output={"validation_type": "full", "ok": True},
+        ))
+        test_harness.execute(wf, self.INPUTS)
+
+        test_harness.assert_node_skipped("file_verification")
+        test_harness.assert_node_skipped("pipeline_verification")
+        test_harness.assert_node_completed("deploy_check")
