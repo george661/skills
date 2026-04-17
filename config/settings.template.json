@@ -28,8 +28,7 @@
       "KillBash",
       "mcp__agentdb__*",
       "Skill(superpowers:*)",
-      "mcp__playwright__*",
-      "mcp__contentful-mcp__*"
+      "mcp__playwright__*"
     ],
     "deny": [
       "Bash(rm -rf /)"
@@ -44,30 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/hook-loader.py sync-repo-list"
-          },
-          {
-            "type": "command",
             "command": "python3 ~/.claude/hooks/hook-loader.py session-start-workflow-prompt"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/hook-loader.py domain-context-injection"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/hook-loader.py ollama-health-check"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/hook-loader.py route-user-prompt",
-            "timeout": 1800
           }
         ]
       }
@@ -76,11 +52,6 @@
       {
         "matcher": "SlashCommand",
         "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/hook-loader.py route-slash-command",
-            "timeout": 1800
-          },
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/hook-loader.py active_command_tracker"
@@ -109,10 +80,6 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/hook-loader.py enforce-skill-project-root"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/hook-loader.py second-brain-alert-checker"
           }
         ]
       },
@@ -133,33 +100,9 @@
             "command": "python3 ~/.claude/hooks/hook-loader.py warn-manual-jira-transition"
           }
         ]
-      },
-      {
-        "matcher": "Skill",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/hook-loader.py route-slash-command",
-            "timeout": 1800
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/hook-loader.py domain-context-skill-hook"
-          }
-        ]
       }
     ],
     "PostToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/hook-loader.py aws-sso-refresh",
-            "timeout": 120
-          }
-        ]
-      },
       {
         "matcher": "jira:.*|bitbucket:.*",
         "hooks": [
@@ -197,22 +140,6 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/hook-loader.py session-cleanup"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/hook-loader.py second-brain-transcript-capture",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/hook-loader.py second-brain-transcript-capture",
-            "timeout": 30
           }
         ]
       }
