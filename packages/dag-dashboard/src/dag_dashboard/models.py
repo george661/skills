@@ -95,3 +95,4 @@ class StatusSummary(BaseModel):
     completed: int
     failed: int
     pending: int
+    cancelled: int

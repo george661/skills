@@ -2,6 +2,17 @@
  * DAG Dashboard SPA - Router and State Management
  */
 
+// Security: HTML escaping helper to prevent XSS
+function escapeHtml(unsafe) {
+    if (unsafe === null || unsafe === undefined) return '';
+    return String(unsafe)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
 // State Store (simple pub/sub pattern)
 class Store {
     constructor() {
@@ -98,7 +109,7 @@ async function renderDashboard() {
     const container = document.getElementById('route-container');
 
     // Fetch status summary
-    let statusSummary = { running: 0, completed: 0, failed: 0, pending: 0 };
+    let statusSummary = { running: 0, completed: 0, failed: 0, pending: 0, cancelled: 0 };
     try {
         const response = await fetch('/api/workflows/summary');
         if (response.ok) {
@@ -139,6 +150,10 @@ async function renderDashboard() {
                 <div class="status-card-count">${statusSummary.pending}</div>
                 <div class="status-card-label">Pending</div>
             </div>
+            <div class="status-card status-card-cancelled" data-status="cancelled">
+                <div class="status-card-count">${statusSummary.cancelled}</div>
+                <div class="status-card-label">Cancelled</div>
+            </div>
         </div>
     `;
 
@@ -147,8 +162,8 @@ async function renderDashboard() {
     if (runningWorkflows.length > 0) {
         const workflowCards = runningWorkflows.map(wf => `
             <div class="workflow-card">
-                <div class="workflow-title">${wf.workflow_name}</div>
-                <span class="workflow-status ${wf.status}">${wf.status}</span>
+                <div class="workflow-title">${escapeHtml(wf.workflow_name)}</div>
+                <span class="workflow-status ${escapeHtml(wf.status)}">${escapeHtml(wf.status)}</span>
                 <div style="margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.875rem;">
                     ${wf.started_at ? new Date(wf.started_at).toLocaleString() : 'No start time'}
                 </div>
@@ -196,6 +211,8 @@ async function renderHistory() {
     const currentName = urlParams.get('name') || '';
     const currentPage = parseInt(urlParams.get('page') || '0');
     const currentSort = urlParams.get('sort') || 'started_at';
+    const currentStartDate = urlParams.get('start_date') || '';
+    const currentEndDate = urlParams.get('end_date') || '';
     const limit = 20;
     const offset = currentPage * limit;
 
@@ -207,6 +224,8 @@ async function renderHistory() {
     });
     if (currentStatus) apiParams.set('status', currentStatus);
     if (currentName) apiParams.set('name', currentName);
+    if (currentStartDate) apiParams.set('started_after', currentStartDate);
+    if (currentEndDate) apiParams.set('started_before', currentEndDate);
 
     // Fetch workflows
     let workflows = [];
@@ -238,11 +257,20 @@ async function renderHistory() {
                     <option value="completed" ${currentStatus === 'completed' ? 'selected' : ''}>Completed</option>
                     <option value="failed" ${currentStatus === 'failed' ? 'selected' : ''}>Failed</option>
                     <option value="pending" ${currentStatus === 'pending' ? 'selected' : ''}>Pending</option>
+                    <option value="cancelled" ${currentStatus === 'cancelled' ? 'selected' : ''}>Cancelled</option>
                 </select>
             </div>
             <div class="filter-group">
                 <label for="name-filter">Name:</label>
-                <input type="text" id="name-filter" class="filter-input" placeholder="Filter by name..." value="${currentName}">
+                <input type="text" id="name-filter" class="filter-input" placeholder="Filter by name..." value="${escapeHtml(currentName)}">
+            </div>
+            <div class="filter-group">
+                <label for="start-date-filter">Start Date:</label>
+                <input type="date" id="start-date-filter" class="filter-input" value="${escapeHtml(currentStartDate)}">
+            </div>
+            <div class="filter-group">
+                <label for="end-date-filter">End Date:</label>
+                <input type="date" id="end-date-filter" class="filter-input" value="${escapeHtml(currentEndDate)}">
             </div>
             <div class="filter-group">
                 <label for="sort-filter">Sort by:</label>
@@ -264,9 +292,9 @@ async function renderHistory() {
                 ? Math.round((new Date(wf.finished_at) - new Date(wf.started_at)) / 1000) + 's'
                 : 'N/A';
             return `
-                <tr class="history-row" data-run-id="${wf.id}">
-                    <td class="history-cell">${wf.workflow_name}</td>
-                    <td class="history-cell"><span class="workflow-status ${wf.status}">${wf.status}</span></td>
+                <tr class="history-row" data-run-id="${escapeHtml(wf.id)}">
+                    <td class="history-cell">${escapeHtml(wf.workflow_name)}</td>
+                    <td class="history-cell"><span class="workflow-status ${escapeHtml(wf.status)}">${escapeHtml(wf.status)}</span></td>
                     <td class="history-cell">${startTime}</td>
                     <td class="history-cell">${duration}</td>
                 </tr>
@@ -316,18 +344,24 @@ async function renderHistory() {
     // Add event listeners for filters
     const statusFilter = document.getElementById('status-filter');
     const nameFilter = document.getElementById('name-filter');
+    const startDateFilter = document.getElementById('start-date-filter');
+    const endDateFilter = document.getElementById('end-date-filter');
     const sortFilter = document.getElementById('sort-filter');
 
     const applyFilters = () => {
         const params = new URLSearchParams();
         if (statusFilter.value) params.set('status', statusFilter.value);
         if (nameFilter.value) params.set('name', nameFilter.value);
+        if (startDateFilter.value) params.set('start_date', startDateFilter.value);
+        if (endDateFilter.value) params.set('end_date', endDateFilter.value);
         if (sortFilter.value !== 'started_at') params.set('sort', sortFilter.value);
         params.set('page', '0');
         window.location.hash = `/history?${params}`;
     };
 
     statusFilter.addEventListener('change', applyFilters);
+    startDateFilter.addEventListener('change', applyFilters);
+    endDateFilter.addEventListener('change', applyFilters);
     sortFilter.addEventListener('change', applyFilters);
 
     // Debounce name filter input
@@ -364,7 +398,7 @@ async function renderHistory() {
 function renderWorkflowDetail(runId) {
     const container = document.getElementById('route-container');
     const state = store.getState();
-    
+
     container.innerHTML = `
         <div>
             <a href="#/" style="color: var(--primary); text-decoration: none; display: inline-block; margin-bottom: 1rem;">
@@ -372,7 +406,7 @@ function renderWorkflowDetail(runId) {
             </a>
             <h2 style="margin-bottom: 1.5rem;">Workflow Detail</h2>
             <div class="workflow-card">
-                <div class="workflow-title">Run ID: ${runId}</div>
+                <div class="workflow-title">Run ID: ${escapeHtml(runId)}</div>
                 <div style="margin-top: 0.5rem; color: var(--text-secondary);">
                     Details will be populated from API
                 </div>

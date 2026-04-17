@@ -320,6 +320,7 @@ def test_get_status_counts_empty(db_path: Path):
     assert counts["completed"] == 0
     assert counts["failed"] == 0
     assert counts["pending"] == 0
+    assert counts["cancelled"] == 0
 
 
 def test_get_status_counts_mixed(db_path: Path):
@@ -330,12 +331,14 @@ def test_get_status_counts_mixed(db_path: Path):
     insert_run(db_path, "run-4", "wf1", "failed", "2026-04-17T12:03:00Z")
     insert_run(db_path, "run-5", "wf1", "pending", "2026-04-17T12:04:00Z")
     insert_run(db_path, "run-6", "wf1", "completed", "2026-04-17T12:05:00Z")
+    insert_run(db_path, "run-7", "wf1", "cancelled", "2026-04-17T12:06:00Z")
 
     counts = get_status_counts(db_path)
     assert counts["running"] == 2
     assert counts["completed"] == 2
     assert counts["failed"] == 1
     assert counts["pending"] == 1
+    assert counts["cancelled"] == 1
 
 
 def test_list_runs_name_filter(db_path: Path):

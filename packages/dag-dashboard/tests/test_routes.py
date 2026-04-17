@@ -163,6 +163,7 @@ def test_get_workflows_summary_empty(client: TestClient):
     assert data["completed"] == 0
     assert data["failed"] == 0
     assert data["pending"] == 0
+    assert data["cancelled"] == 0
 
 
 def test_get_workflows_summary_with_data(client: TestClient, test_db: Path):
@@ -172,6 +173,7 @@ def test_get_workflows_summary_with_data(client: TestClient, test_db: Path):
     insert_run(test_db, "run-3", "wf1", "completed", "2026-04-17T12:02:00Z")
     insert_run(test_db, "run-4", "wf1", "failed", "2026-04-17T12:03:00Z")
     insert_run(test_db, "run-5", "wf1", "pending", "2026-04-17T12:04:00Z")
+    insert_run(test_db, "run-6", "wf1", "cancelled", "2026-04-17T12:05:00Z")
 
     response = client.get("/api/workflows/summary")
     assert response.status_code == 200
@@ -180,6 +182,7 @@ def test_get_workflows_summary_with_data(client: TestClient, test_db: Path):
     assert data["completed"] == 1
     assert data["failed"] == 1
     assert data["pending"] == 1
+    assert data["cancelled"] == 1
 
 
 def test_get_workflows_name_filter(client: TestClient, test_db: Path):

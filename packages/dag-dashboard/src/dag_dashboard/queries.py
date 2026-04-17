@@ -213,6 +213,7 @@ def get_status_counts(db_path: Path) -> Dict[str, int]:
             "completed": counts_dict.get("completed", 0),
             "failed": counts_dict.get("failed", 0),
             "pending": counts_dict.get("pending", 0),
+            "cancelled": counts_dict.get("cancelled", 0),
         }
     finally:
         conn.close()
