@@ -239,85 +239,110 @@ class TestVariableSubstitution:
             )
 
 
-class TestRoutingPathStructure:
-    """Integration test: Verify routing path structure and conditional edges."""
+class TestRoutingPathExecution:
+    """Integration test: Mock-execute validate.yaml for all routing paths."""
 
-    def test_file_verification_path_with_gate(
-        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    def test_file_verification_fast_path_execution(
+        self, test_harness: WorkflowTestHarness,
+        mock_runner_factory: MockRunnerFactory,
+        workflow: WorkflowDef
     ) -> None:
-        """File-verification routing path uses fast_path_gate."""
-        # Verify gate structure
-        fast_gate = nodes_by_id["fast_path_gate"]
-        assert fast_gate.type == "gate"
-        assert "classify_type" in fast_gate.depends_on
-        assert fast_gate.condition == "$classify_type.validation_type == \"file-verification\""
+        """AC1: Fast path taken when classify_type returns file-verification."""
+        factory = mock_runner_factory
 
-        # Verify file_verification depends on the gate
-        file_verify = nodes_by_id["file_verification"]
-        assert "fast_path_gate" in file_verify.depends_on
+        # Mock all node types to succeed by default
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED,
+            output={"ok": True}
+        ))
 
-    def test_pipeline_verification_path_with_gate(
-        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+        # Override prompt nodes (classify_type) to return specific routing output
+        test_harness.mock_runner("prompt", factory.create(
+            output={"validation_type": "file-verification"}
+        ))
+
+        result = test_harness.execute(workflow, {
+            "issue_key": "TEST-1",
+            "PROJECT_ROOT": "/tmp/test-project"
+        })
+
+        # Assert fast path nodes completed
+        test_harness.assert_node_completed("classify_type")
+        test_harness.assert_node_completed("fast_path_gate")
+        test_harness.assert_node_completed("file_verification")
+
+        # Assert other paths were skipped
+        test_harness.assert_node_skipped("pipeline_path_gate")
+        test_harness.assert_node_skipped("pipeline_verification")
+        test_harness.assert_node_skipped("deploy_check")
+
+    def test_pipeline_verification_path_execution(
+        self, test_harness: WorkflowTestHarness,
+        mock_runner_factory: MockRunnerFactory,
+        workflow: WorkflowDef
     ) -> None:
-        """Pipeline-verification routing path uses pipeline_path_gate."""
-        # Verify gate structure
-        pipeline_gate = nodes_by_id["pipeline_path_gate"]
-        assert pipeline_gate.type == "gate"
-        assert "classify_type" in pipeline_gate.depends_on
-        assert pipeline_gate.condition == "$classify_type.validation_type == \"pipeline-verification\""
+        """AC2: Pipeline path taken when classify_type returns pipeline-verification."""
+        factory = mock_runner_factory
 
-        # Verify pipeline_verification depends on the gate
-        pipeline_verify = nodes_by_id["pipeline_verification"]
-        assert "pipeline_path_gate" in pipeline_verify.depends_on
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED,
+            output={"ok": True}
+        ))
 
-    def test_full_path_as_default(
-        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+        # Override prompt to return pipeline-verification
+        test_harness.mock_runner("prompt", factory.create(
+            output={"validation_type": "pipeline-verification"}
+        ))
+
+        result = test_harness.execute(workflow, {
+            "issue_key": "TEST-2",
+            "PROJECT_ROOT": "/tmp/test-project"
+        })
+
+        # Assert pipeline path nodes completed
+        test_harness.assert_node_completed("classify_type")
+        test_harness.assert_node_completed("pipeline_path_gate")
+        test_harness.assert_node_completed("pipeline_verification")
+
+        # Assert other paths were skipped
+        test_harness.assert_node_skipped("fast_path_gate")
+        test_harness.assert_node_skipped("file_verification")
+        test_harness.assert_node_skipped("deploy_check")
+
+    def test_full_path_execution(
+        self, test_harness: WorkflowTestHarness,
+        mock_runner_factory: MockRunnerFactory,
+        workflow: WorkflowDef
     ) -> None:
-        """Full-path routing is default when fast/pipeline gates don't pass."""
-        # deploy_check is entry point for full path
-        deploy_check = nodes_by_id["deploy_check"]
+        """AC3: Full path taken when classify_type returns full validation type."""
+        factory = mock_runner_factory
 
-        # It depends on both gates with all_done trigger (runs when gates are skipped)
-        assert "fast_path_gate" in deploy_check.depends_on
-        assert "pipeline_path_gate" in deploy_check.depends_on
-        assert deploy_check.trigger_rule == TriggerRule.ALL_DONE
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED,
+            output={"ok": True}
+        ))
 
+        # Override prompt to return full
+        test_harness.mock_runner("prompt", factory.create(
+            output={"validation_type": "full"}
+        ))
 
-class TestRoutingPathConditionals:
-    """Test conditional edges for routing paths."""
+        result = test_harness.execute(workflow, {
+            "issue_key": "TEST-3",
+            "PROJECT_ROOT": "/tmp/test-project"
+        })
 
-    def test_two_gates_route_fast_and_pipeline_paths(
-        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
-    ) -> None:
-        """Verify two gates route fast and pipeline paths from classify_type."""
-        # Both gates should depend on classify_type
-        fast_gate = nodes_by_id["fast_path_gate"]
-        pipeline_gate = nodes_by_id["pipeline_path_gate"]
+        # Assert full path nodes completed
+        test_harness.assert_node_completed("classify_type")
+        # Both gates should skip (condition fails for both)
+        test_harness.assert_node_skipped("fast_path_gate")
+        test_harness.assert_node_skipped("pipeline_path_gate")
+        # Full path should execute
+        test_harness.assert_node_completed("deploy_check")
+        test_harness.assert_node_completed("run_tests")
+        test_harness.assert_node_completed("collect_evidence")
+        test_harness.assert_node_completed("smoke_regression")
 
-        assert "classify_type" in fast_gate.depends_on
-        assert "classify_type" in pipeline_gate.depends_on
-
-        # Gates should have mutually exclusive conditions
-        assert "file-verification" in fast_gate.condition
-        assert "pipeline-verification" in pipeline_gate.condition
-
-    def test_full_path_runs_when_gates_skip(
-        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
-    ) -> None:
-        """Verify full path (deploy_check) runs when both gates fail/skip."""
-        deploy_check = nodes_by_id["deploy_check"]
-
-        # deploy_check uses all_done trigger on both gates, so it runs
-        # when both gates are done (whether they passed or were skipped)
-        assert deploy_check.trigger_rule == TriggerRule.ALL_DONE
-        assert "fast_path_gate" in deploy_check.depends_on
-        assert "pipeline_path_gate" in deploy_check.depends_on
-
-    def test_paths_converge_at_evaluate_results(
-        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
-    ) -> None:
-        """Verify all three paths converge at evaluate_results."""
-        evaluate = nodes_by_id["evaluate_results"]
-
-        # evaluate_results should have one_success trigger to run when any path completes
-        assert evaluate.trigger_rule == TriggerRule.ONE_SUCCESS
+        # Fast/pipeline paths should skip
+        test_harness.assert_node_skipped("file_verification")
+        test_harness.assert_node_skipped("pipeline_verification")
