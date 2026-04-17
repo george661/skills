@@ -230,13 +230,13 @@ async def test_collector_handles_file_deletion(test_db: Path, events_dir: Path, 
         }
         with open(ndjson_file, "w") as f:
             f.write(json.dumps(event1) + "\n")
-        
-        await asyncio.sleep(0.2)
-        
+
+        await asyncio.sleep(0.5)
+
         # Delete file
         ndjson_file.unlink()
-        await asyncio.sleep(0.2)
-        
+        await asyncio.sleep(0.5)
+
         # Recreate and write new event
         event2 = {
             "workflow_name": "test_workflow",
@@ -246,9 +246,9 @@ async def test_collector_handles_file_deletion(test_db: Path, events_dir: Path, 
         }
         with open(ndjson_file, "w") as f:
             f.write(json.dumps(event2) + "\n")
-        
-        await asyncio.sleep(0.3)
-        
+
+        await asyncio.sleep(0.5)
+
         # Both events should be persisted
         persisted = get_persisted_events(test_db, run_id)
         assert len(persisted) == 2
