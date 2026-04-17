@@ -28,7 +28,7 @@ agents:
       2. Search AgentDB for similar prior PRPs and patterns
       3. Identify affected repositories and their current state
       4. Map dependencies to other Epics/issues
-      5. Review existing documentation in project-docs for related designs
+      5. Review existing documentation in $TENANT_DOCS_REPO for related designs
 
       Report your findings to the team lead when complete. Include:
       - Epic details and requirements summary
@@ -155,7 +155,7 @@ lead_instructions: |
   **Delegation mode recommended** - focus on coordination, not implementation.
 
   After all reviews pass:
-  - Commit PRP to project-docs
+  - Commit PRP to $TENANT_DOCS_REPO
   - Transition Epic to GROOMING status
   - Update labels: remove step:planning, add outcome:success-prp-created
   - Store completion metrics in AgentDB

@@ -2,7 +2,7 @@
 """
 PostToolUse:Write|Edit hook - domain consistency check.
 
-Auto-triggers when design or plan docs are written to project-docs.
+Auto-triggers when design or plan docs are written to the tenant docs repo.
 Checks if the edited file matches domain-relevant paths and reminds
 the user to run `/domain-map validate` to verify domain model alignment.
 
@@ -10,17 +10,21 @@ Includes a 300-second cooldown to avoid spamming on rapid edits.
 """
 
 import json
+import os
 import sys
 import time
 from fnmatch import fnmatch
 from pathlib import Path
 
+# Get tenant docs repo name from environment (defaults to project-docs)
+TENANT_DOCS_REPO = os.environ.get("TENANT_DOCS_REPO", "project-docs")
+
 # Path patterns that trigger the domain consistency check
 DOMAIN_PATH_PATTERNS = [
-    "*/project-docs/plans/*.md",
-    "*/project-docs/architecture/*.md",
-    "*/project-docs/domain/*.cml",
-    "*/project-docs/domain/*.md",
+    f"*/{TENANT_DOCS_REPO}/plans/*.md",
+    f"*/{TENANT_DOCS_REPO}/architecture/*.md",
+    f"*/{TENANT_DOCS_REPO}/domain/*.cml",
+    f"*/{TENANT_DOCS_REPO}/domain/*.md",
 ]
 
 # Cooldown configuration

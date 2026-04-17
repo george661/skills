@@ -377,7 +377,7 @@ nodes:
       Run functional smoke regression check for $issue_key.
 
       1. If smoke test script exists at
-         $PROJECT_ROOT/lambda-functions/tests/smoke/smoke-test.js:
+         $PROJECT_ROOT/$TENANT_SMOKE_TEST_PATH:
          - Run it with --env dev --output /tmp/smoke-$issue_key.json
          - Retrieve baseline from AgentDB (smoke-baseline-lambda-functions-dev)
          - Compare: count tests that were passing in baseline but now fail
