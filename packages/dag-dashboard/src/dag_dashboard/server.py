@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from .database import ensure_dir, init_db
-from .routes import router as api_router
+from .routes import router
 
 
 @asynccontextmanager
@@ -30,11 +30,11 @@ def create_app(db_dir: Path) -> FastAPI:
         lifespan=lifespan
     )
 
-    # Store db_dir in app state for lifespan access
+    # Store db_dir in app state for lifespan and route access
     app.state.db_dir = db_dir
 
-    # Include API routes
-    app.include_router(api_router)
+    # Register routes
+    app.include_router(router)
 
     # Mount static files
     static_dir = Path(__file__).parent / "static"
