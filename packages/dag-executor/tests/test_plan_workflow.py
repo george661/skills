@@ -13,6 +13,8 @@ from dag_executor.parser import load_workflow
 from dag_executor.schema import (
     DispatchMode,
     NodeDef,
+    NodeResult,
+    NodeStatus,
     OnFailure,
     TriggerRule,
     WorkflowDef,
@@ -202,73 +204,59 @@ class TestVariableSubstitution:
         )
 
 
-# Import additional classes for integration tests
-from dag_executor.schema import NodeResult, NodeStatus, TriggerRule
 from tests.conftest import MockRunnerFactory, WorkflowTestHarness
+
+
+def _strip_scripts(workflow: WorkflowDef) -> WorkflowDef:
+    """Clear script/prompt/args bodies so mock runners skip variable resolution."""
+    import copy
+    wf = copy.deepcopy(workflow)
+    for node in wf.nodes:
+        node.script = None
+        node.prompt = None
+        node.args = None
+    return wf
 
 
 class TestPlanWorkflowExecution:
     """Integration test: Mock-execute plan.yaml workflow scenarios."""
 
-    def test_skeleton_gate_failure_triggers_fix_skeleton(
-        self, test_harness: WorkflowTestHarness,
-        mock_runner_factory: MockRunnerFactory,
-        workflow: WorkflowDef
-    ) -> None:
-        """AC4-5: skeleton_gate failure triggers fix_skeleton, then first_review runs."""
-        factory = mock_runner_factory
-
-        # Mock most nodes to succeed
-        test_harness.mock_all_runners(NodeResult(
-            status=NodeStatus.COMPLETED,
-            output={"ok": True}
-        ))
-
-        # Mock skeleton_gate to FAIL
-        test_harness.mock_runner("gate", factory.create(status=NodeStatus.FAILED))
-
-        result = test_harness.execute(workflow, {
-            "issue_key": "TEST-4",
-            "epic_key": "TEST-100",
-            "PROJECT_ROOT": "/tmp/test-project",
-            "TENANT_DOMAIN_PATH": "/tmp/tenant"
-        })
-
-        # Assert skeleton_gate failed
-        test_harness.assert_node_failed("skeleton_gate")
-
-        # Assert fix_skeleton was executed (triggered by gate failure)
-        test_harness.assert_node_completed("fix_skeleton")
-
-        # Assert first_review completed (one_success trigger allows it to run after fix_skeleton)
-        test_harness.assert_node_completed("first_review")
+    INPUTS = {"epic_key": "TEST-100"}
 
     def test_review_pipeline_ordering_execution(
         self, test_harness: WorkflowTestHarness,
-        mock_runner_factory: MockRunnerFactory,
-        workflow: WorkflowDef
+        workflow: WorkflowDef,
     ) -> None:
-        """AC4: Review pipeline executes in correct order."""
-        factory = mock_runner_factory
-
-        # Mock all nodes to succeed
+        """AC4: Mock-execute plan.yaml, verify review pipeline ordering."""
+        wf = _strip_scripts(workflow)
         test_harness.mock_all_runners(NodeResult(
             status=NodeStatus.COMPLETED,
-            output={"ok": True}
+            output={"verdict": "APPROVED", "ok": True},
         ))
+        test_harness.execute(wf, self.INPUTS)
 
-        result = test_harness.execute(workflow, {
-            "issue_key": "TEST-5",
-            "epic_key": "TEST-101",
-            "PROJECT_ROOT": "/tmp/test-project",
-            "TENANT_DOMAIN_PATH": "/tmp/tenant"
-        })
+        for node_id in [
+            "create_skeleton", "review_skeleton", "skeleton_gate",
+            "first_review", "arch_review", "security_audit", "final_review",
+        ]:
+            test_harness.assert_node_completed(node_id)
 
-        # Assert review pipeline nodes completed in order
-        test_harness.assert_node_completed("create_skeleton")
-        test_harness.assert_node_completed("review_skeleton")
-        test_harness.assert_node_completed("skeleton_gate")
+    def test_skeleton_gate_failure_triggers_fix_skeleton(
+        self, test_harness: WorkflowTestHarness,
+        mock_runner_factory: MockRunnerFactory,
+        workflow: WorkflowDef,
+    ) -> None:
+        """AC5: skeleton_gate failure triggers fix_skeleton, first_review still runs."""
+        wf = _strip_scripts(workflow)
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED,
+            output={"verdict": "REJECTED", "ok": True},
+        ))
+        test_harness.mock_runner(
+            "gate", mock_runner_factory.create(status=NodeStatus.FAILED),
+        )
+        test_harness.execute(wf, self.INPUTS)
+
+        test_harness.assert_node_failed("skeleton_gate")
+        test_harness.assert_node_completed("fix_skeleton")
         test_harness.assert_node_completed("first_review")
-        test_harness.assert_node_completed("arch_review")
-        test_harness.assert_node_completed("security_audit")
-        test_harness.assert_node_completed("final_review")
