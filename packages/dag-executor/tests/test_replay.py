@@ -3,10 +3,9 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
 
 from dag_executor.events import EventType, WorkflowEvent, WorkflowStatus
-from dag_executor.replay import ExecutionTrace, ReplayIssue, TraceEvent, TraceRecorder, TraceReplayer
+from dag_executor.replay import ExecutionTrace, TraceEvent, TraceRecorder, TraceReplayer
 from dag_executor.schema import NodeDef, WorkflowConfig, WorkflowDef
 
 

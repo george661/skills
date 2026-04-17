@@ -11,6 +11,7 @@ from .broadcast import Broadcaster
 from .database import ensure_dir, init_db
 from .event_collector import EventCollector
 from .sse import create_sse_router
+from .routes import router
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,12 @@ def create_app(db_dir: Path, events_dir: Path = Path("dag-events"), max_sse_conn
         version="0.1.0",
         lifespan=lifespan
     )
+
+    # Store db_dir in app state for lifespan and route access
+    app.state.db_dir = db_dir
+
+    # Register routes
+    app.include_router(router)
 
     @app.get("/health")
     async def health() -> Dict[str, str]:

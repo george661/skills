@@ -1,10 +1,8 @@
 """Tests for channel abstraction layer."""
 import pytest
 import threading
-from typing import Any
 
 from dag_executor.channels import (
-    Channel,
     LastValueChannel,
     ReducerChannel,
     BarrierChannel,
