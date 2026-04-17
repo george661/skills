@@ -120,7 +120,16 @@ class EventCollector:
         # Extract fields from event
         workflow_name = event_data.get("workflow_name", "unknown")
         event_type = event_data.get("event_type", "unknown")
-        payload = event_data.get("payload", "{}")
+
+        # Serialize payload to JSON string if it's a dict
+        raw_payload = event_data.get("payload", "{}")
+        if isinstance(raw_payload, dict):
+            payload = json.dumps(raw_payload)
+        elif isinstance(raw_payload, str):
+            payload = raw_payload
+        else:
+            payload = json.dumps({"value": raw_payload})
+
         created_at = event_data.get("created_at", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
         
         # Persist to SQLite

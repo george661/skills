@@ -61,7 +61,7 @@ def create_sse_router(
                 loop = asyncio.get_event_loop()
                 replayed_events = await loop.run_in_executor(
                     None,
-                    _get_persisted_events,
+                    get_persisted_events,
                     db_path,
                     run_id
                 )
@@ -106,10 +106,10 @@ def create_sse_router(
     return router
 
 
-def _get_persisted_events(db_path: Path, run_id: str) -> list[Dict[str, Any]]:
+def get_persisted_events(db_path: Path, run_id: str) -> list[Dict[str, Any]]:
     """
     Retrieve persisted events from SQLite (sync function for run_in_executor).
-    
+
     Returns events in chronological order.
     """
     conn = sqlite3.connect(db_path)
