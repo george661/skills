@@ -1,0 +1,10 @@
+{
+  "name": "gw-default",
+  "vcs": "bitbucket",
+  "issues": "jira",
+  "ci": "concourse",
+  "env": {
+    "ISSUE_TRACKER": "jira",
+    "CI_PROVIDER": "concourse"
+  }
+}

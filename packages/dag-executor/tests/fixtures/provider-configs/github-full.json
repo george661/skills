@@ -1,0 +1,10 @@
+{
+  "name": "github-full",
+  "vcs": "github",
+  "issues": "github",
+  "ci": "github_actions",
+  "env": {
+    "ISSUE_TRACKER": "github",
+    "CI_PROVIDER": "github_actions"
+  }
+}
