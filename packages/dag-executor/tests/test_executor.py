@@ -1,11 +1,10 @@
 """Tests for the DAG workflow executor."""
 import asyncio
 import time
-from typing import Dict, Any
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 
 import pytest
-from dag_executor.executor import WorkflowExecutor, ExecutionContext, WorkflowResult
+from dag_executor.executor import WorkflowExecutor
 from dag_executor.runners.base import BaseRunner, RunnerContext
 from dag_executor.schema import (
     NodeDef, NodeResult, NodeStatus, WorkflowStatus, WorkflowDef, 
@@ -688,7 +687,7 @@ class TestConditionalEdges:
 
     def test_conditional_edges_approve_branch(self) -> None:
         """Review node with edges: approve verdict routes to approve branch."""
-        from dag_executor.schema import EdgeDef, ModelTier
+        from dag_executor.schema import EdgeDef
 
         nodes = [
             NodeDef(

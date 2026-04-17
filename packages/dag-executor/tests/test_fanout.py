@@ -1,6 +1,5 @@
 """Tests for multi-target fan-out edges."""
 import asyncio
-import pytest
 from dag_executor.executor import WorkflowExecutor
 from dag_executor.parser import load_workflow_from_string
 from dag_executor.schema import NodeStatus, WorkflowStatus

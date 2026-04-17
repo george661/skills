@@ -1,5 +1,5 @@
 """Tests for prompt runner."""
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 import io
 import pytest
 

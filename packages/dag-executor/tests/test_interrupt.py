@@ -1,6 +1,4 @@
 """Integration tests for interrupt/resume functionality."""
-import pytest
-from pathlib import Path
 import json
 
 from dag_executor import (

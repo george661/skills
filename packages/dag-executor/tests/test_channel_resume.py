@@ -5,7 +5,6 @@ and falls back to content hash for old checkpoints.
 """
 from __future__ import annotations
 
-import pytest
 from dag_executor.schema import (
     NodeDef,
     NodeResult,
