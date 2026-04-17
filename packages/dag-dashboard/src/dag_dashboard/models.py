@@ -1,0 +1,82 @@
+"""Pydantic models for API responses and validation."""
+import re
+from enum import Enum
+from typing import Any, Dict, Generic, List, Optional, TypeVar
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class SortBy(str, Enum):
+    """Whitelisted sortBy values for list queries."""
+    STARTED_AT = "started_at"
+    FINISHED_AT = "finished_at"
+    # Note: total_cost removed - column doesn't exist in schema
+    # Note: Using finished_at to match actual schema column name
+
+
+class RunStatus(str, Enum):
+    """Whitelisted status values for workflow runs."""
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class WorkflowRunResponse(BaseModel):
+    """Response model for workflow run data."""
+    model_config = {"extra": "forbid"}
+
+    id: str
+    workflow_name: str
+    status: str
+    started_at: str
+    finished_at: Optional[str] = None
+    inputs: Optional[Dict[str, Any]] = None
+    outputs: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+    @field_validator("workflow_name")
+    @classmethod
+    def validate_workflow_name(cls, v: str) -> str:
+        """Validate workflow_name is alphanumeric + hyphens only."""
+        if not re.match(r"^[a-zA-Z0-9-]+$", v):
+            raise ValueError("workflow_name must contain only alphanumeric characters and hyphens")
+        return v
+
+
+class NodeExecutionResponse(BaseModel):
+    """Response model for node execution data."""
+    model_config = {"extra": "forbid"}
+
+    id: str
+    run_id: str
+    node_name: str
+    status: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    inputs: Optional[Dict[str, Any]] = None
+    outputs: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+T = TypeVar("T")
+
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    """Generic paginated response wrapper."""
+    model_config = {"extra": "forbid"}
+
+    items: List[T]
+    total: int
+    limit: int
+    offset: int
+
+
+class ListParams(BaseModel):
+    """Query parameters for list operations."""
+    model_config = {"extra": "forbid"}
+
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+    status: Optional[RunStatus] = None
+    sort_by: SortBy = Field(default=SortBy.STARTED_AT)
