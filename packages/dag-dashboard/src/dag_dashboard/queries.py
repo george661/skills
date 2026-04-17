@@ -1,0 +1,362 @@
+"""Database query helpers with pagination and filtering."""
+import json
+import sqlite3
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from .models import SortBy, RunStatus
+
+
+def get_connection(db_path: Path) -> sqlite3.Connection:
+    """Get database connection with foreign keys enabled."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    # Foreign key constraints must be enabled on each connection
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def insert_run(
+    db_path: Path,
+    run_id: str,
+    workflow_name: str,
+    status: str,
+    started_at: str,
+    inputs: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Insert a new workflow run."""
+    # Validate workflow_name at query level (defense in depth)
+    import re
+    if not re.match(r"^[a-zA-Z0-9-]+$", workflow_name):
+        raise ValueError("workflow_name must contain only alphanumeric characters and hyphens")
+    
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO workflow_runs (id, workflow_name, status, started_at, inputs)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (run_id, workflow_name, status, started_at, json.dumps(inputs) if inputs else None)
+        )
+        conn.commit()
+        return run_id
+    finally:
+        conn.close()
+
+
+def update_run(
+    db_path: Path,
+    run_id: str,
+    status: Optional[str] = None,
+    finished_at: Optional[str] = None,
+    outputs: Optional[Dict[str, Any]] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Update workflow run fields."""
+    conn = get_connection(db_path)
+    try:
+        # Build dynamic update query based on provided fields
+        fields = []
+        values = []
+        
+        if status is not None:
+            fields.append("status = ?")
+            values.append(status)
+        if finished_at is not None:
+            fields.append("finished_at = ?")
+            values.append(finished_at)
+        if outputs is not None:
+            fields.append("outputs = ?")
+            values.append(json.dumps(outputs))
+        if error is not None:
+            fields.append("error = ?")
+            values.append(error)
+        
+        if not fields:
+            return
+        
+        values.append(run_id)
+        query = f"UPDATE workflow_runs SET {', '.join(fields)} WHERE id = ?"
+        conn.execute(query, values)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_run(db_path: Path, run_id: str) -> Optional[Dict[str, Any]]:
+    """Get a single workflow run by ID."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT * FROM workflow_runs WHERE id = ?",
+            (run_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_runs(
+    db_path: Path,
+    limit: int = 50,
+    offset: int = 0,
+    status: Optional[RunStatus] = None,
+    sort_by: SortBy = SortBy.STARTED_AT,
+) -> Dict[str, Any]:
+    """List workflow runs with pagination and filtering."""
+    # Validate sort_by is from whitelist enum
+    if isinstance(sort_by, str):
+        try:
+            sort_by = SortBy(sort_by)
+        except ValueError:
+            raise ValueError(f"Invalid sort_by value. Must be one of: {[e.value for e in SortBy]}")
+    
+    # Validate status is from whitelist enum if provided
+    if status is not None and isinstance(status, str):
+        try:
+            status = RunStatus(status)
+        except ValueError:
+            raise ValueError(f"Invalid status value. Must be one of: {[e.value for e in RunStatus]}")
+    
+    conn = get_connection(db_path)
+    try:
+        # Build WHERE clause
+        where_clause = ""
+        params: List[Any] = []
+        
+        if status is not None:
+            where_clause = "WHERE status = ?"
+            params.append(status.value if isinstance(status, RunStatus) else status)
+        
+        # Get total count
+        count_query = f"SELECT COUNT(*) FROM workflow_runs {where_clause}"
+        cursor = conn.execute(count_query, params)
+        total = cursor.fetchone()[0]
+        
+        # Build ORDER BY clause using whitelisted enum value
+        # Safe to interpolate because sort_by is validated enum
+        order_column = sort_by.value
+        
+        # Get paginated items
+        items_query = f"""
+            SELECT * FROM workflow_runs
+            {where_clause}
+            ORDER BY {order_column} DESC
+            LIMIT ? OFFSET ?
+        """
+        cursor = conn.execute(items_query, params + [limit, offset])
+        items = [dict(row) for row in cursor.fetchall()]
+        
+        return {
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    finally:
+        conn.close()
+
+
+def insert_node(
+    db_path: Path,
+    node_id: str,
+    run_id: str,
+    node_name: str,
+    status: str,
+    started_at: str,
+    inputs: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Insert a new node execution."""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO node_executions (id, run_id, node_name, status, started_at, inputs)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (node_id, run_id, node_name, status, started_at, json.dumps(inputs) if inputs else None)
+        )
+        conn.commit()
+        return node_id
+    finally:
+        conn.close()
+
+
+def update_node(
+    db_path: Path,
+    node_id: str,
+    status: Optional[str] = None,
+    finished_at: Optional[str] = None,
+    outputs: Optional[Dict[str, Any]] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Update node execution fields."""
+    conn = get_connection(db_path)
+    try:
+        fields = []
+        values = []
+        
+        if status is not None:
+            fields.append("status = ?")
+            values.append(status)
+        if finished_at is not None:
+            fields.append("finished_at = ?")
+            values.append(finished_at)
+        if outputs is not None:
+            fields.append("outputs = ?")
+            values.append(json.dumps(outputs))
+        if error is not None:
+            fields.append("error = ?")
+            values.append(error)
+        
+        if not fields:
+            return
+        
+        values.append(node_id)
+        query = f"UPDATE node_executions SET {', '.join(fields)} WHERE id = ?"
+        conn.execute(query, values)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_node(db_path: Path, node_id: str) -> Optional[Dict[str, Any]]:
+    """Get a single node execution by ID."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT * FROM node_executions WHERE id = ?",
+            (node_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_nodes(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
+    """List all node executions for a workflow run."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT * FROM node_executions WHERE run_id = ? ORDER BY started_at",
+            (run_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def insert_chat_message(
+    db_path: Path,
+    execution_id: str,
+    role: str,
+    content: str,
+    created_at: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Insert a chat message for a node execution."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO chat_messages (execution_id, role, content, created_at, metadata)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (execution_id, role, content, created_at, json.dumps(metadata) if metadata else None)
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def get_chat_messages(db_path: Path, execution_id: str) -> List[Dict[str, Any]]:
+    """Get all chat messages for a node execution."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT * FROM chat_messages WHERE execution_id = ? ORDER BY created_at",
+            (execution_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def insert_gate_decision(
+    db_path: Path,
+    run_id: str,
+    node_name: str,
+    decision: str,
+    decided_by: str,
+    decided_at: str,
+    reason: Optional[str] = None,
+) -> Optional[int]:
+    """Insert a gate decision for a workflow run."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO gate_decisions (run_id, node_name, decision, decided_by, decided_at, reason)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (run_id, node_name, decision, decided_by, decided_at, reason)
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def get_gate_decisions(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
+    """Get all gate decisions for a workflow run."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT * FROM gate_decisions WHERE run_id = ? ORDER BY decided_at",
+            (run_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def insert_artifact(
+    db_path: Path,
+    execution_id: str,
+    name: str,
+    artifact_type: str,
+    created_at: str,
+    path: Optional[str] = None,
+    content: Optional[str] = None,
+) -> Optional[int]:
+    """Insert an artifact for a node execution."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO artifacts (execution_id, name, artifact_type, path, content, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (execution_id, name, artifact_type, path, content, created_at)
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def get_artifacts(db_path: Path, execution_id: str) -> List[Dict[str, Any]]:
+    """Get all artifacts for a node execution."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT * FROM artifacts WHERE execution_id = ? ORDER BY created_at",
+            (execution_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
