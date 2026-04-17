@@ -1,12 +1,14 @@
 """FastAPI routes for workflow dashboard."""
+import asyncio
+import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from .models import SortBy, RunStatus
 from .queries import get_run, list_runs, get_node, list_nodes
-
 
 router = APIRouter(prefix="/api")
 
@@ -41,13 +43,13 @@ async def get_workflows(
 async def get_workflow(request: Request, run_id: str) -> Dict[str, Any]:
     """Get a single workflow run with its nodes."""
     db_path = get_db_path(request)
-    
+
     run = get_run(db_path, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
-    
+
     nodes = list_nodes(db_path, run_id)
-    
+
     return {
         "run": run,
         "nodes": nodes,
@@ -62,9 +64,35 @@ async def get_workflow_node(
 ) -> Dict[str, Any]:
     """Get a single node execution."""
     db_path = get_db_path(request)
-    
+
     node = get_node(db_path, node_id)
     if node is None or node["run_id"] != run_id:
         raise HTTPException(status_code=404, detail="Node execution not found")
-    
+
     return node
+
+
+async def event_generator() -> AsyncIterator[str]:
+    """Generate SSE events."""
+    yield f"data: {json.dumps({'type': 'connected', 'message': 'SSE connection established'})}\n\n"
+
+    try:
+        while True:
+            await asyncio.sleep(30)
+            yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': asyncio.get_event_loop().time()})}\n\n"
+    except asyncio.CancelledError:
+        pass
+
+
+@router.get("/events")
+async def sse_endpoint() -> StreamingResponse:
+    """Server-Sent Events endpoint for real-time workflow updates."""
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

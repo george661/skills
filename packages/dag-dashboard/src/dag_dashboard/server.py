@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import AsyncIterator, Dict
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from .database import ensure_dir, init_db
 from .routes import router
@@ -34,9 +36,25 @@ def create_app(db_dir: Path) -> FastAPI:
     # Register routes
     app.include_router(router)
 
+    # Mount static files
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.exists():
+        app.mount("/css", StaticFiles(directory=str(static_dir / "css")), name="css")
+        app.mount("/js", StaticFiles(directory=str(static_dir / "js")), name="js")
+
     @app.get("/health")
     async def health() -> Dict[str, str]:
         """Health check endpoint."""
         return {"status": "ok"}
+
+    @app.get("/")
+    async def root() -> FileResponse:
+        """Serve index.html at root path."""
+        static_dir = Path(__file__).parent / "static"
+        index_path = static_dir / "index.html"
+        if not index_path.exists():
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="index.html not found")
+        return FileResponse(index_path)
 
     return app
