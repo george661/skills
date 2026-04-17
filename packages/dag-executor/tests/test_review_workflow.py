@@ -89,7 +89,16 @@ class TestTopologicalOrdering:
         
         # Phase 3: Verdict flow
         before("code_quality", "requirements_coverage")
-        before("requirements_coverage", "test_adequacy")
+        before("code_quality", "test_adequacy")
+        # requirements_coverage and test_adequacy are parallel (same layer)
+        # both depend only on code_quality, so verify they're in the same layer
+        req_cov_layer = next(i for i, layer in enumerate(layers) if "requirements_coverage" in layer)
+        test_adeq_layer = next(i for i, layer in enumerate(layers) if "test_adequacy" in layer)
+        assert req_cov_layer == test_adeq_layer, (
+            f"requirements_coverage and test_adequacy must be in same layer, "
+            f"got layers {req_cov_layer} and {test_adeq_layer}"
+        )
+        before("requirements_coverage", "post_inline_comments")
         before("test_adequacy", "post_inline_comments")
         before("post_inline_comments", "post_pr_summary")
 
@@ -215,3 +224,73 @@ class TestVariableSubstitution:
         assert "$repo" in node_text or "$pr_number" in node_text, (
             "fetch_pr should reference $repo or $pr_number"
         )
+
+
+from dag_executor.schema import NodeResult, NodeStatus
+from tests.conftest import MockRunnerFactory, WorkflowTestHarness
+
+
+def _strip_scripts(workflow: WorkflowDef) -> WorkflowDef:
+    """Clear script/prompt/args bodies so mock runners skip variable resolution."""
+    import copy
+    wf = copy.deepcopy(workflow)
+    for node in wf.nodes:
+        node.script = None
+        node.prompt = None
+        node.args = None
+    return wf
+
+
+class TestReviewWorkflowExecution:
+    """Integration test: Mock-execute review.yaml workflow scenarios."""
+
+    INPUTS = {"repo": "test-repo", "pr_number": "42", "PROJECT_ROOT": "/tmp/test"}
+
+    def test_full_review_pipeline_execution(
+        self, test_harness: WorkflowTestHarness,
+        mock_runner_factory: MockRunnerFactory,
+        workflow: WorkflowDef,
+    ) -> None:
+        """AC6: Mock-execute review.yaml, verify node ordering end-to-end."""
+        wf = _strip_scripts(workflow)
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED,
+            output={"ok": True},
+        ))
+
+        test_harness.execute(wf, self.INPUTS)
+
+        for node_id in [
+            "branch_sync", "parse_input", "fetch_pr",
+            "find_jira_issue", "local_validation",
+            "code_quality", "requirements_coverage", "test_adequacy",
+            "post_inline_comments", "post_pr_summary", "post_jira_summary",
+        ]:
+            test_harness.assert_node_completed(node_id)
+
+    def test_jira_lookup_failure_continue_path(
+        self, test_harness: WorkflowTestHarness,
+        mock_runner_factory: MockRunnerFactory,
+        workflow: WorkflowDef,
+    ) -> None:
+        """AC7: find_jira_issue failure does not block review pipeline."""
+        wf = _strip_scripts(workflow)
+        ok = NodeResult(status=NodeStatus.COMPLETED, output={"ok": True})
+        fail = NodeResult(status=NodeStatus.FAILED, error="Jira unavailable")
+        bash_seq = mock_runner_factory.create_sequence([
+            ok,    # branch_sync
+            ok,    # parse_input
+            ok,    # fetch_pr
+            fail,  # find_jira_issue
+            ok, ok, ok, ok, ok, ok, ok, ok,
+        ])
+        test_harness.mock_runner("bash", bash_seq)
+        test_harness.mock_runner("prompt", mock_runner_factory.create(
+            output={"ok": True}
+        ))
+
+        test_harness.execute(wf, self.INPUTS)
+
+        test_harness.assert_node_failed("find_jira_issue")
+        test_harness.assert_node_completed("code_quality")
+        test_harness.assert_node_completed("post_pr_summary")

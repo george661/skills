@@ -14,10 +14,13 @@ from dag_executor.parser import load_workflow
 from dag_executor.schema import (
     DispatchMode,
     NodeDef,
+    NodeResult,
+    NodeStatus,
     OnFailure,
     TriggerRule,
     WorkflowDef,
 )
+from tests.conftest import MockRunnerFactory, WorkflowTestHarness
 
 
 WORKFLOW_PATH = str(
@@ -234,3 +237,94 @@ class TestVariableSubstitution:
             assert "$issue_key" in node_text, (
                 f"{nid} should reference $issue_key"
             )
+
+
+def _strip_scripts(workflow: WorkflowDef) -> WorkflowDef:
+    """Return a copy of *workflow* with script/prompt/args bodies cleared.
+
+    The executor resolves ``$var`` references in script, prompt, and args
+    before calling the runner.  Production workflows use shell variables
+    and output references that are only valid at runtime.  Clearing them
+    lets mock runners execute without variable-resolution errors while
+    preserving the full DAG structure (deps, trigger rules, on_failure).
+    """
+    import copy
+    wf = copy.deepcopy(workflow)
+    for node in wf.nodes:
+        node.script = None
+        node.prompt = None
+        node.args = None
+    return wf
+
+
+class TestRoutingPathExecution:
+    """Integration test: Mock-execute validate.yaml through the executor.
+
+    Strips script/prompt bodies so the variable resolver doesn't trip on
+    undeclared shell variables.  Gate conditions are preserved so the real
+    GateRunner evaluates routing.
+    """
+
+    INPUTS = {"issue_key": "TEST-1", "PROJECT_ROOT": "/tmp/test"}
+
+    def test_all_nodes_complete_on_happy_path(
+        self, test_harness: WorkflowTestHarness,
+        workflow: WorkflowDef,
+    ) -> None:
+        """AC1: Dry-run — all nodes complete when every runner succeeds."""
+        wf = _strip_scripts(workflow)
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED,
+            output={"validation_type": "file-verification", "code_repo": "t",
+                    "verdict": "TRANSITION_DONE", "ok": True},
+        ))
+        test_harness.execute(wf, self.INPUTS)
+
+        for node_id in [
+            "resume_check", "code_review_blocker", "classify_type",
+            "visual_impact", "fast_path_gate", "pipeline_path_gate",
+            "file_verification", "pipeline_verification",
+            "deploy_check", "evaluate_results",
+            "transition_jira", "store_episode", "print_summary",
+        ]:
+            test_harness.assert_node_completed(node_id)
+
+    def test_gate_failure_skips_downstream(
+        self, test_harness: WorkflowTestHarness,
+        mock_runner_factory: MockRunnerFactory,
+        workflow: WorkflowDef,
+    ) -> None:
+        """AC2: When both gates fail, file/pipeline verification are skipped."""
+        wf = _strip_scripts(workflow)
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED, output={"ok": True},
+        ))
+        test_harness.mock_runner(
+            "gate", mock_runner_factory.create(status=NodeStatus.FAILED),
+        )
+        test_harness.execute(wf, self.INPUTS)
+
+        test_harness.assert_node_failed("fast_path_gate")
+        test_harness.assert_node_failed("pipeline_path_gate")
+        test_harness.assert_node_skipped("file_verification")
+        test_harness.assert_node_skipped("pipeline_verification")
+        test_harness.assert_node_completed("deploy_check")
+
+    def test_convergence_with_one_path(
+        self, test_harness: WorkflowTestHarness,
+        mock_runner_factory: MockRunnerFactory,
+        workflow: WorkflowDef,
+    ) -> None:
+        """AC3: evaluate_results runs via one_success when full path completes."""
+        wf = _strip_scripts(workflow)
+        test_harness.mock_all_runners(NodeResult(
+            status=NodeStatus.COMPLETED, output={"ok": True},
+        ))
+        test_harness.mock_runner(
+            "gate", mock_runner_factory.create(status=NodeStatus.FAILED),
+        )
+        test_harness.execute(wf, self.INPUTS)
+
+        test_harness.assert_node_completed("evaluate_results")
+        test_harness.assert_node_completed("transition_jira")
+        test_harness.assert_node_completed("print_summary")
