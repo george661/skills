@@ -38,6 +38,7 @@ export CI_PROVIDER=circleci        # CircleCI (stub)
 | `trigger_build` | `fly/trigger_job` | `github-actions/trigger_workflow` |
 | `get_build_logs` | `fly/watch_build` | `github-actions/get_run_logs` |
 | `list_builds` | `concourse/list_builds` | `github-actions/list_workflow_runs` |
+| `wait_for_ci` | `fly/wait-for-ci` | `github-actions/wait_for_workflow_run` |
 
 ## Parameter Translation
 
@@ -60,6 +61,7 @@ export CI_PROVIDER=circleci        # CircleCI (stub)
 | `list_builds` | List recent builds/runs | `repo` | `branch`, `status`, `provider` |
 | `trigger_build` | Trigger a new build/run | `repo` | `job`, `workflow_id`, `ref`, `provider` |
 | `get_build_logs` | Get build/run logs | `repo` | `run_id`, `build_id`, `provider` |
+| `wait_for_ci` | Wait for a build/run to complete | `repo` | `job`, `build`, `timeout_seconds`, `poll_interval`, `provider` |
 
 ## Example Invocations
 
@@ -70,6 +72,7 @@ npx tsx skills/ci/get_build_status.ts '{"repo": "my-api"}'
 npx tsx skills/ci/list_builds.ts '{"repo": "my-api"}'
 npx tsx skills/ci/trigger_build.ts '{"repo": "my-api", "job": "test"}'
 npx tsx skills/ci/get_build_logs.ts '{"repo": "my-api", "build_id": "456"}'
+npx tsx skills/ci/wait_for_ci.ts '{"repo": "my-api", "timeout_seconds": 900}'
 ```
 
 ### GitHub Actions
@@ -79,6 +82,7 @@ npx tsx skills/ci/get_build_status.ts '{"repo": "my-api", "run_id": "12345", "pr
 npx tsx skills/ci/list_builds.ts '{"repo": "my-api", "provider": "github_actions"}'
 npx tsx skills/ci/trigger_build.ts '{"repo": "my-api", "workflow_id": "ci.yml", "ref": "main", "provider": "github_actions"}'
 npx tsx skills/ci/get_build_logs.ts '{"repo": "my-api", "run_id": "12345", "provider": "github_actions"}'
+npx tsx skills/ci/wait_for_ci.ts '{"repo": "my-api", "timeout_seconds": 600, "provider": "github_actions"}'
 ```
 
 ## CI in PR Context vs Standalone

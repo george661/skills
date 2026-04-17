@@ -119,7 +119,7 @@ npx tsx ~/.claude/skills/issues/update_issue.ts '{"issue_key": "<KEY>", "labels"
 ```bash
 # Wait for CI to complete — returns structured per-task output
 # (CI monitoring is done by the /work orchestrator, not /fix-pr directly)
-npx tsx ~/.claude/skills/fly/wait-for-ci.ts '{"pipeline": "<repo>", "job": "pr-check", "timeout_seconds": 900}'
+npx tsx ~/.claude/skills/ci/wait_for_ci.ts '{"repo": "<repo>", "job": "pr-check", "timeout_seconds": 900}'
 
 # Extract failing tasks from the result
 echo "$ci_result" | jq -r '.output | to_entries[] | select(.value.success == false) | "FAILED: \(.key)\n\(.value.logs[-5:] | join("\n"))"'

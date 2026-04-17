@@ -63,6 +63,10 @@ const SKILL_MAP: Record<string, Partial<Record<CIProvider, SkillMapping>>> = {
     concourse:      { dir: 'concourse', name: 'list_builds' },
     github_actions: { dir: 'github-actions', name: 'list_workflow_runs' },
   },
+  wait_for_ci: {
+    concourse:      { dir: 'fly', name: 'wait-for-ci' },
+    github_actions: { dir: 'github-actions', name: 'wait_for_workflow_run' },
+  },
 };
 
 // ---------------------------------------------------------------------------

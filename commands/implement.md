@@ -60,7 +60,7 @@ This command handles the implementation and PR creation phase:
 **Prerequisite:** `/create-implementation-plan $ARGUMENTS.issue` must have been run first (creates worktree).
 **Next step after this command:** Wait for CI pipeline, then run `/fix-pr` if failed or `/resolve-pr` if passed.
 
-> **CI Infrastructure:** CI is monitored by the `/work` orchestrator via `~/.claude/skills/fly/wait-for-ci.ts`, which returns structured per-task output for Concourse pipelines.
+> **CI Infrastructure:** CI is monitored by the `/work` orchestrator via `~/.claude/skills/ci/wait_for_ci.ts`, which routes through the unified CI router and returns structured per-task output for all supported CI providers.
 
 ---
 
