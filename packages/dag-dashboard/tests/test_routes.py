@@ -152,3 +152,66 @@ def test_get_node_not_found(client: TestClient, test_db: Path):
 
     response = client.get("/api/workflows/run-123/nodes/unknown")
     assert response.status_code == 404
+
+
+def test_get_workflows_summary_empty(client: TestClient):
+    """Test GET /api/workflows/summary returns zeros when no runs exist."""
+    response = client.get("/api/workflows/summary")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["running"] == 0
+    assert data["completed"] == 0
+    assert data["failed"] == 0
+    assert data["pending"] == 0
+    assert data["cancelled"] == 0
+
+
+def test_get_workflows_summary_with_data(client: TestClient, test_db: Path):
+    """Test GET /api/workflows/summary returns correct counts."""
+    insert_run(test_db, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_run(test_db, "run-2", "wf1", "running", "2026-04-17T12:01:00Z")
+    insert_run(test_db, "run-3", "wf1", "completed", "2026-04-17T12:02:00Z")
+    insert_run(test_db, "run-4", "wf1", "failed", "2026-04-17T12:03:00Z")
+    insert_run(test_db, "run-5", "wf1", "pending", "2026-04-17T12:04:00Z")
+    insert_run(test_db, "run-6", "wf1", "cancelled", "2026-04-17T12:05:00Z")
+
+    response = client.get("/api/workflows/summary")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["running"] == 2
+    assert data["completed"] == 1
+    assert data["failed"] == 1
+    assert data["pending"] == 1
+    assert data["cancelled"] == 1
+
+
+def test_get_workflows_name_filter(client: TestClient, test_db: Path):
+    """Test GET /api/workflows?name=X filters by workflow name."""
+    insert_run(test_db, "run-1", "data-pipeline", "running", "2026-04-17T12:00:00Z")
+    insert_run(test_db, "run-2", "ml-training", "running", "2026-04-17T12:01:00Z")
+    insert_run(test_db, "run-3", "data-export", "completed", "2026-04-17T12:02:00Z")
+
+    response = client.get("/api/workflows?name=data")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    assert len(data["items"]) == 2
+    workflow_names = [item["workflow_name"] for item in data["items"]]
+    assert "data-pipeline" in workflow_names
+    assert "data-export" in workflow_names
+
+
+def test_get_workflows_date_range_filter(client: TestClient, test_db: Path):
+    """Test GET /api/workflows with date range filters."""
+    insert_run(test_db, "run-1", "wf1", "running", "2026-04-17T10:00:00Z")
+    insert_run(test_db, "run-2", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_run(test_db, "run-3", "wf1", "running", "2026-04-17T14:00:00Z")
+    insert_run(test_db, "run-4", "wf1", "running", "2026-04-17T16:00:00Z")
+
+    response = client.get("/api/workflows?started_after=2026-04-17T11:00:00Z&started_before=2026-04-17T15:00:00Z")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    run_ids = [item["id"] for item in data["items"]]
+    assert "run-2" in run_ids
+    assert "run-3" in run_ids

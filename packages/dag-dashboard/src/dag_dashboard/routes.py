@@ -7,8 +7,8 @@ from typing import Any, AsyncIterator, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from .models import SortBy, RunStatus
-from .queries import get_run, list_runs, get_node, list_nodes
+from .models import SortBy, RunStatus, StatusSummary
+from .queries import get_run, list_runs, get_node, list_nodes, get_status_counts
 
 router = APIRouter(prefix="/api")
 
@@ -19,6 +19,14 @@ def get_db_path(request: Request) -> Path:
     return db_dir / "dashboard.db"
 
 
+@router.get("/workflows/summary")
+async def get_workflows_summary(request: Request) -> StatusSummary:
+    """Get status summary counts for dashboard."""
+    db_path = get_db_path(request)
+    counts = get_status_counts(db_path)
+    return StatusSummary(**counts)
+
+
 @router.get("/workflows")
 async def get_workflows(
     request: Request,
@@ -26,6 +34,9 @@ async def get_workflows(
     offset: int = Query(default=0, ge=0),
     status: Optional[RunStatus] = None,
     sort_by: SortBy = Query(default=SortBy.STARTED_AT),
+    name: Optional[str] = None,
+    started_after: Optional[str] = None,
+    started_before: Optional[str] = None,
 ) -> Dict[str, Any]:
     """List workflow runs with pagination and filtering."""
     db_path = get_db_path(request)
@@ -35,6 +46,9 @@ async def get_workflows(
         offset=offset,
         status=status,
         sort_by=sort_by,
+        name=name,
+        started_after=started_after,
+        started_before=started_before,
     )
     return result
 
