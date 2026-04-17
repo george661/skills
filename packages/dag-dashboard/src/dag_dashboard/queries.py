@@ -1,10 +1,24 @@
 """Database query helpers with pagination and filtering."""
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .models import SortBy, RunStatus
+
+
+# JSON columns that need deserialization when reading from SQLite
+JSON_COLUMNS = {"inputs", "outputs", "metadata"}
+
+
+def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    """Convert sqlite3.Row to dict, deserializing JSON columns."""
+    d = dict(row)
+    for col in JSON_COLUMNS:
+        if col in d and d[col] is not None:
+            d[col] = json.loads(d[col])
+    return d
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
@@ -26,7 +40,6 @@ def insert_run(
 ) -> str:
     """Insert a new workflow run."""
     # Validate workflow_name at query level (defense in depth)
-    import re
     if not re.match(r"^[a-zA-Z0-9-]+$", workflow_name):
         raise ValueError("workflow_name must contain only alphanumeric characters and hyphens")
     
@@ -93,7 +106,7 @@ def get_run(db_path: Path, run_id: str) -> Optional[Dict[str, Any]]:
             (run_id,)
         )
         row = cursor.fetchone()
-        return dict(row) if row else None
+        return _row_to_dict(row) if row else None
     finally:
         conn.close()
 
@@ -147,7 +160,7 @@ def list_runs(
             LIMIT ? OFFSET ?
         """
         cursor = conn.execute(items_query, params + [limit, offset])
-        items = [dict(row) for row in cursor.fetchall()]
+        items = [_row_to_dict(row) for row in cursor.fetchall()]
         
         return {
             "items": items,
@@ -231,7 +244,7 @@ def get_node(db_path: Path, node_id: str) -> Optional[Dict[str, Any]]:
             (node_id,)
         )
         row = cursor.fetchone()
-        return dict(row) if row else None
+        return _row_to_dict(row) if row else None
     finally:
         conn.close()
 
@@ -244,7 +257,7 @@ def list_nodes(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
             "SELECT * FROM node_executions WHERE run_id = ? ORDER BY started_at",
             (run_id,)
         )
-        return [dict(row) for row in cursor.fetchall()]
+        return [_row_to_dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
 
@@ -281,7 +294,7 @@ def get_chat_messages(db_path: Path, execution_id: str) -> List[Dict[str, Any]]:
             "SELECT * FROM chat_messages WHERE execution_id = ? ORDER BY created_at",
             (execution_id,)
         )
-        return [dict(row) for row in cursor.fetchall()]
+        return [_row_to_dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
 
@@ -319,7 +332,7 @@ def get_gate_decisions(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
             "SELECT * FROM gate_decisions WHERE run_id = ? ORDER BY decided_at",
             (run_id,)
         )
-        return [dict(row) for row in cursor.fetchall()]
+        return [_row_to_dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
 
@@ -357,6 +370,6 @@ def get_artifacts(db_path: Path, execution_id: str) -> List[Dict[str, Any]]:
             "SELECT * FROM artifacts WHERE execution_id = ? ORDER BY created_at",
             (execution_id,)
         )
-        return [dict(row) for row in cursor.fetchall()]
+        return [_row_to_dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()

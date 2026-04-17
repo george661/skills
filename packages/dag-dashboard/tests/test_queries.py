@@ -59,7 +59,7 @@ def test_insert_run_and_get_run_roundtrip(db_path: Path):
     assert run["id"] == "run-123"
     assert run["workflow_name"] == "test-workflow"
     assert run["status"] == "running"
-    assert run["inputs"] == '{"key": "value"}'
+    assert run["inputs"] == {"key": "value"}
 
 
 def test_update_run_status(db_path: Path):
@@ -83,7 +83,7 @@ def test_update_run_status(db_path: Path):
     run = get_run(db_path, "run-123")
     assert run["status"] == "completed"
     assert run["finished_at"] == "2026-04-17T12:05:00Z"
-    assert run["outputs"] == '{"result": "success"}'
+    assert run["outputs"] == {"result": "success"}
 
 
 def test_list_runs_pagination(db_path: Path):

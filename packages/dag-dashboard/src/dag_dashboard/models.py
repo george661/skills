@@ -1,4 +1,5 @@
 """Pydantic models for API responses and validation."""
+import re
 from enum import Enum
 from typing import Any, Dict, Generic, List, Optional, TypeVar
 
@@ -23,6 +24,8 @@ class RunStatus(str, Enum):
 
 class WorkflowRunResponse(BaseModel):
     """Response model for workflow run data."""
+    model_config = {"extra": "forbid"}
+
     id: str
     workflow_name: str
     status: str
@@ -36,7 +39,6 @@ class WorkflowRunResponse(BaseModel):
     @classmethod
     def validate_workflow_name(cls, v: str) -> str:
         """Validate workflow_name is alphanumeric + hyphens only."""
-        import re
         if not re.match(r"^[a-zA-Z0-9-]+$", v):
             raise ValueError("workflow_name must contain only alphanumeric characters and hyphens")
         return v
@@ -44,6 +46,8 @@ class WorkflowRunResponse(BaseModel):
 
 class NodeExecutionResponse(BaseModel):
     """Response model for node execution data."""
+    model_config = {"extra": "forbid"}
+
     id: str
     run_id: str
     node_name: str
@@ -60,6 +64,8 @@ T = TypeVar("T")
 
 class PaginatedResponse(BaseModel, Generic[T]):
     """Generic paginated response wrapper."""
+    model_config = {"extra": "forbid"}
+
     items: List[T]
     total: int
     limit: int
@@ -68,6 +74,8 @@ class PaginatedResponse(BaseModel, Generic[T]):
 
 class ListParams(BaseModel):
     """Query parameters for list operations."""
+    model_config = {"extra": "forbid"}
+
     limit: int = Field(default=50, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
     status: Optional[RunStatus] = None

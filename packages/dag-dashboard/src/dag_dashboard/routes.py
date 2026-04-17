@@ -1,10 +1,10 @@
 """FastAPI routes for workflow dashboard."""
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from .models import SortBy, RunStatus, ListParams
+from .models import SortBy, RunStatus
 from .queries import get_run, list_runs, get_node, list_nodes
 
 
