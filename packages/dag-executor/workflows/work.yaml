@@ -5,12 +5,48 @@ config:
   worktree: true
   labels:
     on_failure: outcome:failed
+  on_exit:
+    - id: worktree_cleanup
+      type: bash
+      script: |
+        cd $PROJECT_ROOT/$repo 2>/dev/null || exit 0
+        git worktree remove $PROJECT_ROOT/worktrees/$repo-$issue_key --force 2>/dev/null || true
+        git push origin --delete $branch 2>/dev/null || true
+      run_on: [completed, failed]
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command work"
+      run_on: [completed, failed]
 
 inputs:
   issue_key:
     type: string
     required: true
     pattern: "^[A-Z]+-\\d+$"
+
+state:
+  issue_type:
+    type: string
+    reducer: overwrite
+  repo:
+    type: string
+    reducer: overwrite
+  pr_number:
+    type: integer
+    reducer: overwrite
+  verdict:
+    type: string
+    reducer: overwrite
+  ci_success:
+    type: boolean
+    reducer: overwrite
+  branch:
+    type: string
+    reducer: overwrite
+  plan_approved:
+    type: boolean
+    reducer: overwrite
+    default: false
 
 nodes:
   # Phase 0: Resume Check
@@ -57,6 +93,8 @@ nodes:
     type: prompt
     depends_on:
       - repo_context
+    writes:
+      - issue_type
     prompt: |
       Assess prior work for issue $issue_key.
       Read Jira labels and status, detect prior work signals
@@ -76,7 +114,9 @@ nodes:
     type: gate
     depends_on:
       - prior_work_assessment
-    condition: "$prior_work_assessment.issue_type == \"Bug\""
+    reads:
+      - issue_type
+    condition: "$issue_type == \"Bug\""
     on_failure: continue
 
   # Phase 0.7b: Bug Test Verification (only runs if gate passed)
@@ -120,6 +160,18 @@ nodes:
     dispatch: inline
     output_format: json
 
+  # Phase 1.7: Plan Approval Gate
+  - id: plan_approval
+    name: Plan Approval Gate
+    type: interrupt
+    message: Implementation plan ready. Approve to proceed with implementation.
+    resume_key: plan_approved
+    channels: [terminal]
+    depends_on:
+      - plan_review
+    writes:
+      - plan_approved
+
   # Phase 2: Implementation
   - id: implement
     name: Implement Solution
@@ -128,7 +180,11 @@ nodes:
     args:
       - "$issue_key"
     depends_on:
-      - plan_review
+      - plan_approval
+    writes:
+      - repo
+      - pr_number
+      - branch
     dispatch: local
     checkpoint: true
     label: "step:implementing"
@@ -140,10 +196,13 @@ nodes:
     type: command
     command: review
     args:
-      - "$implement.repo"
-      - "$implement.pr_number"
+      - "$repo"
+      - "$pr_number"
     depends_on:
       - implement
+    reads:
+      - repo
+      - pr_number
     dispatch: inline
     label: "step:reviewing"
     output_format: json
@@ -157,6 +216,13 @@ nodes:
     type: bash
     depends_on:
       - code_review
+    writes:
+      - verdict
+    edges:
+      - target: fix_pr
+        condition: "$verdict == 'REQUIRES_REWORK'"
+      - target: ci_gate
+        default: true
     script: |
       issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
         "{\"issue_key\": \"$issue_key\", \"fields\": \"comment\"}")
@@ -167,29 +233,20 @@ nodes:
         .body.content[].content[]?.text' | head -1
     output_format: json
 
-  # Phase 4 gate: Rework Required
-  # on_failure: skip_downstream skips fix_pr and re_review when
-  # the review was approved. ci_gate still runs because it depends
-  # on both re_review and review_verdict with trigger_rule: one_success.
-  - id: rework_gate
-    name: Rework Required Gate
-    type: gate
-    depends_on:
-      - review_verdict
-    condition: "$review_verdict.verdict == \"REQUIRES_REWORK\""
-    on_failure: skip_downstream
-
-  # Phase 4: Fix PR Issues
+  # Phase 4: Fix PR Issues (conditional via edges on review_verdict)
   - id: fix_pr
     name: Fix PR Issues
     type: command
     command: fix-pr
     args:
       - "$issue_key"
-      - "$implement.repo"
-      - "$implement.pr_number"
+      - "$repo"
+      - "$pr_number"
     depends_on:
-      - rework_gate
+      - review_verdict
+    reads:
+      - repo
+      - pr_number
     dispatch: local
     label: "step:fixing-pr"
     retry:
@@ -203,10 +260,13 @@ nodes:
     type: command
     command: review
     args:
-      - "$implement.repo"
-      - "$implement.pr_number"
+      - "$repo"
+      - "$pr_number"
     depends_on:
       - fix_pr
+    reads:
+      - repo
+      - pr_number
     dispatch: inline
     output_format: json
 
@@ -217,11 +277,15 @@ nodes:
     depends_on:
       - re_review
       - review_verdict
+    reads:
+      - repo
+    writes:
+      - ci_success
     trigger_rule: one_success
     label: "step:awaiting-ci"
     script: |
       ci_result=$(npx tsx ~/.claude/skills/fly/wait-for-ci.ts \
-        "{\"pipeline\": \"$implement.repo\", \"timeout_seconds\": 900}")
+        "{\"pipeline\": \"$repo\", \"timeout_seconds\": 900}")
       echo "$ci_result"
     output_format: json
 
@@ -231,7 +295,9 @@ nodes:
     type: gate
     depends_on:
       - ci_gate
-    condition: "$ci_gate.ci_success == true"
+    reads:
+      - ci_success
+    condition: "$ci_success == true"
     on_failure: stop
 
   # Phase 6: Merge
@@ -266,9 +332,12 @@ nodes:
     type: bash
     depends_on:
       - merge
+    reads:
+      - repo
+      - pr_number
     script: |
       pr=$(npx tsx ~/.claude/skills/vcs/get_pull_request.ts \
-        "{\"repo\": \"$implement.repo\", \"pr_number\": $implement.pr_number}")
+        "{\"repo\": \"$repo\", \"pr_number\": $pr_number}")
       state=$(echo "$pr" | jq -r '.state')
       echo "{\"state\": \"$state\"}"
     output_format: json
@@ -294,9 +363,12 @@ nodes:
     type: bash
     depends_on:
       - summary
+    reads:
+      - repo
+      - branch
     script: |
-      cd $PROJECT_ROOT/$implement.repo
-      git worktree remove $PROJECT_ROOT/worktrees/$implement.repo-$issue_key --force 2>/dev/null || true
+      cd $PROJECT_ROOT/$repo
+      git worktree remove $PROJECT_ROOT/worktrees/$repo-$issue_key --force 2>/dev/null || true
       git push origin --delete $branch 2>/dev/null || true
       git checkout main && git pull origin main
 
