@@ -92,16 +92,23 @@ def init_db(db_path: Path) -> None:
     """Initialize database with schema and security settings."""
     # Connect and create schema
     conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    # Enable WAL mode for concurrent reads
-    cursor.execute("PRAGMA journal_mode=WAL")
-    
-    # Execute schema
-    cursor.executescript(SCHEMA)
-    
-    conn.commit()
-    conn.close()
-    
+    try:
+        cursor = conn.cursor()
+
+        # Enable WAL mode for concurrent reads (persistent)
+        cursor.execute("PRAGMA journal_mode=WAL")
+
+        # Enable foreign key constraints (must be set on EACH connection)
+        # Note: Unlike WAL mode, this pragma is not persistent and must be
+        # reapplied when opening the database in production code.
+        cursor.execute("PRAGMA foreign_keys=ON")
+
+        # Execute schema
+        cursor.executescript(SCHEMA)
+
+        conn.commit()
+    finally:
+        conn.close()
+
     # Set file permissions to 0600 (user read/write only)
     os.chmod(db_path, 0o600)
