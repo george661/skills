@@ -224,3 +224,95 @@ class TestVariableSubstitution:
         assert "$repo" in node_text or "$pr_number" in node_text, (
             "fetch_pr should reference $repo or $pr_number"
         )
+
+
+# Import additional classes for integration tests
+from dag_executor.schema import NodeResult, NodeStatus, TriggerRule
+from tests.conftest import MockRunnerFactory, WorkflowTestHarness
+
+
+class TestReviewWorkflowNodeOrdering:
+    """Integration test: Verify review workflow node ordering end-to-end."""
+
+    def test_phase_0_to_phase_2_ordering(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Phase 0-2: branch_sync → parse_input → fetch_pr → find_jira_issue → local_validation."""
+        branch_sync = nodes_by_id["branch_sync"]
+        parse_input = nodes_by_id["parse_input"]
+        fetch_pr = nodes_by_id["fetch_pr"]
+        find_jira = nodes_by_id["find_jira_issue"]
+        local_val = nodes_by_id["local_validation"]
+
+        # branch_sync → parse_input
+        assert "branch_sync" in parse_input.depends_on
+
+        # parse_input → fetch_pr
+        assert "parse_input" in fetch_pr.depends_on
+
+        # fetch_pr → find_jira_issue
+        assert "fetch_pr" in find_jira.depends_on
+
+        # find_jira_issue → local_validation
+        assert "find_jira_issue" in local_val.depends_on
+
+    def test_phase_3_to_verdict_flow(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """Phase 3+: code_quality → parallel (requirements_coverage, test_adequacy) → comments → summaries."""
+        code_quality = nodes_by_id["code_quality"]
+        req_cov = nodes_by_id["requirements_coverage"]
+        test_adeq = nodes_by_id["test_adequacy"]
+        inline_comments = nodes_by_id["post_inline_comments"]
+        pr_summary = nodes_by_id["post_pr_summary"]
+        jira_summary = nodes_by_id["post_jira_summary"]
+
+        # code_quality → requirements_coverage + test_adequacy (parallel)
+        assert "code_quality" in req_cov.depends_on
+        assert "code_quality" in test_adeq.depends_on
+
+        # requirements_coverage + test_adequacy → post_inline_comments
+        assert "requirements_coverage" in inline_comments.depends_on
+        assert "test_adequacy" in inline_comments.depends_on
+
+        # post_inline_comments → post_pr_summary
+        assert "post_inline_comments" in pr_summary.depends_on
+
+        # post_pr_summary → post_jira_summary
+        assert "post_pr_summary" in jira_summary.depends_on
+
+
+class TestJiraLookupFailureContinuePath:
+    """Integration test: Jira lookup failure does not block review."""
+
+    def test_find_jira_issue_has_continue_on_failure(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """find_jira_issue uses on_failure: continue (soft continue)."""
+        find_jira = nodes_by_id["find_jira_issue"]
+        assert find_jira.on_failure == OnFailure.CONTINUE
+
+    def test_code_quality_uses_all_done_trigger(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """code_quality uses all_done trigger to run even if find_jira_issue fails."""
+        code_quality = nodes_by_id["code_quality"]
+
+        # code_quality should use all_done trigger rule
+        assert code_quality.trigger_rule == TriggerRule.ALL_DONE
+
+        # code_quality should depend on local_validation (not find_jira_issue)
+        assert "local_validation" in code_quality.depends_on
+
+    def test_requirements_coverage_handles_missing_jira(
+        self, workflow: WorkflowDef, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """requirements_coverage depends on find_jira_issue with all_done trigger."""
+        req_cov = nodes_by_id["requirements_coverage"]
+
+        # requirements_coverage should depend on both code_quality and find_jira_issue
+        assert "code_quality" in req_cov.depends_on
+        assert "find_jira_issue" in req_cov.depends_on
+
+        # requirements_coverage should use all_done trigger to run even if find_jira fails
+        assert req_cov.trigger_rule == TriggerRule.ALL_DONE
