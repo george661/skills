@@ -1,6 +1,6 @@
 """Tests for read_state filtering in validator and executor."""
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 from dag_executor.schema import (
     NodeDef,
     NodeStatus,

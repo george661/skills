@@ -1,7 +1,6 @@
 """Tests for checkpoint namespacing for sub-DAGs."""
-import pytest
 from pathlib import Path
-from dag_executor.checkpoint import CheckpointStore, CheckpointMetadata, NodeCheckpoint
+from dag_executor.checkpoint import CheckpointStore, CheckpointMetadata
 
 
 class TestCheckpointNamespacing:

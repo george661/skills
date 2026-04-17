@@ -1,8 +1,8 @@
 """Tests for command runner."""
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 import pytest
 
-from dag_executor.schema import NodeDef, NodeStatus, WorkflowDef, WorkflowConfig, NodeResult
+from dag_executor.schema import NodeDef, NodeStatus, WorkflowDef, NodeResult
 from dag_executor.runners.base import RunnerContext
 from dag_executor.runners.command import CommandRunner, MAX_RECURSION_DEPTH
 

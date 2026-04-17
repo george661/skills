@@ -4,14 +4,12 @@ Exit hooks are guaranteed cleanup actions that execute on workflow completion
 or failure, providing access to workflow state and node outputs for cleanup
 and notification tasks.
 """
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List
 
 import pytest
 
 from dag_executor.events import EventType
-from dag_executor.executor import WorkflowResult
 from dag_executor.runners.base import BaseRunner, RunnerContext
 from dag_executor.schema import (
     ExitHookDef,

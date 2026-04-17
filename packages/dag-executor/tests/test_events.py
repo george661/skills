@@ -3,16 +3,15 @@ import json
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import List
 
-import pytest
 from dag_executor.events import (
     EventEmitter,
     EventType,
     StreamMode,
     WorkflowEvent,
 )
-from dag_executor.schema import NodeStatus, WorkflowStatus
+from dag_executor.schema import NodeStatus
 
 
 class TestEventType:
