@@ -13,9 +13,8 @@ import yaml
 import pytest
 
 # Known gaps — provider-specific paths that haven't been migrated yet
-KNOWN_GAPS = [
-    "skills/fly/wait-for-ci.ts",  # work.yaml:287 — CI router doesn't cover this yet
-]
+# All skills have been migrated to unified routers as of GW-5050
+KNOWN_GAPS: List[str] = []
 
 # Unified skill path prefixes (provider-agnostic)
 UNIFIED_PREFIXES = [
@@ -130,16 +129,20 @@ def test_workflow_uses_unified_skill_paths(workflow_name):
 
 def test_known_gaps_exist():
     """Verify KNOWN_GAPS are actually present in the workflows."""
+    # If KNOWN_GAPS is empty, all migrations are complete — test passes
+    if not KNOWN_GAPS:
+        pytest.skip("All provider-specific skills have been migrated to unified routers")
+
     all_skill_paths = set()
-    
+
     for workflow_name in WORKFLOW_NAMES:
         workflow = load_workflow(workflow_name)
         scripts = extract_bash_scripts(workflow)
         skill_paths = find_skill_paths(scripts)
         all_skill_paths.update(skill_paths)
-    
+
     found_gaps = [gap for gap in KNOWN_GAPS if gap in all_skill_paths]
-    
+
     # At least one known gap should exist (otherwise test expectation is stale)
     assert found_gaps, (
         f"KNOWN_GAPS are documented but not found in workflows. "
