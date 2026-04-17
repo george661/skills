@@ -69,6 +69,9 @@ const SKILL_MAP: Record<string, Partial<Record<CIProvider, SkillMapping>>> = {
   },
 };
 
+// Export wait_for_ci mapping for use by skills/ci/wait_for_ci.ts
+export const WAIT_FOR_CI_SKILL_MAP: Partial<Record<CIProvider, SkillMapping>> = SKILL_MAP.wait_for_ci;
+
 // ---------------------------------------------------------------------------
 // Provider → default skill directory mapping (fallback for unmapped skills)
 // ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@ import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { resolveCIProvider, translateParams } from './ci-router.js';
+import { resolveCIProvider, translateParams, WAIT_FOR_CI_SKILL_MAP } from './ci-router.js';
 import type { CIProvider } from './ci-router.js';
 
 const DEBUG = !!process.env.CI_DEBUG;
@@ -60,19 +60,13 @@ interface BuildResult {
   output: Record<string, TaskOutput>;
 }
 
-const SKILL_MAP: Record<CIProvider, { dir: string; name: string }> = {
-  concourse: { dir: 'fly', name: 'wait-for-ci' },
-  github_actions: { dir: 'github-actions', name: 'wait_for_workflow_run' },
-  circleci: { dir: 'circleci', name: 'wait_for_build' },
-};
-
 async function execute(input: Input): Promise<BuildResult> {
   // 1. Resolve provider
   const provider = resolveCIProvider(input.provider);
   debug('resolved provider:', provider);
 
-  // 2. Resolve backend skill path
-  const mapping = SKILL_MAP[provider];
+  // 2. Resolve backend skill path from ci-router mapping
+  const mapping = WAIT_FOR_CI_SKILL_MAP[provider];
   if (!mapping) {
     throw new Error(`Unsupported CI provider: ${provider}`);
   }

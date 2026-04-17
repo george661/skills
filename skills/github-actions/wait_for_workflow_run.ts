@@ -17,7 +17,7 @@
  *     }
  *   }
  */
-import { execSync } from 'child_process';
+import { ghActionsRequest } from './github-actions-client.js';
 
 interface Input {
   owner?: string;
@@ -61,14 +61,17 @@ async function execute(input: Input): Promise<BuildResult> {
   // If run_id not provided, find the latest run for the workflow
   if (!runId) {
     const workflow = input.workflow ?? 'ci.yml';
-    const listCmd = `gh run list --repo ${owner}/${repo} --workflow ${workflow} --limit 1 --json databaseId`;
     try {
-      const listOutput = execSync(listCmd, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-      const runs = JSON.parse(listOutput);
-      if (runs.length === 0) {
+      // Use REST API to list workflow runs
+      // GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs
+      const runs = await ghActionsRequest<{ workflow_runs: Array<{ id: number }> }>(
+        'GET',
+        `/repos/${owner}/${repo}/actions/workflows/${workflow}/runs?per_page=1`
+      );
+      if (runs.workflow_runs.length === 0) {
         throw new Error(`No workflow runs found for ${workflow}`);
       }
-      runId = runs[0].databaseId;
+      runId = runs.workflow_runs[0].id;
     } catch (err) {
       throw new Error(`Failed to find workflow run: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -78,18 +81,21 @@ async function execute(input: Input): Promise<BuildResult> {
   const TERMINAL = new Set(['completed', 'cancelled', 'failure', 'success', 'skipped']);
 
   while (Date.now() < deadline) {
-    const statusCmd = `gh run view ${runId} --repo ${owner}/${repo} --json status,conclusion,url`;
-    let statusOutput: string;
+    let runData: { status: string; conclusion: string | null; html_url: string };
     try {
-      statusOutput = execSync(statusCmd, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      // Use REST API to get workflow run status
+      // GET /repos/{owner}/{repo}/actions/runs/{run_id}
+      runData = await ghActionsRequest<{ status: string; conclusion: string | null; html_url: string }>(
+        'GET',
+        `/repos/${owner}/${repo}/actions/runs/${runId}`
+      );
     } catch (err) {
       throw new Error(`Failed to get workflow run status: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    const runData = JSON.parse(statusOutput);
     const status = runData.status ?? 'unknown';
     const conclusion = runData.conclusion ?? 'unknown';
-    const url = runData.url ?? `https://github.com/${owner}/${repo}/actions/runs/${runId}`;
+    const url = runData.html_url ?? `https://github.com/${owner}/${repo}/actions/runs/${runId}`;
 
     if (TERMINAL.has(status)) {
       const success = conclusion === 'success';
