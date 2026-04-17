@@ -6,6 +6,7 @@ from typing import AsyncIterator, Dict
 from fastapi import FastAPI
 
 from .database import ensure_dir, init_db
+from .routes import router
 
 
 @asynccontextmanager
@@ -26,13 +27,16 @@ def create_app(db_dir: Path) -> FastAPI:
         version="0.1.0",
         lifespan=lifespan
     )
-    
-    # Store db_dir in app state for lifespan access
+
+    # Store db_dir in app state for lifespan and route access
     app.state.db_dir = db_dir
-    
+
+    # Register routes
+    app.include_router(router)
+
     @app.get("/health")
     async def health() -> Dict[str, str]:
         """Health check endpoint."""
         return {"status": "ok"}
-    
+
     return app
