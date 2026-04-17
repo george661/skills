@@ -14,8 +14,6 @@ Future test scenarios:
 """
 from pathlib import Path
 
-import pytest
-
 from dag_executor.parser import load_workflow
 
 
@@ -24,17 +22,12 @@ WORKFLOW_PATH = str(
 )
 
 
-@pytest.fixture
-def workflow():
-    """Load implement.yaml workflow."""
-    return load_workflow(WORKFLOW_PATH)
-
-
 class TestWorkflowLoadsWithChannels:
     """Basic smoke test: workflow parses with channel declarations."""
 
-    def test_workflow_parses_with_channels(self, workflow):
+    def test_workflow_parses_with_channels(self):
         """Workflow with channels parses without errors."""
+        workflow = load_workflow(WORKFLOW_PATH)
         assert workflow.state is not None
         assert len(workflow.state) == 6  # 6 channels declared
         assert "plan" in workflow.state

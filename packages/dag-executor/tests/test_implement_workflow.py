@@ -60,13 +60,13 @@ class TestWorkflowParsing:
     def test_outputs_defined(self, workflow: WorkflowDef) -> None:
         """Workflow outputs reference correct nodes and fields matching work.yaml contract."""
         # Critical: work.yaml uses $implement.repo, $implement.pr_number (no .output.)
-        # After channel conversion, outputs reference channel fields
+        # Outputs use flat field names; the node outputs both channel key and flat keys
         assert workflow.outputs["repo"].node == "push_and_create_pr"
-        assert workflow.outputs["repo"].field == "pr_info.repo"
+        assert workflow.outputs["repo"].field == "repo"
         assert workflow.outputs["pr_number"].node == "push_and_create_pr"
-        assert workflow.outputs["pr_number"].field == "pr_info.pr_number"
+        assert workflow.outputs["pr_number"].field == "pr_number"
         assert workflow.outputs["branch"].node == "push_and_create_pr"
-        assert workflow.outputs["branch"].field == "pr_info.branch"
+        assert workflow.outputs["branch"].field == "branch"
 
     def test_labels_config(self, workflow: WorkflowDef) -> None:
         """Workflow has labels config for failure handling."""
@@ -150,10 +150,10 @@ class TestOutputContract:
     def test_output_types(self, workflow: WorkflowDef) -> None:
         """Outputs have correct data types."""
         # repo and branch are strings, pr_number is number
-        # After channel conversion, outputs reference channel fields
-        assert workflow.outputs["repo"].field == "pr_info.repo"
-        assert workflow.outputs["pr_number"].field == "pr_info.pr_number"
-        assert workflow.outputs["branch"].field == "pr_info.branch"
+        # Outputs use flat field names; the node outputs both channel key and flat keys
+        assert workflow.outputs["repo"].field == "repo"
+        assert workflow.outputs["pr_number"].field == "pr_number"
+        assert workflow.outputs["branch"].field == "branch"
 
     def test_all_outputs_from_same_node(self, workflow: WorkflowDef) -> None:
         """All outputs come from push_and_create_pr node."""

@@ -211,8 +211,9 @@ nodes:
       # Extract PR number from result
       pr_number=$(echo "$pr_result" | jq -r '.pr_number // .number // 0')
 
-      # Output structured data for parent DAG - wrap in pr_info channel key
-      echo "{\"pr_info\": {\"repo\": \"$repo_name\", \"pr_number\": $pr_number, \"branch\": \"$branch\"}}"
+      # Output structured data for parent DAG - include both channel key and flat keys for output extraction
+      # The executor auto-writes pr_info to the channel, and flat keys are available for outputs section
+      echo "{\"pr_info\": {\"repo\": \"$repo_name\", \"pr_number\": $pr_number, \"branch\": \"$branch\"}, \"repo\": \"$repo_name\", \"pr_number\": $pr_number, \"branch\": \"$branch\"}"
     output_format: json
 
   # Phase 10: Update Step Label to Awaiting CI
@@ -225,18 +226,18 @@ nodes:
       - pr_info
     script: |
       issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"labels\"}")
-      # Read from pr_info channel instead of node reference
-      pr_info_str=$(echo "$pr_info" | jq -r '.repo + "/" + (.pr_number | tostring)')
+      # Use direct channel field references to get string values
+      pr_info_str="${pr_info.repo}/${pr_info.pr_number}"
       labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not) | select(startswith("pr:") | not)) + ["step:awaiting-ci", "pr:'"$pr_info_str"'"] | @json')
       npx tsx ~/.claude/skills/jira/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
 
 outputs:
   repo:
     node: push_and_create_pr
-    field: pr_info.repo
+    field: repo
   pr_number:
     node: push_and_create_pr
-    field: pr_info.pr_number
+    field: pr_number
   branch:
     node: push_and_create_pr
-    field: pr_info.branch
+    field: branch
