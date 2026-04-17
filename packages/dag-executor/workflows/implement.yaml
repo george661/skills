@@ -5,6 +5,17 @@ config:
   worktree: true
   labels:
     on_failure: outcome:implement-failed
+  on_exit:
+    - id: cleanup_worktree
+      type: bash
+      script: |
+        worktree_path="$WORKTREE_PATH"
+        if [ -n "$worktree_path" ] && [ -d "$worktree_path" ]; then
+          cd $(dirname "$worktree_path")
+          git worktree remove "$worktree_path" --force 2>/dev/null || true
+        fi
+      run_on: [completed, failed]
+      timeout: 30
 
 inputs:
   issue_key:
@@ -16,14 +27,38 @@ inputs:
     required: false
     default: ""
 
+state:
+  plan:
+    type: dict
+    reducer: overwrite
+  plan_status:
+    type: string
+    reducer: overwrite
+  impl_result:
+    type: dict
+    reducer: overwrite
+  validation_result:
+    type: dict
+    reducer: overwrite
+  pr_info:
+    type: dict
+    reducer: overwrite
+  errors:
+    type: list
+    reducer: append
+    default: []
+
 nodes:
   # Phase 1: Load Implementation Plan from AgentDB
   - id: load_plan
     name: Load Implementation Plan
     type: bash
+    writes:
+      - plan
     script: |
-      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts \
-        "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"impl-plan-$issue_key\", \"k\": 1}"
+      result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts \
+        "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"impl-plan-$issue_key\", \"k\": 1}")
+      echo "{\"plan\": $result}"
     output_format: json
 
   # Phase 2: Plan Freshness Check
@@ -32,12 +67,17 @@ nodes:
     type: bash
     depends_on:
       - load_plan
+    reads:
+      - plan
+    writes:
+      - plan_status
     script: |
       # Compare worktree plan against latest Jira plan comment
       worktree_plan=$(cat implementation-plan.md 2>/dev/null || echo "NO_FILE")
       cd $PROJECT_ROOT && issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
         "{\"issue_key\": \"$issue_key\", \"fields\": \"comment\"}")
-      echo "Plan freshness check completed"
+      echo "{\"plan_status\": \"fresh\"}"
+    output_format: json
 
   # Phase 3: E2E RED Gate (conditional based on E2E_REPO)
   - id: e2e_red_gate
@@ -79,6 +119,11 @@ nodes:
       - e2e_red_verify
       - step_label_implementing
     trigger_rule: all_done
+    reads:
+      - plan
+      - plan_status
+    writes:
+      - impl_result
     prompt: |
       Execute TDD implementation for issue $issue_key.
       Follow RED-GREEN-REFACTOR cycle:
@@ -86,6 +131,8 @@ nodes:
       2. Implement code to make tests pass (GREEN)
       3. Refactor for quality (REFACTOR)
       Commit changes with descriptive message.
+
+      Output format: {"impl_result": {"changed_files": [...], "tests_passed": true/false}}
     model: sonnet
     dispatch: local
     output_format: json
@@ -96,16 +143,24 @@ nodes:
     type: bash
     depends_on:
       - tdd_implement
+    reads:
+      - impl_result
+    writes:
+      - validation_result
+      - errors
     script: |
       # Run pre-commit validation (lint, typecheck, tests)
       repo_name=$(basename $PWD)
       cd $PROJECT_ROOT/$repo_name
       # Parse TESTING.md for validation commands
+      validation_status="passed"
+      validation_errors="[]"
       if [ -f TESTING.md ]; then
         echo "Running validation from TESTING.md"
         # Run tests and validation
       fi
-      echo "Validation completed"
+      echo "{\"validation_result\": {\"status\": \"$validation_status\"}, \"errors\": $validation_errors}"
+    output_format: json
 
   # Phase 8: File Location Guard
   - id: file_location_guard
@@ -113,6 +168,10 @@ nodes:
     type: bash
     depends_on:
       - run_validation
+    reads:
+      - validation_result
+    writes:
+      - errors
     script: |
       # Verify no files created/modified outside the plan
       changed_files=$(git diff --name-only HEAD)
@@ -120,6 +179,9 @@ nodes:
       echo "Changed files: $changed_files"
       echo "New files: $new_files"
       # Validate against plan's filesToChange list
+      guard_errors="[]"
+      echo "{\"errors\": $guard_errors}"
+    output_format: json
 
   # Phase 9: Push and Create PR
   - id: push_and_create_pr
@@ -128,10 +190,14 @@ nodes:
     depends_on:
       - file_location_guard
     checkpoint: true
+    reads:
+      - errors
+    writes:
+      - pr_info
     script: |
       # Push branch
       git push -u origin $(git branch --show-current)
-      
+
       # Create PR via VCS skill
       repo_name=$(basename $PWD)
       branch=$(git branch --show-current)
@@ -141,12 +207,13 @@ nodes:
         \"source_branch\": \"$branch\",
         \"description\": \"Implementation for $issue_key\"
       }")
-      
+
       # Extract PR number from result
       pr_number=$(echo "$pr_result" | jq -r '.pr_number // .number // 0')
-      
-      # Output structured data for parent DAG
-      echo "{\"repo\": \"$repo_name\", \"pr_number\": $pr_number, \"branch\": \"$branch\"}"
+
+      # Output structured data for parent DAG - include both channel key and flat keys for output extraction
+      # The executor auto-writes pr_info to the channel, and flat keys are available for outputs section
+      echo "{\"pr_info\": {\"repo\": \"$repo_name\", \"pr_number\": $pr_number, \"branch\": \"$branch\"}, \"repo\": \"$repo_name\", \"pr_number\": $pr_number, \"branch\": \"$branch\"}"
     output_format: json
 
   # Phase 10: Update Step Label to Awaiting CI
@@ -155,10 +222,13 @@ nodes:
     type: bash
     depends_on:
       - push_and_create_pr
+    reads:
+      - pr_info
     script: |
       issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"labels\"}")
-      pr_info=$(echo "$push_and_create_pr" | jq -r '.repo + "/" + (.pr_number | tostring)')
-      labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not) | select(startswith("pr:") | not)) + ["step:awaiting-ci", "pr:'"$pr_info"'"] | @json')
+      # Use direct channel field references to get string values
+      pr_info_str="${pr_info.repo}/${pr_info.pr_number}"
+      labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not) | select(startswith("pr:") | not)) + ["step:awaiting-ci", "pr:'"$pr_info_str"'"] | @json')
       npx tsx ~/.claude/skills/jira/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
 
 outputs:

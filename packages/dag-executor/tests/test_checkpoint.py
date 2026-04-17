@@ -3,9 +3,8 @@ import json
 import os
 from pathlib import Path
 
-import pytest
 
-from dag_executor.checkpoint import CheckpointMetadata, CheckpointStore, NodeCheckpoint
+from dag_executor.checkpoint import CheckpointMetadata, CheckpointStore
 from dag_executor.schema import NodeDef, NodeResult, NodeStatus
 
 
@@ -84,7 +83,7 @@ def test_load_returns_completed_node_outputs(
 
 def test_resume_skips_completed_nodes(checkpoint_store: CheckpointStore, tmp_path: Path):
     """Test that resume detects checkpoints and skips completed nodes."""
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import patch
     from dag_executor import execute_workflow, resume_workflow, WorkflowDef, WorkflowConfig
     from dag_executor.runners.base import BaseRunner, RunnerContext
 
@@ -126,7 +125,7 @@ def test_resume_skips_completed_nodes(checkpoint_store: CheckpointStore, tmp_pat
 
 def test_resume_restores_outputs_for_downstream(checkpoint_store: CheckpointStore, tmp_path: Path):
     """Test that restored outputs are available for downstream variable substitution."""
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import patch
     from dag_executor import execute_workflow, resume_workflow, WorkflowDef, WorkflowConfig
     from dag_executor.runners.base import BaseRunner, RunnerContext
 

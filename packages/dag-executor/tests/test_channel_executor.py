@@ -5,8 +5,6 @@ a ChannelStore for managing workflow state instead of plain dicts.
 """
 from __future__ import annotations
 
-import pytest
-from dag_executor.channels import ChannelStore, ReducerChannel
 from dag_executor.schema import (
     NodeDef,
     NodeResult,

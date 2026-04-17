@@ -9,8 +9,6 @@ import pytest
 from dag_executor.channels import ChannelConflictError
 from dag_executor.schema import (
     NodeDef,
-    NodeResult,
-    NodeStatus,
     WorkflowConfig,
     WorkflowDef,
     ChannelFieldDef,

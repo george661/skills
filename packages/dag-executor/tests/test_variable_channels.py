@@ -7,7 +7,6 @@ import pytest
 from typing import Any, Dict, Tuple
 
 from dag_executor.variables import resolve_variables, VariableResolutionError
-from dag_executor.channels import ChannelStore, LastValueChannel
 
 
 class MockChannelStore:

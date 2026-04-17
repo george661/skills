@@ -1,5 +1,4 @@
 """Unit tests for InterruptRunner."""
-import pytest
 
 from dag_executor.schema import NodeDef, NodeStatus
 from dag_executor.runners.interrupt import InterruptRunner

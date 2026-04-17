@@ -4,7 +4,6 @@ from pathlib import Path
 
 from dag_executor.contracts import ContractValidator
 from dag_executor.parser import load_workflow
-from dag_executor.validator import ValidationIssue
 
 
 @pytest.fixture

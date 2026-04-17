@@ -3,9 +3,6 @@
 Covers all 9 check methods with positive and negative test cases.
 """
 from pathlib import Path
-from typing import List
-import pytest
-import re
 from dag_executor.schema import (
     NodeDef,
     WorkflowDef,
@@ -18,7 +15,7 @@ from dag_executor.schema import (
     ReducerStrategy,
     ModelTier,
 )
-from dag_executor.validator import WorkflowValidator, ValidationResult, ValidationIssue
+from dag_executor.validator import WorkflowValidator
 
 
 # ------------------------------------------------------------------

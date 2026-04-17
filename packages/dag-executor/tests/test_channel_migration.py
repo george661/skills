@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 from dag_executor.channels import ChannelStore
 from dag_executor.schema import (
-    NodeDef,
     NodeResult,
     NodeStatus,
     WorkflowDef,

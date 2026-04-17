@@ -2,7 +2,6 @@
 from unittest.mock import Mock
 from datetime import datetime
 
-import pytest
 
 from dag_executor import LabelsConfig
 from dag_executor.events import EventType, WorkflowEvent

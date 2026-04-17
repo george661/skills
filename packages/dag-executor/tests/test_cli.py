@@ -1,6 +1,6 @@
 """Tests for CLI entry point."""
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 from dag_executor.cli import parse_args, main, run_dry_run, run_visualize, run_list, run_info
@@ -353,7 +353,6 @@ class TestRunList:
     def test_list_valid_directory(self, tmp_path: Path, capsys) -> None:
         """List valid workflows in a directory."""
         # Create test workflow YAMLs
-        from dag_executor.schema import InputDef
 
         wf1 = tmp_path / "workflow1.yaml"
         wf1.write_text("""
@@ -387,7 +386,6 @@ nodes:
     script: echo test
 """)
 
-        from dag_executor.cli import run_list
         run_list(str(tmp_path))
 
         captured = capsys.readouterr()
@@ -400,7 +398,6 @@ nodes:
 
     def test_list_empty_directory(self, tmp_path: Path, capsys) -> None:
         """List empty directory shows no workflows found message."""
-        from dag_executor.cli import run_list
         run_list(str(tmp_path))
 
         captured = capsys.readouterr()
@@ -431,7 +428,6 @@ nodes:
     script: echo test2
 """)
 
-        from dag_executor.cli import run_list
         run_list(str(tmp_path), json_output=True)
 
         captured = capsys.readouterr()
@@ -472,7 +468,6 @@ nodes:
         random = tmp_path / "random.yaml"
         random.write_text("some: random\ndata: here")
 
-        from dag_executor.cli import run_list
         run_list(str(tmp_path))
 
         captured = capsys.readouterr()
@@ -482,7 +477,6 @@ nodes:
 
     def test_list_invalid_directory(self, capsys) -> None:
         """List with non-existent directory prints error and exits."""
-        from dag_executor.cli import run_list
         with pytest.raises(SystemExit) as exc_info:
             run_list("/nonexistent/directory")
 
@@ -532,7 +526,6 @@ outputs:
     field: output
 """)
 
-        from dag_executor.cli import run_info
         run_info(str(wf))
 
         captured = capsys.readouterr()
@@ -583,7 +576,6 @@ nodes:
     script: echo A
 """)
 
-        from dag_executor.cli import run_info
         run_info(str(wf))
 
         captured = capsys.readouterr()
@@ -604,7 +596,6 @@ nodes:
     script: echo A
 """)
 
-        from dag_executor.cli import run_info
         run_info(str(wf))
 
         captured = capsys.readouterr()

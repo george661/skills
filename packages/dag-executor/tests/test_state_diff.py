@@ -1,10 +1,10 @@
 """Tests for state diff capture in NODE_COMPLETED events."""
 import asyncio
 import pytest
-from typing import Any, Dict, List, Tuple
+from typing import List, Tuple
 from dag_executor.executor import WorkflowExecutor
 from dag_executor.parser import load_workflow_from_string
-from dag_executor.schema import NodeStatus, WorkflowStatus
+from dag_executor.schema import WorkflowStatus
 from dag_executor.events import WorkflowEvent, EventType, EventEmitter
 
 
