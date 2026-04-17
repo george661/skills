@@ -38,8 +38,8 @@ Run a quick functional smoke check before picking new work. A failure is a signa
 something broke since the last session — not a hard block, but worth knowing before starting.
 
 ```bash
-if [ -f "$PROJECT_ROOT/lambda-functions/tests/smoke/smoke-test.js" ]; then
-  smoke_output=$(node "$PROJECT_ROOT/lambda-functions/tests/smoke/smoke-test.js" \
+if [ -f "$PROJECT_ROOT/$TENANT_SMOKE_TEST_PATH" ]; then
+  smoke_output=$(node "$PROJECT_ROOT/$TENANT_SMOKE_TEST_PATH" \
     --env dev --timeout 30 --output /tmp/smoke-next-check.json 2>&1)
   smoke_exit=$?
   if [ $smoke_exit -ne 0 ]; then

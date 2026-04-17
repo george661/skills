@@ -66,6 +66,14 @@ class TestWorkflowParsing:
         assert workflow.config.labels is not None
         assert workflow.config.labels.on_failure == "outcome:validation-failed"
 
+    def test_no_hardcoded_smoke_test_path(self, workflow: WorkflowDef) -> None:
+        """validate.yaml should not contain hardcoded smoke test paths."""
+        # Read the raw YAML file to check for hardcoded paths
+        with open(WORKFLOW_PATH, 'r') as f:
+            content = f.read()
+        assert 'lambda-functions/tests/smoke' not in content, \
+            "Found hardcoded smoke test path - should use $TENANT_SMOKE_TEST_PATH env var"
+
     def test_exit_hooks_configured(self, workflow: WorkflowDef) -> None:
         """Exit hooks are configured with cost_capture on completed and failed."""
         assert workflow.config.on_exit is not None
