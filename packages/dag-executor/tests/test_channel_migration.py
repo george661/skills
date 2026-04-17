@@ -12,6 +12,7 @@ from dag_executor.channels import ChannelStore
 from dag_executor.schema import (
     NodeResult,
     NodeStatus,
+    ReducerStrategy,
     WorkflowDef,
 )
 
@@ -168,7 +169,7 @@ def test_channel_store_from_workflow_def_creates_correct_types(
         # (LastValueChannel for no reducer, ReducerChannel for reducer)
         from dag_executor.channels import LastValueChannel, ReducerChannel
         
-        if field_def.reducer:
+        if hasattr(field_def, "reducer") and field_def.reducer and field_def.reducer.strategy != ReducerStrategy.OVERWRITE:
             assert isinstance(channel, ReducerChannel)
         else:
             assert isinstance(channel, LastValueChannel)
