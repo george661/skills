@@ -1,0 +1,177 @@
+---
+name: Fix Skeleton Command Sub-DAG
+config:
+  checkpoint_prefix: fix-skeleton
+  worktree: false
+  labels:
+    on_failure: "outcome:skeleton-fix-failed"
+
+inputs:
+  epic_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+state:
+  review_feedback:
+    type: dict
+    reducer: overwrite
+  gaps:
+    type: list
+    reducer: append
+    default: []
+  fix_cycle:
+    type: dict
+    reducer: overwrite
+  fix_result:
+    type: dict
+    reducer: overwrite
+
+nodes:
+  # ──────────────────────────────────────────────────────────
+  # Phase 0: Load Review Feedback
+  # ──────────────────────────────────────────────────────────
+  - id: load_review_feedback
+    name: Load Review Feedback
+    type: bash
+    writes:
+      - review_feedback
+      - fix_cycle
+    on_failure: stop
+    script: |
+      # Recall last review verdict from AgentDB
+      review=$(npx tsx ~/.claude/skills/agentdb/recall_query.ts \
+        '{"query": "skeleton-review-$epic_key", "k": 1}' 2>/dev/null || echo '{"results":[]}')
+      
+      # Get current fix cycle count
+      fix_history=$(npx tsx ~/.claude/skills/agentdb/recall_query.ts \
+        '{"query": "skeleton-fix-$epic_key", "k": 10}' 2>/dev/null || echo '{"results":[]}')
+      
+      cycle_count=$(echo "$fix_history" | jq '.results | length')
+      
+      echo "{\"review_feedback\": $review, \"fix_cycle\": {\"cycle\": $cycle_count}}"
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 1: Escalation Gate
+  # ──────────────────────────────────────────────────────────
+  - id: escalation_gate
+    name: Escalation Gate
+    type: gate
+    depends_on:
+      - load_review_feedback
+    reads:
+      - fix_cycle
+    condition: "$fix_cycle.cycle <= 2"
+    on_failure: stop
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 2: Categorize Gaps
+  # ──────────────────────────────────────────────────────────
+  - id: categorize_gaps
+    name: Categorize Gaps
+    type: prompt
+    depends_on:
+      - escalation_gate
+    reads:
+      - review_feedback
+    writes:
+      - gaps
+    model: sonnet
+    dispatch: local
+    prompt: |
+      Analyze the review feedback and categorize the gaps that need fixing.
+      
+      Review feedback: {review_feedback}
+      
+      Categorize gaps by:
+      - Missing repositories
+      - Incomplete skeleton paths
+      - Missing E2E tests
+      - Broken dependency links
+      
+      Return:
+      {"gaps": [{"category": "...", "description": "...", "issue_key": "..."}]}
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3: Fix Gaps
+  # ──────────────────────────────────────────────────────────
+  - id: fix_gaps
+    name: Fix Gaps
+    type: prompt
+    depends_on:
+      - categorize_gaps
+    reads:
+      - gaps
+      - review_feedback
+    writes:
+      - fix_result
+    model: sonnet
+    dispatch: local
+    retry:
+      max_attempts: 2
+      delay_ms: 0
+    prompt: |
+      Fix the identified gaps in the skeleton.
+      
+      Gaps: {gaps}
+      Review feedback: {review_feedback}
+      
+      For each gap:
+      - Create missing skeleton issues via issues/create_issue.ts
+      - Update existing issues via issues/update_issue.ts
+      - Create missing links via issues/link_issues.ts
+      
+      Return:
+      {"fix_result": {"fixed": [...], "failed": [...]}}
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 4: Update Skeleton Doc
+  # ──────────────────────────────────────────────────────────
+  - id: update_skeleton_doc
+    name: Update Skeleton Documentation
+    type: bash
+    depends_on:
+      - fix_gaps
+    reads:
+      - fix_result
+      - fix_cycle
+    script: |
+      # Store fix cycle in AgentDB
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts \
+        "{\"session_id\": \"${TENANT_NAMESPACE}\", \
+        \"task\": \"skeleton-fix-$epic_key\", \
+        \"input\": {\"epic_key\": \"$epic_key\", \"cycle\": $fix_cycle}, \
+        \"output\": \"Fixes applied\", \
+        \"reward\": 0.8, \
+        \"success\": true}"
+      
+      echo '{"updated": true}'
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 5: Post Fix Summary
+  # ──────────────────────────────────────────────────────────
+  - id: post_fix_summary
+    name: Post Fix Summary to Jira
+    type: bash
+    depends_on:
+      - update_skeleton_doc
+    reads:
+      - fix_result
+    script: |
+      # Format fix summary
+      fixed=$(echo '$fix_result' | jq -r '.fixed | join(", ")')
+      failed=$(echo '$fix_result' | jq -r '.failed | join(", ")')
+      
+      comment="## Skeleton Fixes Applied\n\n**Fixed:** $fixed\n**Failed:** $failed"
+      
+      npx tsx ~/.claude/skills/issues/add_comment.ts \
+        "{\"issue_key\": \"$epic_key\", \"body\": \"$comment\"}"
+      
+      echo '{"posted": true}'
+    output_format: json
+
+outputs:
+  fix_result:
+    node: fix_gaps
