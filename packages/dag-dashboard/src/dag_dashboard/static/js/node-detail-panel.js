@@ -32,6 +32,10 @@ class NodeDetailPanel {
             this.panel.remove();
         }
 
+        // Check if retry history exists for this node
+        const retryHistory = window.retryHistoryStore && window.retryHistoryStore[node.node_name];
+        const hasRetryHistory = retryHistory && retryHistory.length > 0;
+
         // Create panel
         this.panel = document.createElement('div');
         this.panel.className = 'node-detail-panel';
@@ -49,6 +53,7 @@ class NodeDetailPanel {
                     <button class="tab-btn" data-tab="output">Output</button>
                     <button class="tab-btn" data-tab="artifacts">Artifacts</button>
                     ${node.error ? '<button class="tab-btn error-tab" data-tab="error">Error</button>' : ''}
+                    ${hasRetryHistory ? '<button class="tab-btn" data-tab="retry-history">Retry History</button>' : ''}
                 </div>
                 <div class="panel-body">
                     ${isInterrupted ? `
@@ -71,6 +76,11 @@ class NodeDetailPanel {
                     ${node.error ? `
                         <div class="tab-content" data-tab="error">
                             ${this.renderError(node)}
+                        </div>
+                    ` : ''}
+                    ${hasRetryHistory ? `
+                        <div class="tab-content" data-tab="retry-history">
+                            ${this.renderRetryHistory(node, retryHistory)}
                         </div>
                     ` : ''}
                 </div>
@@ -656,6 +666,36 @@ class NodeDetailPanel {
             return `${minutes}m ${seconds % 60}s`;
         }
         return `${seconds}s`;
+    }
+
+    renderRetryHistory(node, retryHistory) {
+        if (!retryHistory || retryHistory.length === 0) {
+            return '<p class="empty-state">No retry attempts recorded for this node.</p>';
+        }
+
+        const rows = retryHistory.map((retry, index) => `
+            <div class="retry-history-item">
+                <div class="retry-attempt">
+                    <strong>Attempt ${retry.attempt}/${retry.max_attempts}</strong>
+                </div>
+                <div class="retry-delay">
+                    Delay: ${(retry.delay_ms / 1000).toFixed(1)}s
+                </div>
+                <div class="retry-error">
+                    ${this.escapeHtml(retry.last_error || 'No error message')}
+                </div>
+                <div class="retry-timestamp">
+                    ${new Date(retry.timestamp).toLocaleString()}
+                </div>
+            </div>
+        `).join('');
+
+        return `
+            <div class="retry-history-list">
+                <h4>Retry Attempts (${retryHistory.length})</h4>
+                ${rows}
+            </div>
+        `;
     }
 
     escapeHtml(unsafe) {
