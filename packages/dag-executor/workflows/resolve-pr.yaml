@@ -1,0 +1,264 @@
+---
+# Resolve PR Workflow
+#
+# Merge workflow for PRs that have passed CI and code review. Handles final
+# merge, post-merge cleanup, and issue transition.
+
+name: Resolve PR Workflow
+config:
+  checkpoint_prefix: resolve-pr
+  worktree: true
+  labels:
+    on_failure: "outcome:pr-merge-failed"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command resolve-pr"
+      run_on: [completed, failed]
+    - id: worktree_cleanup
+      type: bash
+      script: |
+        repo="${repo:-}"
+        issue="${issue_key:-}"
+        if [ -n "$repo" ] && [ -n "$issue" ]; then
+          cd "$PROJECT_ROOT/$repo" 2>/dev/null || exit 0
+          git worktree remove "$PROJECT_ROOT/worktrees/$repo-$issue" --force 2>/dev/null || true
+        fi
+      run_on: [completed, failed]
+      timeout: 30
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+  repo:
+    type: string
+    required: false
+    default: ""
+  pr_number:
+    type: string
+    required: false
+    default: ""
+  merge_method:
+    type: string
+    required: false
+    default: "squash"
+
+state:
+  ci_result:
+    type: dict
+    reducer: overwrite
+  verdict:
+    type: string
+    reducer: overwrite
+  merge_result:
+    type: dict
+    reducer: overwrite
+  validation_criteria:
+    type: dict
+    reducer: overwrite
+
+nodes:
+  # Phase 1: Resolve context from checkpoint/labels
+  - id: resolve_context
+    name: Resolve Context
+    type: bash
+    writes:
+      - validation_criteria
+    script: |
+      # Load from checkpoint or Jira labels
+      repo="${repo}"
+      pr_num="${pr_number}"
+      
+      if [ -z "$repo" ] || [ -z "$pr_num" ]; then
+        # Extract from Jira labels (pr:repo/number format)
+        issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
+          "{\"issue_key\": \"${issue_key}\", \"fields\": \"labels\"}")
+        pr_label=$(echo "$issue" | jq -r '.fields.labels[]? | select(startswith("pr:"))')
+        repo=$(echo "$pr_label" | cut -d: -f2 | cut -d/ -f1)
+        pr_num=$(echo "$pr_label" | cut -d/ -f2)
+      fi
+      
+      echo "{\"validation_criteria\": {\"repo\": \"$repo\", \"pr_number\": \"$pr_num\", \"issue_key\": \"${issue_key}\"}}"
+    output_format: json
+
+  # Phase 2: Update step label
+  - id: step_label_merging
+    name: Update Step Label
+    type: bash
+    depends_on:
+      - resolve_context
+    script: |
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
+        "{\"issue_key\": \"${issue_key}\", \"fields\": \"labels\"}")
+      labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not)) + ["step:merging"] | @json')
+      npx tsx ~/.claude/skills/jira/update_issue.ts \
+        "{\"issue_key\": \"${issue_key}\", \"labels\": $labels, \"notify_users\": false}"
+
+  # Phase 3: CI hard gate
+  - id: ci_hard_gate
+    name: CI Hard Gate
+    type: bash
+    depends_on:
+      - step_label_merging
+    reads:
+      - validation_criteria
+    writes:
+      - ci_result
+    on_failure: stop
+    script: |
+      repo="${validation_criteria_repo}"
+      
+      # Wait for CI to complete
+      ci_result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/ci/wait_for_ci.ts \
+        "{\"pipeline\": \"$repo\", \"timeout_seconds\": 600}")
+      
+      success=$(echo "$ci_result" | jq -r '.success')
+      if [ "$success" != "true" ]; then
+        echo "CI failed for $repo"
+        exit 1
+      fi
+      
+      echo "{\"ci_result\": $ci_result}"
+    output_format: json
+
+  # Phase 4: Review verdict gate
+  - id: review_verdict_gate
+    name: Review Verdict Gate
+    type: bash
+    depends_on:
+      - ci_hard_gate
+    writes:
+      - verdict
+    on_failure: stop
+    script: |
+      # Scan Jira for most recent code review verdict.
+      # Matches `### Verdict: <WORD>` anywhere in comment text, tolerant of trailing punctuation.
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
+        "{\"issue_key\": \"${issue_key}\", \"fields\": \"comment\"}")
+
+      verdict=$(echo "$issue" | jq -r '
+        [.. | .text? // empty | select(type == "string")] |
+        map(match("###[[:space:]]+Verdict:[[:space:]]+([A-Za-z_ ]+)"; "g").captures[0].string) |
+        map(select(. != null) | gsub("[[:space:]]+$"; "")) |
+        last // ""')
+
+      verdict_upper=$(echo "$verdict" | tr '[:lower:]' '[:upper:]')
+      if echo "$verdict_upper" | grep -qE '(REQUIRES[[:space:]]+REWORK|REWORK|REJECTED)'; then
+        echo "ERROR: Review verdict is '$verdict' — merge blocked"
+        exit 1
+      fi
+      if [ -z "$verdict" ]; then
+        echo "ERROR: No review verdict found in Jira comments"
+        exit 1
+      fi
+
+      echo "{\"verdict\": \"$verdict\"}"
+    output_format: json
+
+  # Phase 5: Branch sync
+  - id: branch_sync
+    name: Branch Sync
+    type: bash
+    depends_on:
+      - review_verdict_gate
+    on_failure: stop
+    script: |
+      git fetch origin main
+      git merge origin/main --no-edit || {
+        echo "ERROR: Merge conflicts detected. Manual resolution required."
+        exit 1
+      }
+
+  # Phase 6: Rebuild gate
+  - id: rebuild_gate
+    name: Rebuild Gate
+    type: bash
+    depends_on:
+      - branch_sync
+    on_failure: stop
+    script: |
+      # Run repo validation commands from CLAUDE.md
+      if [ -f "go.mod" ]; then
+        go build ./... || exit 1
+      elif [ -f "package.json" ]; then
+        # Prefer build; fall back to compile. Failure is a hard stop.
+        if jq -e '.scripts.build' package.json >/dev/null 2>&1; then
+          npm run build || exit 1
+        elif jq -e '.scripts.compile' package.json >/dev/null 2>&1; then
+          npm run compile || exit 1
+        else
+          echo "No build/compile script found; skipping rebuild gate"
+        fi
+      fi
+
+  # Phase 7: Merge PR
+  - id: merge_pr
+    name: Merge PR
+    type: bash
+    depends_on:
+      - rebuild_gate
+    reads:
+      - validation_criteria
+    writes:
+      - merge_result
+    checkpoint: true
+    script: |
+      repo="${validation_criteria_repo}"
+      pr_num="${validation_criteria_pr_number}"
+      method="${merge_method:-squash}"
+
+      # Merge the PR
+      merge_result=$(npx tsx ~/.claude/skills/vcs/merge_pull_request.ts \
+        "{\"repo\": \"$repo\", \"pr_number\": \"$pr_num\", \"merge_method\": \"$method\"}")
+
+      echo "{\"merge_result\": $merge_result}"
+    output_format: json
+
+  # Phase 8: Post-merge clearance
+  - id: post_merge_clearance
+    name: Post-Merge Clearance
+    type: bash
+    depends_on:
+      - merge_pr
+    script: |
+      # Post APPROVED verdict comment to clear stale state
+      npx tsx ~/.claude/skills/jira/add_comment.ts \
+        "{\"issue_key\": \"${issue_key}\", \"body\": \"### Verdict: APPROVED\\n\\nPR merged successfully.\"}"
+      
+      # Sync local main
+      git checkout main 2>/dev/null || true
+      git pull origin main 2>/dev/null || true
+
+  # Phase 9: Transition issue
+  - id: transition_issue
+    name: Transition Issue
+    type: bash
+    depends_on:
+      - post_merge_clearance
+    script: |
+      # Transition Jira issue to VALIDATION
+      npx tsx ~/.claude/skills/jira/transition_issue.ts \
+        "{\"issue_key\": \"${issue_key}\", \"transition\": \"VALIDATION\"}"
+
+  # Phase 10: Store episode
+  - id: store_episode
+    name: Store Episode
+    type: bash
+    depends_on:
+      - transition_issue
+    reads:
+      - merge_result
+    script: |
+      merge_commit="${merge_result_merge_commit:-unknown}"
+      
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
+        \"session_id\": \"${TENANT_NAMESPACE}\",
+        \"task\": \"resolve-pr-${issue_key}\",
+        \"input\": {\"issue_key\": \"${issue_key}\", \"pr_number\": \"${validation_criteria_pr_number}\"},
+        \"output\": \"PR merged: $merge_commit\",
+        \"reward\": 0.95,
+        \"success\": true,
+        \"critique\": \"PR successfully merged and issue transitioned to VALIDATION\"
+      }"
