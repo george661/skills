@@ -1,0 +1,167 @@
+---
+# Issue Creation Workflow
+#
+# Input gathering → validation → creation → link
+
+name: Issue Creation
+config:
+  checkpoint_prefix: issue
+  worktree: false
+  labels:
+    on_failure: "outcome:issue-creation-failed"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command issue"
+      run_on: [completed, failed]
+
+inputs:
+  description:
+    type: string
+    required: true
+
+state:
+  refinement:
+    type: dict
+    reducer: overwrite
+  classification:
+    type: dict
+    reducer: overwrite
+  creation_result:
+    type: dict
+    reducer: overwrite
+
+outputs:
+  issue_key:
+    node: create_and_link
+    field: issue_key
+  issue_type:
+    node: classify_issue_type
+    field: issue_type
+
+nodes:
+  # Phase 1: Brainstorm and refine
+  - id: brainstorm_and_refine
+    name: Brainstorm and Refine
+    type: prompt
+    model: opus
+    dispatch: inline
+    writes:
+      - refinement
+    prompt: |
+      Refine the user's issue description: ${description}
+      
+      Produce:
+      1. A clear, concise summary (50-80 chars)
+      2. A detailed description with context
+      
+      Output as JSON: {"refined_summary": "<summary>", "refined_description": "<description>"}
+
+  # Phase 2: Classify issue type
+  - id: classify_issue_type
+    name: Classify Issue Type
+    type: prompt
+    depends_on:
+      - brainstorm_and_refine
+    model: opus
+    dispatch: inline
+    reads:
+      - refinement
+    writes:
+      - classification
+    prompt: |
+      Classify this issue: ${refinement_refined_summary}
+      
+      Description: ${refinement_refined_description}
+      
+      Determine:
+      1. Issue type: "Epic", "Epic-child", or "standalone"
+      2. If Epic-child, what is the parent Epic key?
+      
+      Search for potential parent Epics if needed:
+      ```bash
+      npx tsx ~/.claude/skills/issues/search_issues.ts '{"jql": "project = GW AND issuetype = Epic AND text ~ \"<search-term>\"", "max_results": 5}'
+      ```
+      
+      Output as JSON: {"issue_type": "Epic|Epic-child|standalone", "parent_key": "GW-XXXX or null"}
+
+  # Phase 3: Duplicate detection
+  - id: duplicate_detection
+    name: Duplicate Detection
+    type: prompt
+    depends_on:
+      - classify_issue_type
+    model: opus
+    dispatch: inline
+    reads:
+      - refinement
+      - classification
+    writes:
+      - classification
+    prompt: |
+      Search for duplicate issues for: ${refinement_refined_summary}
+      
+      Use the issues router to search existing issues:
+      ```bash
+      npx tsx ~/.claude/skills/issues/search_issues.ts '{"jql": "project = GW AND text ~ \"${refinement_refined_summary}\"", "max_results": 5}'
+      ```
+      
+      Determine if this is a duplicate of an existing issue.
+      Output as JSON: {"is_duplicate": true/false, "duplicate_key": "GW-XXXX" or null, "reasoning": "why duplicate or not"}
+
+  # Gate passes (proceeds) when is_duplicate is false. STOP on duplicate avoids
+  # creating a second Jira issue for the same problem.
+  - id: duplicate_gate
+    name: Duplicate Gate
+    type: gate
+    depends_on:
+      - duplicate_detection
+    condition: "$duplicate_detection.is_duplicate == false"
+    on_failure: stop
+
+  # Phase 4: Create and link
+  - id: create_and_link
+    name: Create and Link
+    type: bash
+    depends_on:
+      - duplicate_gate
+    reads:
+      - refinement
+      - classification
+    writes:
+      - creation_result
+    script: |
+      summary="${refinement_refined_summary}"
+      description="${refinement_refined_description}"
+      issue_type="${classification_issue_type}"
+      parent_key="${classification_parent_key:-}"
+      
+      # Create issue
+      if [ "$issue_type" = "Epic" ]; then
+        issue_result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "{\"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Epic\", \"labels\": [\"step:backlog\"]}")
+      elif [ "$issue_type" = "Epic-child" ] && [ -n "$parent_key" ]; then
+        issue_result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "{\"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Story\", \"labels\": [\"step:backlog\"]}")
+        issue_key=$(echo "$issue_result" | jq -r '.key')
+        # Link to parent Epic
+        npx tsx ~/.claude/skills/issues/add_issue_link.ts "{\"issue_key\": \"$issue_key\", \"linked_issue_key\": \"$parent_key\", \"link_type\": \"is child of\"}"
+      else
+        issue_result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "{\"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Task\", \"labels\": [\"step:backlog\"]}")
+      fi
+      
+      issue_key=$(echo "$issue_result" | jq -r '.key')
+      
+      # Transition to To Do
+      npx tsx ~/.claude/skills/issues/transition_issue.ts "{\"issue_key\": \"$issue_key\", \"transition\": \"To Do\"}"
+      
+      # Consolidation check (minimum fidelity)
+      if [ -f ~/.cache/garden/issues/index.json ]; then
+        # Grep for same-repo overlaps and print hint (non-blocking)
+        grep -l "$issue_key" ~/.cache/garden/issues/index.json 2>/dev/null && echo "Hint: Consider consolidating with related issues" || true
+      else
+        echo "Consolidation check skipped (cache not available)"
+      fi
+      
+      # Update labels
+      npx tsx ~/.claude/skills/issues/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": [\"step:to-do\", \"outcome:success-issue-created\"], \"notify_users\": false}"
+      
+      echo "{\"issue_key\": \"$issue_key\", \"status\": \"complete\"}"
