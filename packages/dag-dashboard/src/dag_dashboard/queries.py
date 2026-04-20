@@ -700,6 +700,70 @@ def count_pending_gates(db_path: Path) -> int:
         conn.close()
 
 
+def get_interrupt_checkpoint(
+    db_path: Path,
+    workflow_name: str,
+    run_id: str,
+    node_name: str,
+    checkpoint_dir_fallback: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Get interrupt checkpoint for a specific node.
+
+    Args:
+        db_path: Path to dashboard database
+        workflow_name: Name of the workflow
+        run_id: Run identifier
+        node_name: Node name
+        checkpoint_dir_fallback: Fallback checkpoint directory (from DAG_CHECKPOINT_DIR env)
+
+    Returns:
+        Dict with interrupt checkpoint fields, or None if not found
+    """
+    import os
+    import yaml
+    from dag_executor.checkpoint import CheckpointStore  # type: ignore[import-untyped]
+
+    conn = get_connection(db_path)
+    try:
+        # Query workflow_runs for workflow_definition YAML
+        cursor = conn.execute(
+            """
+            SELECT workflow_definition
+            FROM workflow_runs
+            WHERE id = ?
+            """,
+            (run_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        workflow_def_yaml = row["workflow_definition"]
+
+        # Parse checkpoint_prefix from YAML
+        workflow_def = yaml.safe_load(workflow_def_yaml)
+        checkpoint_prefix = workflow_def.get("config", {}).get("checkpoint_prefix")
+
+        # Use fallback if not specified in YAML
+        if not checkpoint_prefix:
+            checkpoint_prefix = checkpoint_dir_fallback or os.path.expanduser(
+                "~/.dag-executor/checkpoints"
+            )
+
+        # Load interrupt checkpoint via CheckpointStore
+        store = CheckpointStore(checkpoint_prefix)
+        interrupt_checkpoint = store.load_interrupt(workflow_name, run_id)
+
+        if not interrupt_checkpoint:
+            return None
+
+        # Return as dict for API serialization
+        result: Dict[str, Any] = interrupt_checkpoint.model_dump()
+        return result
+    finally:
+        conn.close()
+
+
 def get_channel_states(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
     """Get all channel states for a workflow run.
 

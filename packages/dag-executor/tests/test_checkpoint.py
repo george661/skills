@@ -487,3 +487,34 @@ def test_old_checkpoint_without_input_versions_loads(
     assert checkpoint.node_id == "node1"
     assert checkpoint.output == {"result": "old-output"}
     assert checkpoint.input_versions == {}  # default value
+
+
+def test_save_load_resume_values(
+    checkpoint_store: CheckpointStore,
+    tmp_path: Path
+):
+    """Test save and load of resume values."""
+    resume_values = {
+        "approval_status": "approved",
+        "user_input": "continue",
+        "config": {"retries": 3, "enabled": True},
+        "items": [1, 2, 3]
+    }
+
+    checkpoint_store.save_resume_values("test-workflow", "run-123", resume_values)
+
+    # Verify file exists
+    resume_file = tmp_path / ".dag-checkpoints" / "test-workflow-run-123" / "resume_values.json"
+    assert resume_file.exists()
+
+    # Load and verify
+    loaded_values = checkpoint_store.load_resume_values("test-workflow", "run-123")
+    assert loaded_values == resume_values
+
+
+def test_load_resume_values_missing_returns_empty_dict(
+    checkpoint_store: CheckpointStore
+):
+    """Test load_resume_values returns empty dict when file doesn't exist."""
+    loaded_values = checkpoint_store.load_resume_values("nonexistent", "run-999")
+    assert loaded_values == {}

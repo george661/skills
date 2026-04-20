@@ -29,7 +29,9 @@ def events_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def client(tmp_path: Path, test_db: Path, events_dir: Path) -> TestClient:
     """Create a test client with initialized database."""
-    app = create_app(tmp_path, events_dir=events_dir)
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    app = create_app(tmp_path, events_dir=events_dir, checkpoint_dir_fallback=str(checkpoint_dir))
     return TestClient(app, raise_server_exceptions=True)
 
 
@@ -411,3 +413,277 @@ def test_get_gates_pending_with_gates(client: TestClient, test_db: Path):
     data = response.json()
     assert data["count"] == 2
     assert len(data["gates"]) == 2
+
+def test_get_interrupt_context_success(client: TestClient, test_db: Path, tmp_path: Path):
+    """Test GET /api/workflows/{run_id}/nodes/{node_name}/interrupt returns interrupt checkpoint."""
+    from dag_executor.checkpoint import CheckpointStore, InterruptCheckpoint
+    
+    # Create checkpoint directory first
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    workflow_def = f"""
+config:
+  checkpoint_prefix: {checkpoint_dir}
+nodes:
+  - name: node-1
+    type: interrupt
+"""
+    
+    # Insert run and interrupted node
+    insert_run(test_db, "run-1", "test-workflow", "running", "2026-04-17T12:00:00Z", workflow_definition=workflow_def)
+    insert_node(test_db, "run-1:node-1", "run-1", "node-1", "interrupted", started_at="2026-04-17T12:00:00Z")
+    
+    # Create a checkpoint
+    store = CheckpointStore(str(checkpoint_dir))
+    interrupt_checkpoint = InterruptCheckpoint(
+        node_id="run-1:node-1",
+        message="Please provide input",
+        resume_key="user_input",
+        timeout=300,
+        channels=["terminal"]
+    )
+    store.save_interrupt("test-workflow", "run-1", interrupt_checkpoint)
+    
+
+    
+    response = client.get("/api/workflows/run-1/nodes/node-1/interrupt")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["resume_key"] == "user_input"
+    assert data["message"] == "Please provide input"
+    assert data["timeout"] == 300
+
+
+def test_get_interrupt_context_run_not_found(client: TestClient):
+    """Test GET interrupt endpoint returns 404 when run not found."""
+    response = client.get("/api/workflows/nonexistent/nodes/node-1/interrupt")
+    assert response.status_code == 404
+    assert "Workflow run not found" in response.json()["detail"]
+
+
+def test_get_interrupt_context_node_not_found(client: TestClient, test_db: Path):
+    """Test GET interrupt endpoint returns 404 when node not found."""
+    insert_run(test_db, "run-1", "test-workflow", "running", "2026-04-17T12:00:00Z")
+    
+    response = client.get("/api/workflows/run-1/nodes/nonexistent/interrupt")
+    assert response.status_code == 404
+    assert "Node not found" in response.json()["detail"]
+
+
+def test_get_interrupt_context_node_not_interrupted(client: TestClient, test_db: Path):
+    """Test GET interrupt endpoint returns 409 when node is not interrupted."""
+    insert_run(test_db, "run-1", "test-workflow", "running", "2026-04-17T12:00:00Z")
+    insert_node(test_db, "run-1:node-1", "run-1", "node-1", "completed", started_at="2026-04-17T12:00:00Z")
+    
+    response = client.get("/api/workflows/run-1/nodes/node-1/interrupt")
+    assert response.status_code == 409
+    assert "not in interrupted state" in response.json()["detail"]
+
+
+def test_post_interrupt_resume_success(client: TestClient, test_db: Path, tmp_path: Path):
+    """Test POST /api/workflows/{run_id}/interrupts/{node_name}/resume completes node."""
+    from dag_executor.checkpoint import CheckpointStore, InterruptCheckpoint
+    
+    # Create checkpoint directory first
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    workflow_def = f"""
+config:
+  checkpoint_prefix: {checkpoint_dir}
+nodes:
+  - name: node-1
+    type: interrupt
+"""
+    
+    # Insert run and interrupted node
+    insert_run(test_db, "run-1", "test-workflow", "running", "2026-04-17T12:00:00Z", workflow_definition=workflow_def)
+    insert_node(test_db, "run-1:node-1", "run-1", "node-1", "interrupted", started_at="2026-04-17T12:00:00Z")
+    
+    # Create a checkpoint
+    store = CheckpointStore(str(checkpoint_dir))
+    interrupt_checkpoint = InterruptCheckpoint(
+        node_id="run-1:node-1",
+        message="Please provide input",
+        resume_key="user_input",
+        timeout=300,
+        channels=["terminal"]
+    )
+    store.save_interrupt("test-workflow", "run-1", interrupt_checkpoint)
+    
+
+    
+    response = client.post(
+        "/api/workflows/run-1/interrupts/node-1/resume",
+        json={
+            "resume_value": "user response",
+            "decided_by": "test-user",
+            "comment": "Resuming workflow"
+        }
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["run_id"] == "run-1"
+    assert data["node_name"] == "node-1"
+    assert data["resumed"] is True
+    
+    # Verify node status updated
+    node = get_node(test_db, "run-1:node-1")
+    assert node["status"] == "completed"
+    assert node["outputs"]["resume_value"] == "user response"
+
+
+def test_post_interrupt_resume_with_dict_value(client: TestClient, test_db: Path, tmp_path: Path):
+    """Test POST resume with dict resume_value."""
+    from dag_executor.checkpoint import CheckpointStore, InterruptCheckpoint
+    
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    workflow_def = f"""
+config:
+  checkpoint_prefix: {checkpoint_dir}
+nodes:
+  - name: node-1
+    type: interrupt
+"""
+    
+    insert_run(test_db, "run-1", "test-workflow", "running", "2026-04-17T12:00:00Z", workflow_definition=workflow_def)
+    insert_node(test_db, "run-1:node-1", "run-1", "node-1", "interrupted", started_at="2026-04-17T12:00:00Z")
+    
+    store = CheckpointStore(str(checkpoint_dir))
+    interrupt_checkpoint = InterruptCheckpoint(
+        node_id="run-1:node-1",
+        message="Provide config",
+        resume_key="config",
+        timeout=300,
+        channels=["terminal"]
+    )
+    store.save_interrupt("test-workflow", "run-1", interrupt_checkpoint)
+    
+    response = client.post(
+        "/api/workflows/run-1/interrupts/node-1/resume",
+        json={
+            "resume_value": {"enabled": True, "count": 5},
+            "decided_by": "test-user"
+        }
+    )
+    assert response.status_code == 200
+    node = get_node(test_db, "run-1:node-1")
+    assert node["outputs"]["resume_value"] == {"enabled": True, "count": 5}
+
+
+def test_post_interrupt_resume_with_list_value(client: TestClient, test_db: Path, tmp_path: Path):
+    """Test POST resume with list resume_value."""
+    from dag_executor.checkpoint import CheckpointStore, InterruptCheckpoint
+    
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    workflow_def = f"""
+config:
+  checkpoint_prefix: {checkpoint_dir}
+nodes:
+  - name: node-1
+    type: interrupt
+"""
+    
+    insert_run(test_db, "run-1", "test-workflow", "running", "2026-04-17T12:00:00Z", workflow_definition=workflow_def)
+    insert_node(test_db, "run-1:node-1", "run-1", "node-1", "interrupted", started_at="2026-04-17T12:00:00Z")
+    
+    store = CheckpointStore(str(checkpoint_dir))
+    interrupt_checkpoint = InterruptCheckpoint(
+        node_id="run-1:node-1",
+        message="Provide items",
+        resume_key="items",
+        timeout=300,
+        channels=["terminal"]
+    )
+    store.save_interrupt("test-workflow", "run-1", interrupt_checkpoint)
+    
+    response = client.post(
+        "/api/workflows/run-1/interrupts/node-1/resume",
+        json={
+            "resume_value": [1, 2, 3, "test"],
+            "decided_by": "test-user"
+        }
+    )
+    assert response.status_code == 200
+    node = get_node(test_db, "run-1:node-1")
+    assert node["outputs"]["resume_value"] == [1, 2, 3, "test"]
+
+
+def test_post_interrupt_resume_with_number_value(client: TestClient, test_db: Path, tmp_path: Path):
+    """Test POST resume with number resume_value."""
+    from dag_executor.checkpoint import CheckpointStore, InterruptCheckpoint
+    
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    workflow_def = f"""
+config:
+  checkpoint_prefix: {checkpoint_dir}
+nodes:
+  - name: node-1
+    type: interrupt
+"""
+    
+    insert_run(test_db, "run-1", "test-workflow", "running", "2026-04-17T12:00:00Z", workflow_definition=workflow_def)
+    insert_node(test_db, "run-1:node-1", "run-1", "node-1", "interrupted", started_at="2026-04-17T12:00:00Z")
+    
+    store = CheckpointStore(str(checkpoint_dir))
+    interrupt_checkpoint = InterruptCheckpoint(
+        node_id="run-1:node-1",
+        message="Provide count",
+        resume_key="count",
+        timeout=300,
+        channels=["terminal"]
+    )
+    store.save_interrupt("test-workflow", "run-1", interrupt_checkpoint)
+    
+    response = client.post(
+        "/api/workflows/run-1/interrupts/node-1/resume",
+        json={
+            "resume_value": 42,
+            "decided_by": "test-user"
+        }
+    )
+    assert response.status_code == 200
+    node = get_node(test_db, "run-1:node-1")
+    assert node["outputs"]["resume_value"] == 42
+
+
+def test_post_interrupt_resume_with_bool_value(client: TestClient, test_db: Path, tmp_path: Path):
+    """Test POST resume with boolean resume_value."""
+    from dag_executor.checkpoint import CheckpointStore, InterruptCheckpoint
+    
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    workflow_def = f"""
+config:
+  checkpoint_prefix: {checkpoint_dir}
+nodes:
+  - name: node-1
+    type: interrupt
+"""
+    
+    insert_run(test_db, "run-1", "test-workflow", "running", "2026-04-17T12:00:00Z", workflow_definition=workflow_def)
+    insert_node(test_db, "run-1:node-1", "run-1", "node-1", "interrupted", started_at="2026-04-17T12:00:00Z")
+    
+    store = CheckpointStore(str(checkpoint_dir))
+    interrupt_checkpoint = InterruptCheckpoint(
+        node_id="run-1:node-1",
+        message="Approve?",
+        resume_key="approved",
+        timeout=300,
+        channels=["terminal"]
+    )
+    store.save_interrupt("test-workflow", "run-1", interrupt_checkpoint)
+    
+    response = client.post(
+        "/api/workflows/run-1/interrupts/node-1/resume",
+        json={
+            "resume_value": True,
+            "decided_by": "test-user"
+        }
+    )
+    assert response.status_code == 200
+    node = get_node(test_db, "run-1:node-1")
+    assert node["outputs"]["resume_value"] == True
+

@@ -165,6 +165,15 @@ class GateDecisionRequest(BaseModel):
     comment: Optional[str] = Field(default=None, max_length=1000)
 
 
+class InterruptResumeRequest(BaseModel):
+    """Request model for interrupt resume with value injection."""
+    model_config = {"extra": "forbid"}
+
+    resume_value: Any
+    decided_by: Optional[str] = None
+    comment: Optional[str] = Field(default=None, max_length=1000)
+
+
 class ChangeType(str, Enum):
     """Whitelisted change type values for state diff changes."""
     ADDED = "added"

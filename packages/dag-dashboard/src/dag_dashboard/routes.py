@@ -9,11 +9,12 @@ from typing import Any, AsyncIterator, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from .models import SortBy, RunStatus, StatusSummary, GateDecisionRequest, NodeStateDiff
+from .models import SortBy, RunStatus, StatusSummary, GateDecisionRequest, InterruptResumeRequest, NodeStateDiff
 from .queries import (
     get_run, list_runs, get_node, list_nodes, get_status_counts,
     get_artifacts, get_chat_messages, get_workflow_totals,
     insert_gate_decision, update_node, get_pending_gates, count_pending_gates,
+    get_interrupt_checkpoint,
     get_state_diff_timeline, get_checkpoint_comparison,
 )
 from .layout import compute_layout
@@ -341,6 +342,131 @@ async def get_pending_gates_route(request: Request) -> Dict[str, Any]:
     return {
         "count": count,
         "gates": gates,
+    }
+
+
+@router.get("/workflows/{run_id}/nodes/{node_name}/interrupt")
+async def get_interrupt_context(
+    request: Request,
+    run_id: str,
+    node_name: str
+) -> Dict[str, Any]:
+    """Get interrupt checkpoint data for a node."""
+    db_path = get_db_path(request)
+    checkpoint_dir_fallback = request.app.state.checkpoint_dir_fallback
+
+    # Verify run exists
+    run = get_run(db_path, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    # Verify node exists and is interrupted
+    node_id = f"{run_id}:{node_name}"
+    node = get_node(db_path, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found")
+    if node["status"] != "interrupted":
+        raise HTTPException(status_code=409, detail="Node is not in interrupted state")
+
+    # Load interrupt checkpoint
+    workflow_name = run["workflow_name"]
+    checkpoint = get_interrupt_checkpoint(
+        db_path,
+        workflow_name,
+        run_id,
+        node_name,
+        checkpoint_dir_fallback
+    )
+
+    if checkpoint is None:
+        raise HTTPException(status_code=404, detail="Interrupt checkpoint not found")
+
+    return checkpoint
+
+
+@router.post("/workflows/{run_id}/interrupts/{node_name}/resume")
+async def resume_interrupt(
+    request: Request,
+    run_id: str,
+    node_name: str,
+    body: InterruptResumeRequest,
+) -> Dict[str, Any]:
+    """Resume an interrupted workflow by injecting a resume value."""
+    from dag_executor.checkpoint import CheckpointStore  # type: ignore[import-untyped]
+    import yaml
+
+    db_path = get_db_path(request)
+    checkpoint_dir_fallback = request.app.state.checkpoint_dir_fallback
+
+    # Verify run exists
+    run = get_run(db_path, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    # Verify node exists and is interrupted
+    node_id = f"{run_id}:{node_name}"
+    node = get_node(db_path, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found")
+    if node["status"] != "interrupted":
+        raise HTTPException(status_code=409, detail="Node is not in interrupted state")
+
+    # Get checkpoint_prefix from workflow_definition
+    workflow_def_yaml = run["workflow_definition"]
+    workflow_def = yaml.safe_load(workflow_def_yaml)
+    checkpoint_prefix = workflow_def.get("config", {}).get("checkpoint_prefix")
+
+    if not checkpoint_prefix:
+        checkpoint_prefix = checkpoint_dir_fallback or os.path.expanduser(
+            "~/.dag-executor/checkpoints"
+        )
+
+    # Load interrupt checkpoint to get resume_key
+    store = CheckpointStore(checkpoint_prefix)
+    interrupt_checkpoint = store.load_interrupt(run["workflow_name"], run_id)
+
+    if not interrupt_checkpoint:
+        raise HTTPException(status_code=404, detail="Interrupt checkpoint not found")
+
+    # Save resume values
+    resume_values = {interrupt_checkpoint.resume_key: body.resume_value}
+    store.save_resume_values(run["workflow_name"], run_id, resume_values)
+
+    # Get decided_by from request body or default to OS user
+    decided_by = body.decided_by or os.getlogin()
+    decided_at = datetime.now(timezone.utc).isoformat()
+
+    # Insert gate decision for audit (use "resumed" as decision value)
+    insert_gate_decision(
+        db_path,
+        run_id=run_id,
+        node_name=node_name,
+        decision="resumed",
+        decided_by=decided_by,
+        decided_at=decided_at,
+        reason=body.comment,
+    )
+
+    # Update node status to completed with resume_value in output
+    update_node(
+        db_path,
+        node_id,
+        status="completed",
+        finished_at=decided_at,
+        outputs={
+            **(node.get("outputs") or {}),
+            "resume_value": body.resume_value,
+            "node_type": "interrupt"
+        }
+    )
+
+    return {
+        "run_id": run_id,
+        "node_name": node_name,
+        "resumed": True,
+        "decided_by": decided_by,
+        "decided_at": decided_at,
+        "comment": body.comment,
     }
 
 
