@@ -108,12 +108,13 @@ class LastValueChannel(Channel):
         with self._lock:
             return (self._value, self._version)
 
-    def write(self, value: Any, writer_node_id: str) -> int:
+    def write(self, value: Any, writer_node_id: str, emitter=None) -> int:
         """Write a value, raising ChannelConflictError if multiple writers.
 
         Args:
             value: Value to write
             writer_node_id: ID of the node writing
+            emitter: Optional callable to emit events (signature: (event_type: str, payload: Dict))
 
         Returns:
             New version number
@@ -134,11 +135,31 @@ class LastValueChannel(Channel):
                     f"but node(s) {existing_writers} already wrote. "
                     f"Use a reducer strategy to merge parallel writes."
                 )
+
+                # Emit conflict event before raising
+                if emitter:
+                    emitter("CHANNEL_CONFLICT", {
+                        "channel_key": channel_key,
+                        "writers": list(all_writers),
+                        "message": message
+                    })
+
                 raise ChannelConflictError(channel_key, all_writers, message)
 
             self._writers.add(writer_node_id)
             self._value = value
             self._version += 1
+
+            # Emit channel updated event
+            if emitter:
+                emitter("CHANNEL_UPDATED", {
+                    "channel_key": self._key or "unknown",
+                    "channel_type": "LastValueChannel",
+                    "value": value,
+                    "version": self._version,
+                    "writer_node_id": writer_node_id
+                })
+
             return self._version
 
     def reset(self) -> None:
@@ -172,12 +193,14 @@ class ReducerChannel(Channel):
     Thread-safe: all writes acquire internal lock.
     """
 
-    def __init__(self, reducer_def: ReducerDef) -> None:
+    def __init__(self, reducer_def: ReducerDef, key: Optional[str] = None) -> None:
         """Initialize with a reducer definition.
-        
+
         Args:
             reducer_def: Reducer definition (strategy + optional custom function)
+            key: Optional channel key (used in events and error messages)
         """
+        self._key = key
         self._reducer_def = reducer_def
         self._reducer_registry = ReducerRegistry()
         self._value: Any = None
@@ -190,13 +213,14 @@ class ReducerChannel(Channel):
         with self._lock:
             return (self._value, self._version)
 
-    def write(self, value: Any, writer_node_id: str) -> int:
+    def write(self, value: Any, writer_node_id: str, emitter=None) -> int:
         """Write a value, applying reducer to merge with current value.
-        
+
         Args:
             value: Value to write
             writer_node_id: ID of the node writing
-            
+            emitter: Optional callable to emit events (signature: (event_type: str, payload: Dict))
+
         Returns:
             New version number
         """
@@ -209,6 +233,18 @@ class ReducerChannel(Channel):
                 self._reducer_def.function
             )
             self._version += 1
+
+            # Emit channel updated event with reducer strategy
+            if emitter:
+                emitter("CHANNEL_UPDATED", {
+                    "channel_key": self._key or "unknown",
+                    "channel_type": "ReducerChannel",
+                    "value": self._value,
+                    "version": self._version,
+                    "writer_node_id": writer_node_id,
+                    "reducer_strategy": self._reducer_def.strategy.value
+                })
+
             return self._version
 
     def reset(self) -> None:
@@ -242,15 +278,17 @@ class BarrierChannel(Channel):
     Thread-safe: all writes acquire internal lock.
     """
 
-    def __init__(self, expected_writers: int) -> None:
+    def __init__(self, expected_writers: int, key: Optional[str] = None) -> None:
         """Initialize barrier with expected number of writers.
-        
+
         Args:
             expected_writers: Number of nodes that must write before barrier releases
+            key: Optional channel key (used in events and error messages)
         """
         if expected_writers < 1:
             raise ValueError(f"expected_writers must be >= 1, got {expected_writers}")
-        
+
+        self._key = key
         self._expected_writers = expected_writers
         self._accumulated: List[Any] = []
         self._writers: Set[str] = set()
@@ -271,16 +309,17 @@ class BarrierChannel(Channel):
             else:
                 return (None, self._version)
 
-    def write(self, value: Any, writer_node_id: str) -> int:
+    def write(self, value: Any, writer_node_id: str, emitter=None) -> int:
         """Write a value, accumulating until all expected writers have written.
-        
+
         Args:
             value: Value to write
             writer_node_id: ID of the node writing
-            
+            emitter: Optional callable to emit events (signature: (event_type: str, payload: Dict))
+
         Returns:
             New version number (increments only when barrier releases)
-            
+
         Raises:
             ValueError: If the same writer tries to write twice
         """
@@ -290,15 +329,25 @@ class BarrierChannel(Channel):
                 raise ValueError(
                     f"Writer '{writer_node_id}' has already written to this barrier"
                 )
-            
+
             self._writers.add(writer_node_id)
             self._accumulated.append(value)
-            
+
             # Check if barrier should release
             if len(self._writers) == self._expected_writers:
                 self._released = True
                 self._version += 1
-            
+
+                # Emit event only when barrier releases (version increments)
+                if emitter:
+                    emitter("CHANNEL_UPDATED", {
+                        "channel_key": self._key or "unknown",
+                        "channel_type": "BarrierChannel",
+                        "value": self._accumulated.copy(),
+                        "version": self._version,
+                        "writer_node_id": writer_node_id
+                    })
+
             return self._version
 
     def reset(self) -> None:
@@ -331,13 +380,19 @@ class BarrierChannel(Channel):
 
 class ChannelStore:
     """Container managing all channels for a workflow execution.
-    
+
     Provides read/write/versioning API and factory method for building
     channels from WorkflowDef.state.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, emitter=None) -> None:
+        """Initialize ChannelStore.
+
+        Args:
+            emitter: Optional callable for channel event emission (signature: (event_type: str, payload: Dict))
+        """
         self.channels: Dict[str, Channel] = {}
+        self._emitter = emitter
 
     def read(self, key: str) -> Tuple[Any, int]:
         """Read value and version from a channel.
@@ -357,21 +412,21 @@ class ChannelStore:
 
     def write(self, key: str, value: Any, writer_node_id: str) -> int:
         """Write a value to a channel.
-        
+
         Args:
             key: Channel key (state field name)
             value: Value to write
             writer_node_id: ID of the node writing
-            
+
         Returns:
             New version number
-            
+
         Raises:
             KeyError: If key doesn't exist
         """
         if key not in self.channels:
             raise KeyError(f"Channel '{key}' not found")
-        return self.channels[key].write(value, writer_node_id)
+        return self.channels[key].write(value, writer_node_id, emitter=self._emitter)
 
     def get_versions(self) -> Dict[str, int]:
         """Get immutable snapshot of all channel versions.
@@ -402,7 +457,7 @@ class ChannelStore:
             channel.reset()
 
     @classmethod
-    def from_workflow_def(cls, workflow_def: WorkflowDef) -> "ChannelStore":
+    def from_workflow_def(cls, workflow_def: WorkflowDef, emitter=None) -> "ChannelStore":
         """Factory method to build ChannelStore from WorkflowDef.
 
         Creates channels based on state field definitions:
@@ -413,13 +468,14 @@ class ChannelStore:
 
         Args:
             workflow_def: Workflow definition with state field declarations
+            emitter: Optional callable for channel event emission (signature: (event_type: str, payload: Dict))
 
         Returns:
             ChannelStore with channels for each state field (empty if no state block)
         """
         from dag_executor.schema import ChannelFieldDef, ReducerDef
 
-        store = cls()
+        store = cls(emitter=emitter)
 
         if workflow_def.state:
             for key, field_def in workflow_def.state.items():
@@ -434,7 +490,7 @@ class ChannelStore:
                             channel = LastValueChannel(key=key)
                             store.channels[key] = channel
                         else:
-                            channel = ReducerChannel(field_def.reducer)
+                            channel = ReducerChannel(field_def.reducer, key=key)
                             store.channels[key] = channel
 
                     if field_def.default is not None:
@@ -446,6 +502,6 @@ class ChannelStore:
                     if field_def.strategy == ReducerStrategy.OVERWRITE:
                         store.channels[key] = LastValueChannel(key=key)
                     else:
-                        store.channels[key] = ReducerChannel(field_def)
+                        store.channels[key] = ReducerChannel(field_def, key=key)
 
         return store
