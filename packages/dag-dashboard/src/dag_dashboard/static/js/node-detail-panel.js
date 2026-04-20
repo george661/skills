@@ -208,10 +208,9 @@ class NodeDetailPanel {
 
         return `
             <div class="error-container">
-                <details>
-                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 0.5rem;">Error — click to expand</summary>
-                    <pre class="error-text">${this.escapeHtml(node.error)}</pre>
-                    <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Last 20 log lines:</h4>
+                <pre class="error-text">${this.escapeHtml(node.error)}</pre>
+                <details style="margin-top: 1rem;">
+                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 0.5rem;">Last 20 log lines</summary>
                     <pre class="error-text">${this.escapeHtml(logTail)}</pre>
                 </details>
             </div>

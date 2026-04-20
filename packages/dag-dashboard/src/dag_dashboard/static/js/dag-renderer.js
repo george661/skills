@@ -120,8 +120,12 @@ class DAGRenderer {
             yOffset += 12;
         }
 
-        // Token badge (if token breakdown available)
-        const totalTokens = (node.tokens_input || 0) + (node.tokens_output || 0) + (node.tokens_cache || 0);
+        // Token badge (mirror node-detail-panel.js fallback logic)
+        // Use breakdown sum when any breakdown field present, else fall back to node.tokens
+        const hasBreakdown = node.tokens_input != null || node.tokens_output != null || node.tokens_cache != null;
+        const totalTokens = hasBreakdown
+            ? (node.tokens_input || 0) + (node.tokens_output || 0) + (node.tokens_cache || 0)
+            : (node.tokens || 0);
         if (totalTokens > 0) {
             const tokenText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
             tokenText.setAttribute('x', node.x);
