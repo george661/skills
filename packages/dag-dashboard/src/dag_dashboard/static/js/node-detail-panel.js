@@ -52,6 +52,7 @@ class NodeDetailPanel {
                     <button class="tab-btn" data-tab="logs">Logs</button>
                     <button class="tab-btn" data-tab="output">Output</button>
                     <button class="tab-btn" data-tab="artifacts">Artifacts</button>
+                    ${node.content_hash ? '<button class="tab-btn" data-tab="checkpoint">Checkpoint</button>' : ''}
                     ${node.error ? '<button class="tab-btn error-tab" data-tab="error">Error</button>' : ''}
                     ${hasRetryHistory ? '<button class="tab-btn" data-tab="retry-history">Retry History</button>' : ''}
                 </div>
@@ -73,6 +74,11 @@ class NodeDetailPanel {
                     <div class="tab-content" data-tab="artifacts">
                         ${this.renderArtifacts(node)}
                     </div>
+                    ${node.content_hash ? `
+                        <div class="tab-content" data-tab="checkpoint">
+                            ${this.renderCheckpoint(node)}
+                        </div>
+                    ` : ''}
                     ${node.error ? `
                         <div class="tab-content" data-tab="error">
                             ${this.renderError(node)}
@@ -265,6 +271,99 @@ class NodeDetailPanel {
                 `).join('')}
             </div>
         `;
+    }
+
+    renderCheckpoint(node) {
+        if (!node.content_hash) {
+            return '<p class="empty-state">No checkpoint data</p>';
+        }
+
+        // Initially render a loading state, then fetch checkpoint comparison data
+        setTimeout(() => this.loadCheckpointData(node), 0);
+
+        return `
+            <div class="checkpoint-container">
+                <div class="checkpoint-hash">
+                    <label>Content Hash:</label>
+                    <div class="content-hash-display" title="${this.escapeHtml(node.content_hash)}">
+                        ${this.escapeHtml(node.content_hash.substring(0, 16))}...
+                        <button class="copy-hash-btn" data-hash="${this.escapeHtml(node.content_hash)}" title="Copy full hash">📋</button>
+                    </div>
+                </div>
+                <div class="checkpoint-versions" id="checkpoint-versions-${node.id}">
+                    <p>Loading version comparison...</p>
+                </div>
+            </div>
+        `;
+    }
+
+    async loadCheckpointData(node) {
+        try {
+            const response = await fetch(`/api/workflows/${node.run_id}/nodes/${node.id}/checkpoint`);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const data = await response.json();
+
+            const container = document.getElementById(`checkpoint-versions-${node.id}`);
+            if (!container) return;  // Panel was closed
+
+            const hashedMismatches = data.mismatches && data.mismatches.length > 0;
+
+            container.innerHTML = `
+                <h4>Input Versions</h4>
+                ${hashedMismatches ? '<p class="checkpoint-warning">⚠️ Version mismatches detected - re-execution may be triggered on resume</p>' : ''}
+                <table class="checkpoint-table">
+                    <thead>
+                        <tr>
+                            <th>Channel Key</th>
+                            <th>Checkpoint Version</th>
+                            <th>Current Version</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${Object.entries(data.input_versions || {}).map(([key, checkpointVer]) => {
+                            const currentVer = data.current_versions[key];
+                            const mismatch = data.mismatches.find(m => m.channel_key === key);
+                            const status = mismatch ? mismatch.status : 'match';
+                            const statusClass = status === 'match' ? 'version-match' : status === 'mismatch' ? 'version-mismatch' : 'version-missing';
+
+                            return `
+                                <tr class="${statusClass}">
+                                    <td>${this.escapeHtml(key)}</td>
+                                    <td>${checkpointVer}</td>
+                                    <td>${currentVer != null ? currentVer : '<em>missing</em>'}</td>
+                                    <td><span class="status-badge status-${status}">${status}</span></td>
+                                </tr>
+                            `;
+                        }).join('')}
+                        ${data.mismatches.filter(m => m.status === 'extra').map(m => `
+                            <tr class="version-extra">
+                                <td>${this.escapeHtml(m.channel_key)}</td>
+                                <td><em>not in checkpoint</em></td>
+                                <td>${m.current_version}</td>
+                                <td><span class="status-badge status-extra">extra</span></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+
+            // Add copy hash button handler
+            container.closest('.checkpoint-container').querySelector('.copy-hash-btn')?.addEventListener('click', (e) => {
+                const hash = e.target.dataset.hash;
+                navigator.clipboard.writeText(hash);
+                e.target.textContent = '✓';
+                setTimeout(() => { e.target.textContent = '📋'; }, 1500);
+            });
+
+        } catch (err) {
+            const container = document.getElementById(`checkpoint-versions-${node.id}`);
+            if (container) {
+                container.innerHTML = `<p class="error-state">Failed to load checkpoint comparison: ${this.escapeHtml(err.message)}</p>`;
+            }
+        }
     }
 
     renderApproval(node) {

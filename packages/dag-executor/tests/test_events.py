@@ -421,3 +421,34 @@ class TestEventEmitter:
         json_str = progress_event.model_dump_json()
         assert "node_progress" in json_str
         assert "Processing file 3/10" in json_str
+
+    def test_node_completed_with_checkpoint_metadata(self) -> None:
+        """Test NODE_COMPLETED event includes checkpoint data in metadata."""
+        event = WorkflowEvent(
+            event_type=EventType.NODE_COMPLETED,
+            workflow_id="wf-123",
+            node_id="node-1",
+            status=NodeStatus.COMPLETED,
+            metadata={
+                "state_diff": {"key": "value"},
+                "content_hash": "a" * 64,  # 64-char hex hash
+                "input_versions": {"channel_1": 1, "channel_2": 3}
+            },
+            timestamp=datetime(2026, 4, 14, 12, 0, 0)
+        )
+
+        # Verify checkpoint metadata is present
+        assert "content_hash" in event.metadata
+        assert "input_versions" in event.metadata
+        assert len(event.metadata["content_hash"]) == 64
+        assert isinstance(event.metadata["input_versions"], dict)
+        assert event.metadata["input_versions"]["channel_1"] == 1
+
+        # Verify state_diff still works (backward compatibility)
+        assert "state_diff" in event.metadata
+
+        # Verify serialization
+        json_str = event.model_dump_json()
+        parsed = WorkflowEvent.model_validate_json(json_str)
+        assert parsed.metadata["content_hash"] == "a" * 64
+        assert parsed.metadata["input_versions"] == {"channel_1": 1, "channel_2": 3}

@@ -15,7 +15,7 @@ from .queries import (
     get_artifacts, get_chat_messages, get_workflow_totals,
     insert_gate_decision, update_node, get_pending_gates, count_pending_gates,
     get_interrupt_checkpoint,
-    get_state_diff_timeline,
+    get_state_diff_timeline, get_checkpoint_comparison,
 )
 from .layout import compute_layout
 
@@ -109,6 +109,27 @@ async def get_workflow_node(
         "artifacts": artifacts,
         "chat_messages": chat_messages,
     }
+
+
+@router.get("/workflows/{run_id}/nodes/{node_id}/checkpoint")
+async def get_node_checkpoint(
+    request: Request,
+    run_id: str,
+    node_id: str,
+) -> Dict[str, Any]:
+    """Get checkpoint version comparison for a node."""
+    db_path = get_db_path(request)
+
+    # Verify node exists
+    node = get_node(db_path, node_id)
+    if node is None or node["run_id"] != run_id:
+        raise HTTPException(status_code=404, detail="Node execution not found")
+
+    comparison = get_checkpoint_comparison(db_path, run_id, node_id)
+    if comparison is None:
+        raise HTTPException(status_code=404, detail="No checkpoint data for this node")
+
+    return comparison
 
 
 @router.get("/workflows/{run_id}/layout")

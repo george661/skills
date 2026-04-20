@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from pydantic import model_validator
+from pydantic import ConfigDict, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class Settings(BaseSettings):
     """Application settings with secure defaults."""
 
-    model_config = SettingsConfigDict(env_prefix="DAG_DASHBOARD_")
+    model_config = SettingsConfigDict(env_prefix="DAG_DASHBOARD_", extra="allow")
 
     host: str = "127.0.0.1"
     port: int = 8100
@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     max_sse_connections: int = 50
     checkpoint_prefix: Optional[Path] = None
     checkpoint_dir: Optional[str] = None
+
+    # Trigger endpoint settings
+    trigger_enabled: bool = False
+    trigger_secret: Optional[str] = None
+    trigger_rate_limit_per_min: int = 10
+    workflows_dir: Path = Path("workflows")
 
     # Slack notification settings
     slack_enabled: bool = False

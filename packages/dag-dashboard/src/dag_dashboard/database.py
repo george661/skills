@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     inputs TEXT,
     outputs TEXT,
     error TEXT,
-    workflow_definition TEXT
+    workflow_definition TEXT,
+    trigger_source TEXT
 );
 
 -- 2. node_executions: Per-node execution within a workflow run
@@ -35,7 +36,9 @@ CREATE TABLE IF NOT EXISTS node_executions (
     cost REAL,
     tokens_input INTEGER,
     tokens_output INTEGER,
-    tokens_cache INTEGER
+    tokens_cache INTEGER,
+    content_hash TEXT,
+    input_versions TEXT
 );
 
 -- 3. chat_messages: LLM chat messages per node execution or workflow
@@ -194,6 +197,21 @@ def init_db(db_path: Path) -> None:
 
         try:
             cursor.execute("ALTER TABLE chat_messages ADD COLUMN operator_username TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE workflow_runs ADD COLUMN trigger_source TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN content_hash TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN input_versions TEXT")
         except sqlite3.OperationalError:
             pass
 

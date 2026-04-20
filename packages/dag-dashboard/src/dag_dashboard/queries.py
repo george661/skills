@@ -38,6 +38,7 @@ def insert_run(
     started_at: str,
     inputs: Optional[Dict[str, Any]] = None,
     workflow_definition: Optional[str] = None,
+    trigger_source: Optional[str] = None,
 ) -> str:
     """Insert a new workflow run."""
     # Validate workflow_name at query level (defense in depth)
@@ -48,10 +49,10 @@ def insert_run(
     try:
         conn.execute(
             """
-            INSERT INTO workflow_runs (id, workflow_name, status, started_at, inputs, workflow_definition)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO workflow_runs (id, workflow_name, status, started_at, inputs, workflow_definition, trigger_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (run_id, workflow_name, status, started_at, json.dumps(inputs) if inputs else None, workflow_definition)
+            (run_id, workflow_name, status, started_at, json.dumps(inputs) if inputs else None, workflow_definition, trigger_source)
         )
         conn.commit()
         return run_id
@@ -316,6 +317,77 @@ def list_nodes(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
             (run_id,)
         )
         return [_row_to_dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_checkpoint_comparison(db_path: Path, run_id: str, node_id: str) -> Optional[Dict[str, Any]]:
+    """Get checkpoint version comparison for a node.
+
+    Returns:
+        Dict with:
+        - content_hash: str
+        - input_versions: Dict[str, int] (checkpoint versions)
+        - current_versions: Dict[str, int] (current channel versions)
+        - mismatches: List[Dict] with channel_key, checkpoint_version, current_version
+        Returns None if node has no checkpoint data.
+    """
+    conn = get_connection(db_path)
+    try:
+        # Get node checkpoint data
+        cursor = conn.execute(
+            "SELECT content_hash, input_versions FROM node_executions WHERE id = ?",
+            (node_id,)
+        )
+        row = cursor.fetchone()
+        if not row or not row[0]:  # No checkpoint data
+            return None
+
+        content_hash, input_versions_json = row
+        input_versions = json.loads(input_versions_json) if input_versions_json else {}
+
+        # Get current channel versions for this run
+        cursor = conn.execute(
+            "SELECT channel_key, version FROM channel_states WHERE run_id = ?",
+            (run_id,)
+        )
+        current_versions = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # Find mismatches
+        mismatches = []
+        for channel_key, checkpoint_ver in input_versions.items():
+            current_ver = current_versions.get(channel_key)
+            if current_ver is None:
+                mismatches.append({
+                    "channel_key": channel_key,
+                    "checkpoint_version": checkpoint_ver,
+                    "current_version": None,
+                    "status": "missing"
+                })
+            elif current_ver != checkpoint_ver:
+                mismatches.append({
+                    "channel_key": channel_key,
+                    "checkpoint_version": checkpoint_ver,
+                    "current_version": current_ver,
+                    "status": "mismatch"
+                })
+
+        # Check for extra channels in current state
+        for channel_key, current_ver in current_versions.items():
+            if channel_key not in input_versions:
+                mismatches.append({
+                    "channel_key": channel_key,
+                    "checkpoint_version": None,
+                    "current_version": current_ver,
+                    "status": "extra"
+                })
+
+        return {
+            "content_hash": content_hash,
+            "input_versions": input_versions,
+            "current_versions": current_versions,
+            "mismatches": mismatches
+        }
     finally:
         conn.close()
 
