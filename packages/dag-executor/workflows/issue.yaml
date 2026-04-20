@@ -80,7 +80,7 @@ nodes:
       
       Search for potential parent Epics if needed:
       ```bash
-      npx tsx ~/.claude/skills/issues/search_issues.ts '{"jql": "project = GW AND issuetype = Epic AND text ~ \"<search-term>\"", "max_results": 5}'
+      npx tsx ~/.claude/skills/issues/search_issues.ts '{"jql": "project = ${TENANT_PROJECT} AND issuetype = Epic AND text ~ \"<search-term>\"", "max_results": 5}'
       ```
       
       Output as JSON: {"issue_type": "Epic|Epic-child|standalone", "parent_key": "GW-XXXX or null"}
@@ -103,7 +103,7 @@ nodes:
       
       Use the issues router to search existing issues:
       ```bash
-      npx tsx ~/.claude/skills/issues/search_issues.ts '{"jql": "project = GW AND text ~ \"${refinement_refined_summary}\"", "max_results": 5}'
+      npx tsx ~/.claude/skills/issues/search_issues.ts '{"jql": "project = ${TENANT_PROJECT} AND text ~ \"${refinement_refined_summary}\"", "max_results": 5}'
       ```
       
       Determine if this is a duplicate of an existing issue.
@@ -138,28 +138,19 @@ nodes:
       
       # Create issue
       if [ "$issue_type" = "Epic" ]; then
-        issue_result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "{\"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Epic\", \"labels\": [\"step:backlog\"]}")
+        issue_result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "{\"project_key\": \"${TENANT_PROJECT}\", \"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Epic\", \"labels\": [\"step:backlog\"]}")
       elif [ "$issue_type" = "Epic-child" ] && [ -n "$parent_key" ]; then
-        issue_result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "{\"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Story\", \"labels\": [\"step:backlog\"]}")
-        issue_key=$(echo "$issue_result" | jq -r '.key')
-        # Link to parent Epic
-        npx tsx ~/.claude/skills/issues/add_issue_link.ts "{\"issue_key\": \"$issue_key\", \"linked_issue_key\": \"$parent_key\", \"link_type\": \"is child of\"}"
+        issue_result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "{\"project_key\": \"${TENANT_PROJECT}\", \"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Story\", \"labels\": [\"step:backlog\"], \"parent\": \"$parent_key\"}")
       else
-        issue_result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "{\"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Task\", \"labels\": [\"step:backlog\"]}")
+        issue_result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "{\"project_key\": \"${TENANT_PROJECT}\", \"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Task\", \"labels\": [\"step:backlog\"]}")
       fi
       
       issue_key=$(echo "$issue_result" | jq -r '.key')
       
       # Transition to To Do
-      npx tsx ~/.claude/skills/issues/transition_issue.ts "{\"issue_key\": \"$issue_key\", \"transition\": \"To Do\"}"
-      
-      # Consolidation check (minimum fidelity)
-      if [ -f ~/.cache/garden/issues/index.json ]; then
-        # Grep for same-repo overlaps and print hint (non-blocking)
-        grep -l "$issue_key" ~/.cache/garden/issues/index.json 2>/dev/null && echo "Hint: Consider consolidating with related issues" || true
-      else
-        echo "Consolidation check skipped (cache not available)"
-      fi
+      transitions=$(npx tsx ~/.claude/skills/issues/list_transitions.ts "{\"issue_key\": \"$issue_key\"}")
+      transition_id=$(echo "$transitions" | jq -r '.transitions[] | select(.name == "To Do") | .id')
+      npx tsx ~/.claude/skills/issues/transition_issue.ts "{\"issue_key\": \"$issue_key\", \"transition_id\": \"$transition_id\"}"
       
       # Update labels
       npx tsx ~/.claude/skills/issues/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": [\"step:to-do\", \"outcome:success-issue-created\"], \"notify_users\": false}"

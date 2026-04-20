@@ -110,7 +110,7 @@ nodes:
       
       Use the issues router to search existing bugs:
       ```bash
-      npx tsx ~/.claude/skills/issues/search_issues.ts '{"jql": "project = GW AND issuetype = Bug AND text ~ \"${description}\"", "max_results": 5}'
+      npx tsx ~/.claude/skills/issues/search_issues.ts '{"jql": "project = ${TENANT_PROJECT} AND issuetype = Bug AND text ~ \"${description}\"", "max_results": 5}'
       ```
       
       Evidence:
@@ -180,7 +180,7 @@ nodes:
       
       Use the issues router to create the bug:
       ```bash
-      npx tsx ~/.claude/skills/issues/create_issue.ts '{"summary": "Bug: <summary>", "description": "<description>", "issue_type": "Bug", "labels": ["bug:unverified"]}'
+      npx tsx ~/.claude/skills/issues/create_issue.ts '{"project_key": "${TENANT_PROJECT}", "summary": "Bug: <summary>", "description": "<description>", "issue_type": "Bug", "labels": ["bug:unverified"]}'
       ```
       
       Output as JSON: {"bug_key": "GW-XXXX", "summary": "created summary"}
@@ -227,19 +227,13 @@ nodes:
       source_issue="${source_issue:-}"
       
       # Transition bug to To Do
-      npx tsx ~/.claude/skills/issues/transition_issue.ts "{\"issue_key\": \"$bug_key\", \"transition\": \"To Do\"}"
+      transitions=$(npx tsx ~/.claude/skills/issues/list_transitions.ts "{\"issue_key\": \"$bug_key\"}")
+      transition_id=$(echo "$transitions" | jq -r '.transitions[] | select(.name == "To Do") | .id')
+      npx tsx ~/.claude/skills/issues/transition_issue.ts "{\"issue_key\": \"$bug_key\", \"transition_id\": \"$transition_id\"}"
       
       # Add traceability link if source_issue is set
       if [ -n "$source_issue" ]; then
-        npx tsx ~/.claude/skills/issues/add_issue_link.ts "{\"issue_key\": \"$bug_key\", \"linked_issue_key\": \"$source_issue\", \"link_type\": \"relates to\"}"
-      fi
-      
-      # Consolidation check (minimum fidelity)
-      if [ -f ~/.cache/garden/issues/index.json ]; then
-        # Grep for same-repo overlaps and print hint (non-blocking)
-        grep -l "$bug_key" ~/.cache/garden/issues/index.json 2>/dev/null && echo "Hint: Consider consolidating with related issues" || true
-      else
-        echo "Consolidation check skipped (cache not available)"
+        npx tsx ~/.claude/skills/issues/add_issue_link.ts "{\"inward_issue_key\": \"$bug_key\", \"outward_issue_key\": \"$source_issue\", \"link_type\": \"Relates\"}"
       fi
       
       # Set step and outcome labels
