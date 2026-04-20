@@ -9,6 +9,8 @@ from dag_dashboard.models import (
     NodeExecutionResponse,
     PaginatedResponse,
     ListParams,
+    GateDecision,
+    GateDecisionRequest,
 )
 
 
@@ -143,3 +145,38 @@ def test_list_params_valid_status():
     """Test ListParams accepts valid status values."""
     params = ListParams(status=RunStatus.COMPLETED)
     assert params.status == RunStatus.COMPLETED
+
+
+def test_gate_decision_enum_values():
+    """Test GateDecision enum has approved and rejected values."""
+    assert GateDecision.APPROVED == "approved"
+    assert GateDecision.REJECTED == "rejected"
+
+
+def test_gate_decision_request_valid():
+    """Test GateDecisionRequest accepts valid data."""
+    data = {
+        "decided_by": "alice",
+        "comment": "Looks good to proceed",
+    }
+    request = GateDecisionRequest(**data)
+    assert request.decided_by == "alice"
+    assert request.comment == "Looks good to proceed"
+
+
+def test_gate_decision_request_optional_fields():
+    """Test GateDecisionRequest allows optional fields."""
+    request = GateDecisionRequest()
+    assert request.decided_by is None
+    assert request.comment is None
+
+
+def test_gate_decision_request_rejects_long_comment():
+    """Test GateDecisionRequest rejects comment > 1000 chars."""
+    data = {
+        "decided_by": "alice",
+        "comment": "x" * 1001,
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        GateDecisionRequest(**data)
+    assert "comment" in str(exc_info.value)
