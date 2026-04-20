@@ -117,3 +117,49 @@ class StatusSummary(BaseModel):
     failed: int
     pending: int
     cancelled: int
+
+
+class ChatRole(str, Enum):
+    """Whitelisted role values for chat messages."""
+    OPERATOR = "operator"
+    AGENT = "agent"
+    SYSTEM = "system"
+
+
+class ChatMessageRequest(BaseModel):
+    """Request model for posting chat messages."""
+    model_config = {"extra": "forbid"}
+
+    content: str = Field(min_length=1, max_length=10000)
+    operator_username: str
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, v: str) -> str:
+        """Validate content doesn't contain shell metacharacters and isn't empty after stripping."""
+        # Strip and check for empty
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("content must contain at least 1 character after stripping whitespace")
+
+        # Check for shell metacharacters
+        dangerous_chars = [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\\"]
+        for char in dangerous_chars:
+            if char in v:
+                raise ValueError(f"content must not contain shell metacharacters: {char}")
+
+        return v
+
+
+class GateDecision(str, Enum):
+    """Whitelisted decision values for gate approvals."""
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class GateDecisionRequest(BaseModel):
+    """Request model for gate approval/rejection."""
+    model_config = {"extra": "forbid"}
+
+    decided_by: Optional[str] = None
+    comment: Optional[str] = Field(default=None, max_length=1000)

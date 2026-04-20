@@ -322,21 +322,41 @@ def list_nodes(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
 
 def insert_chat_message(
     db_path: Path,
-    execution_id: str,
-    role: str,
-    content: str,
-    created_at: str,
+    execution_id: Optional[str] = None,
+    role: str = "operator",
+    content: str = "",
+    created_at: str = "",
     metadata: Optional[Dict[str, Any]] = None,
+    run_id: Optional[str] = None,
+    operator_username: Optional[str] = None,
 ) -> Optional[int]:
-    """Insert a chat message for a node execution."""
+    """Insert a chat message for a node execution or workflow.
+
+    Args:
+        execution_id: Optional node execution ID (None for workflow-level messages)
+        role: Message role (operator, agent, system)
+        content: Message content
+        created_at: ISO timestamp
+        metadata: Optional JSON metadata
+        run_id: Optional workflow run ID (for workflow-level messages)
+        operator_username: Optional username of operator who sent message
+    """
     conn = get_connection(db_path)
     try:
         cursor = conn.execute(
             """
-            INSERT INTO chat_messages (execution_id, role, content, created_at, metadata)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO chat_messages (execution_id, role, content, created_at, metadata, run_id, operator_username)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (execution_id, role, content, created_at, json.dumps(metadata) if metadata else None)
+            (
+                execution_id,
+                role,
+                content,
+                created_at,
+                json.dumps(metadata) if metadata else None,
+                run_id,
+                operator_username
+            )
         )
         conn.commit()
         return cursor.lastrowid
@@ -344,14 +364,35 @@ def insert_chat_message(
         conn.close()
 
 
-def get_chat_messages(db_path: Path, execution_id: str) -> List[Dict[str, Any]]:
-    """Get all chat messages for a node execution."""
+def get_chat_messages(
+    db_path: Path,
+    execution_id: Optional[str] = None,
+    run_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Get all chat messages for a node execution or workflow run.
+
+    Args:
+        execution_id: Optional node execution ID
+        run_id: Optional workflow run ID
+
+    Returns:
+        List of chat messages ordered by created_at
+    """
     conn = get_connection(db_path)
     try:
-        cursor = conn.execute(
-            "SELECT * FROM chat_messages WHERE execution_id = ? ORDER BY created_at",
-            (execution_id,)
-        )
+        if execution_id:
+            cursor = conn.execute(
+                "SELECT * FROM chat_messages WHERE execution_id = ? ORDER BY created_at",
+                (execution_id,)
+            )
+        elif run_id:
+            cursor = conn.execute(
+                "SELECT * FROM chat_messages WHERE run_id = ? ORDER BY created_at",
+                (run_id,)
+            )
+        else:
+            # Return empty list if neither parameter provided
+            return []
         return [_row_to_dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
@@ -479,5 +520,110 @@ def get_workflow_totals(db_path: Path, run_id: str) -> Dict[str, Any]:
                 "failed_nodes": 0,
                 "skipped_nodes": 0,
             }
+    finally:
+        conn.close()
+
+
+def get_workflow_chat_history(
+    db_path: Path,
+    run_id: str,
+    limit: int = 50,
+    offset: int = 0
+) -> List[Dict[str, Any]]:
+    """Get paginated chat history for a workflow run.
+
+    Args:
+        db_path: Path to SQLite database
+        run_id: Workflow run ID
+        limit: Maximum number of messages to return
+        offset: Number of messages to skip
+
+    Returns:
+        List of chat messages ordered by created_at
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT * FROM chat_messages
+            WHERE run_id = ?
+            ORDER BY created_at
+            LIMIT ? OFFSET ?
+            """,
+            (run_id, limit, offset)
+        )
+        return [_row_to_dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def check_rate_limit(
+    db_path: Path,
+    run_id: str,
+    window_seconds: int = 60,
+    max_messages: int = 10
+) -> bool:
+    """Check if rate limit has been exceeded for a workflow run.
+
+    Args:
+        db_path: Path to SQLite database
+        run_id: Workflow run ID
+        window_seconds: Time window in seconds (default 60 for 1 minute)
+        max_messages: Maximum messages allowed in the window
+
+    Returns:
+        True if rate limit exceeded, False otherwise
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT COUNT(*) as count FROM chat_messages
+            WHERE run_id = ?
+            AND datetime(created_at) >= datetime('now', '-' || ? || ' seconds')
+            """,
+            (run_id, window_seconds)
+        )
+        result = cursor.fetchone()
+        count = result["count"] if result else 0
+        return count >= max_messages
+    finally:
+        conn.close()
+
+
+def get_pending_gates(db_path: Path) -> List[Dict[str, Any]]:
+    """Get all interrupted nodes in running workflows (pending gate approvals)."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT ne.*
+            FROM node_executions ne
+            JOIN workflow_runs wr ON ne.run_id = wr.id
+            WHERE ne.status = 'interrupted'
+            AND wr.status = 'running'
+            ORDER BY ne.started_at
+            """
+        )
+        return [_row_to_dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def count_pending_gates(db_path: Path) -> int:
+    """Count the number of pending gate approvals (interrupted nodes in running workflows)."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM node_executions ne
+            JOIN workflow_runs wr ON ne.run_id = wr.id
+            WHERE ne.status = 'interrupted'
+            AND wr.status = 'running'
+            """
+        )
+        result = cursor.fetchone()
+        return int(result[0]) if result else 0
     finally:
         conn.close()

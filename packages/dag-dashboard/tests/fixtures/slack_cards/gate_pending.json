@@ -1,0 +1,46 @@
+{
+  "text": "Gate pending: pipeline-a / review-gate",
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": ":hourglass: Gate pending: pipeline-a"
+      }
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Run ID*\n`run-123`"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Gate node*\n`review-gate`"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Condition*\n`status == 'approved'`"
+      }
+    },
+    {
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "View in Dashboard"
+          },
+          "url": "https://dash.example.com/runs/run-123",
+          "action_id": "view_run_run-123"
+        }
+      ]
+    }
+  ]
+}

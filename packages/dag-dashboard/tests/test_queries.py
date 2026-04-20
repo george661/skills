@@ -22,6 +22,8 @@ from dag_dashboard.queries import (
     get_gate_decisions,
     insert_artifact,
     get_artifacts,
+    get_pending_gates,
+    count_pending_gates,
 )
 from dag_dashboard.models import SortBy, RunStatus
 
@@ -529,3 +531,58 @@ def test_get_workflow_totals_handles_null_cost_and_tokens(db_path: Path):
     assert totals["tokens_output"] == 0
     assert totals["tokens_cache"] == 0
     assert totals["total_tokens"] == 0
+
+
+def test_get_pending_gates_empty(db_path: Path):
+    """Test get_pending_gates returns empty list when no interrupted nodes exist."""
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(db_path, "run-1:node-1", "run-1", "node-1", "completed", started_at="2026-04-17T12:00:00Z")
+
+    pending = get_pending_gates(db_path)
+    assert len(pending) == 0
+
+
+def test_get_pending_gates_finds_interrupted_nodes(db_path: Path):
+    """Test get_pending_gates returns nodes with status='interrupted'."""
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(db_path, "run-1:gate-1", "run-1", "gate-1", "interrupted", started_at="2026-04-17T12:00:00Z")
+    insert_node(db_path, "run-1:node-2", "run-1", "node-2", "completed", started_at="2026-04-17T12:01:00Z")
+
+    pending = get_pending_gates(db_path)
+    assert len(pending) == 1
+    assert pending[0]["node_name"] == "gate-1"
+    assert pending[0]["status"] == "interrupted"
+
+
+def test_get_pending_gates_only_running_workflows(db_path: Path):
+    """Test get_pending_gates only returns gates from running workflows."""
+    # Running workflow with interrupted node
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(db_path, "run-1:gate-1", "run-1", "gate-1", "interrupted", started_at="2026-04-17T12:00:00Z")
+
+    # Completed workflow with interrupted node (should be excluded)
+    insert_run(db_path, "run-2", "wf1", "completed", "2026-04-17T11:00:00Z")
+    insert_node(db_path, "run-2:gate-2", "run-2", "gate-2", "interrupted", started_at="2026-04-17T11:00:00Z")
+
+    pending = get_pending_gates(db_path)
+    assert len(pending) == 1
+    assert pending[0]["run_id"] == "run-1"
+
+
+def test_count_pending_gates_zero(db_path: Path):
+    """Test count_pending_gates returns 0 when no interrupted nodes exist."""
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(db_path, "run-1:node-1", "run-1", "node-1", "completed", started_at="2026-04-17T12:00:00Z")
+
+    count = count_pending_gates(db_path)
+    assert count == 0
+
+
+def test_count_pending_gates_multiple(db_path: Path):
+    """Test count_pending_gates counts multiple interrupted nodes."""
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(db_path, "run-1:gate-1", "run-1", "gate-1", "interrupted", started_at="2026-04-17T12:00:00Z")
+    insert_node(db_path, "run-1:gate-2", "run-1", "gate-2", "interrupted", started_at="2026-04-17T12:01:00Z")
+
+    count = count_pending_gates(db_path)
+    assert count == 2
