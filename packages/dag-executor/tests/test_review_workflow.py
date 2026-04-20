@@ -214,12 +214,22 @@ class TestVerdictFlow:
             "requirements_coverage", "test_adequacy",
         }
 
-    def test_analysis_nodes_not_hard_dependent_on_code_quality(
+    def test_analysis_nodes_depend_on_code_quality(
         self, nodes_by_id: Dict[str, NodeDef]
     ) -> None:
-        """Analysis nodes use conditional edges, not depends_on, for code_quality."""
-        assert "code_quality" not in nodes_by_id["requirements_coverage"].depends_on
-        assert "code_quality" not in nodes_by_id["test_adequacy"].depends_on
+        """Analysis nodes MUST depend_on code_quality so the edge-based skip
+        marker arrives before they start executing.
+
+        Previous design wanted these to run in parallel with code_quality via
+        conditional edges alone, but the executor resolves layers sequentially
+        — a node in layer N runs before any layer N+1 node completes. That
+        made the skip mark arrive after the fact, which meant
+        requirements_coverage and test_adequacy executed on the APPROVED
+        branch too (the exact race that GW-5056's workflow-invariants check
+        catches).
+        """
+        assert "code_quality" in nodes_by_id["requirements_coverage"].depends_on
+        assert "code_quality" in nodes_by_id["test_adequacy"].depends_on
 
     def test_requirements_coverage_keeps_jira_dependency(
         self, nodes_by_id: Dict[str, NodeDef]

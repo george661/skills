@@ -61,9 +61,13 @@ nodes:
     depends_on:
       - agentdb_health
     script: |
-      # Retrieve planning patterns from AgentDB
-      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/reflexion/reflexion_retrieve.ts \
-        '{"session_id": "${TENANT_NAMESPACE}", "task": "implementation-patterns", "k": 5}'
+      # Retrieve planning patterns from AgentDB.
+      # Build request with jq so TENANT_NAMESPACE expands (single-quoted JSON
+      # would ship the literal "${TENANT_NAMESPACE}" instead).
+      request=$(jq -n \
+        --arg session_id "$TENANT_NAMESPACE" \
+        '{session_id: $session_id, task: "implementation-patterns", k: 5}')
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/reflexion/reflexion_retrieve.ts "$request"
     output_format: json
 
   - id: fetch_issue
