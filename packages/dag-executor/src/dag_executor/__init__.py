@@ -64,6 +64,9 @@ from dag_executor.channels import (
     ChannelConflictError,
 )
 
+# Terminal visualization
+from dag_executor.terminal import ProgressBar, RunSummary, generate_mermaid
+
 __all__ = [
     "load_workflow",
     "load_workflow_from_string",
@@ -133,6 +136,10 @@ __all__ = [
     "ChannelStore",
     "ConflictError",
     "ChannelConflictError",
+    # Terminal visualization
+    "ProgressBar",
+    "RunSummary",
+    "generate_mermaid",
 ]
 
 
