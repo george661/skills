@@ -133,3 +133,17 @@ class ChatMessageRequest(BaseModel):
                 raise ValueError(f"content must not contain shell metacharacters: {char}")
 
         return v
+
+
+class GateDecision(str, Enum):
+    """Whitelisted decision values for gate approvals."""
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class GateDecisionRequest(BaseModel):
+    """Request model for gate approval/rejection."""
+    model_config = {"extra": "forbid"}
+
+    decided_by: Optional[str] = None
+    comment: Optional[str] = Field(default=None, max_length=1000)

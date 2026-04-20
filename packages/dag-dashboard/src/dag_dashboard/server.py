@@ -14,6 +14,7 @@ from .chat_relay import ChatRelay
 from .chat_routes import create_chat_router
 from .database import ensure_dir, init_db
 from .event_collector import EventCollector
+from .notifier import SlackNotifier
 from .sse import create_sse_router
 from .routes import router
 
@@ -25,7 +26,9 @@ def create_app(
     db_path: Optional[Path] = None,
     events_dir: Path = Path("dag-events"),
     pipe_root: Optional[Path] = None,
-    max_sse_connections: int = 50
+    max_sse_connections: int = 50,
+    slack_notifier: Optional[SlackNotifier] = None,
+    dashboard_url: str = "http://127.0.0.1:8100",
 ) -> FastAPI:
     """Create and configure FastAPI application."""
 
@@ -64,7 +67,9 @@ def create_app(
             events_dir=events_dir,
             db_path=db_path,
             broadcaster=broadcaster,
-            loop=loop
+            loop=loop,
+            slack_notifier=slack_notifier,
+            dashboard_url=dashboard_url,
         )
         collector.start()
         app.state.collector = collector
@@ -86,8 +91,9 @@ def create_app(
         lifespan=lifespan
     )
 
-    # Store db_dir in app state for lifespan and route access
+    # Store db_dir and events_dir in app state for lifespan and route access
     app.state.db_dir = db_dir
+    app.state.events_dir = events_dir
 
     # Register routes
     app.include_router(router)
