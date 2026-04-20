@@ -231,11 +231,22 @@ nodes:
     writes:
       - fix_result
     script: |
-      # Commit changes
-      git add -A
-      git commit -m "Fix PR review comments for ${issue_key}" || echo "No changes to commit"
-      # Push
-      git push
+      # Stage only the files reported by apply_fixes (avoid `git add -A` per CLAUDE.md).
+      files_json="${fix_result_files_changed:-[]}"
+      if echo "$files_json" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+        echo "$files_json" | jq -r '.[]' | while IFS= read -r f; do
+          [ -n "$f" ] && git add -- "$f"
+        done
+      else
+        echo "WARNING: fix_result.files_changed empty; nothing staged"
+      fi
+
+      if git diff --cached --quiet; then
+        echo "No staged changes to commit"
+      else
+        git commit -m "Fix PR review comments for ${issue_key}"
+        git push
+      fi
 
   # Phase 9: Residual scan
   - id: residual_scan

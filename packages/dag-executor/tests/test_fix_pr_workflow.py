@@ -334,5 +334,9 @@ class TestFixPrMockRunRetry:
         # Executor handles exponential backoff automatically
 
     def test_fix_pr_retry_path_skipped(self) -> None:
-        """Skip complex retry integration test (retry config validated above)."""
-        pass  # Retry behavior is tested by executor unit tests
+        """Placeholder: retry integration is covered by executor unit tests.
+
+        See tests/test_executor.py for exponential-backoff behavior; this
+        suite only asserts that the workflow declares retry correctly.
+        """
+        pass

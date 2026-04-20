@@ -40,6 +40,10 @@ inputs:
     type: string
     required: false
     default: ""
+  merge_method:
+    type: string
+    required: false
+    default: "squash"
 
 state:
   ci_result:
@@ -129,19 +133,27 @@ nodes:
       - verdict
     on_failure: stop
     script: |
-      # Scan Jira for most recent code review verdict
+      # Scan Jira for most recent code review verdict.
+      # Matches `### Verdict: <WORD>` anywhere in comment text, tolerant of trailing punctuation.
       issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
         "{\"issue_key\": \"${issue_key}\", \"fields\": \"comment\"}")
-      
-      verdict=$(echo "$issue" | jq -r '.fields.comment.comments[] |
-        select(.body.content[]?.content[]?.text? | contains("### Verdict:")) |
-        .body.content[]?.content[]?.text' | grep "Verdict:" | tail -1 | awk '{print $NF}')
-      
-      if [ "$verdict" = "REQUIRES" ] || echo "$verdict" | grep -q "REWORK"; then
-        echo "ERROR: Review verdict is REQUIRES REWORK"
+
+      verdict=$(echo "$issue" | jq -r '
+        [.. | .text? // empty | select(type == "string")] |
+        map(match("###[[:space:]]+Verdict:[[:space:]]+([A-Za-z_ ]+)"; "g").captures[0].string) |
+        map(select(. != null) | gsub("[[:space:]]+$"; "")) |
+        last // ""')
+
+      verdict_upper=$(echo "$verdict" | tr '[:lower:]' '[:upper:]')
+      if echo "$verdict_upper" | grep -qE '(REQUIRES[[:space:]]+REWORK|REWORK|REJECTED)'; then
+        echo "ERROR: Review verdict is '$verdict' — merge blocked"
         exit 1
       fi
-      
+      if [ -z "$verdict" ]; then
+        echo "ERROR: No review verdict found in Jira comments"
+        exit 1
+      fi
+
       echo "{\"verdict\": \"$verdict\"}"
     output_format: json
 
@@ -171,7 +183,14 @@ nodes:
       if [ -f "go.mod" ]; then
         go build ./... || exit 1
       elif [ -f "package.json" ]; then
-        npm run build 2>/dev/null || npm run compile 2>/dev/null || true
+        # Prefer build; fall back to compile. Failure is a hard stop.
+        if jq -e '.scripts.build' package.json >/dev/null 2>&1; then
+          npm run build || exit 1
+        elif jq -e '.scripts.compile' package.json >/dev/null 2>&1; then
+          npm run compile || exit 1
+        else
+          echo "No build/compile script found; skipping rebuild gate"
+        fi
       fi
 
   # Phase 7: Merge PR
@@ -188,11 +207,12 @@ nodes:
     script: |
       repo="${validation_criteria_repo}"
       pr_num="${validation_criteria_pr_number}"
-      
+      method="${merge_method:-squash}"
+
       # Merge the PR
       merge_result=$(npx tsx ~/.claude/skills/vcs/merge_pull_request.ts \
-        "{\"repo\": \"$repo\", \"pr_number\": \"$pr_num\", \"merge_method\": \"squash\"}")
-      
+        "{\"repo\": \"$repo\", \"pr_number\": \"$pr_num\", \"merge_method\": \"$method\"}")
+
       echo "{\"merge_result\": $merge_result}"
     output_format: json
 
