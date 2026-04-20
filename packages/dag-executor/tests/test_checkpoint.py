@@ -512,6 +512,34 @@ def test_list_workflows_empty(tmp_path):
     assert workflows == []
 
 
+def test_list_workflows_hyphenated_names(tmp_path):
+    """Test list_workflows correctly handles hyphenated workflow names via metadata."""
+    import json
+    store = CheckpointStore(str(tmp_path))
+
+    # Create run dirs with hyphenated workflow names
+    # Without metadata, the old algorithm would incorrectly parse "my-hyphen-wf-run1" as workflow="my"
+    # With metadata, it correctly reads workflow_name="my-hyphen-wf"
+    run_dir1 = tmp_path / "my-hyphen-wf-run1"
+    run_dir1.mkdir()
+    meta1 = {"workflow_name": "my-hyphen-wf", "run_id": "run1", "started_at": "2026-04-20T12:00:00Z", "status": "completed"}
+    (run_dir1 / "meta.json").write_text(json.dumps(meta1))
+
+    run_dir2 = tmp_path / "my-hyphen-wf-run2"
+    run_dir2.mkdir()
+    meta2 = {"workflow_name": "my-hyphen-wf", "run_id": "run2", "started_at": "2026-04-20T13:00:00Z", "status": "completed"}
+    (run_dir2 / "meta.json").write_text(json.dumps(meta2))
+
+    # Also test a second hyphenated workflow
+    run_dir3 = tmp_path / "another-multi-part-name-run3"
+    run_dir3.mkdir()
+    meta3 = {"workflow_name": "another-multi-part-name", "run_id": "run3", "started_at": "2026-04-20T14:00:00Z", "status": "running"}
+    (run_dir3 / "meta.json").write_text(json.dumps(meta3))
+
+    workflows = store.list_workflows()
+    assert workflows == ["another-multi-part-name", "my-hyphen-wf"]
+
+
 def test_save_load_resume_values(
     checkpoint_store: CheckpointStore,
     tmp_path: Path
