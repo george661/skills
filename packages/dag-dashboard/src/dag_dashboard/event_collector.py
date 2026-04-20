@@ -130,8 +130,11 @@ class EventCollector:
         workflow_name = event_data.get("workflow_name", "unknown")
         event_type = event_data.get("event_type", "unknown")
 
+        # For channel events emitted via WorkflowEvent, the payload is in the metadata field
+        # For backward compatibility, also check the payload field
+        raw_payload = event_data.get("payload") or event_data.get("metadata", {})
+
         # Serialize payload to JSON string if it's a dict
-        raw_payload = event_data.get("payload", {})
         if isinstance(raw_payload, dict):
             payload = json.dumps(raw_payload)
         elif isinstance(raw_payload, str):
