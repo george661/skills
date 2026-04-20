@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from .models import SortBy, RunStatus, StatusSummary, GateDecisionRequest, NodeStateDiff
 from .queries import (
     get_run, list_runs, get_node, list_nodes, get_status_counts,
-    get_artifacts, get_chat_messages, get_gate_decisions, get_workflow_totals,
+    get_artifacts, get_chat_messages, get_workflow_totals,
     insert_gate_decision, update_node, get_pending_gates, count_pending_gates,
     get_state_diff_timeline,
 )
