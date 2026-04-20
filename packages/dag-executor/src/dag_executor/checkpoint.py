@@ -490,6 +490,51 @@ class CheckpointStore:
             logger.warning(f"Corrupted interrupt checkpoint at {interrupt_path}: {e}")
             return None
 
+    def save_resume_values(
+        self,
+        workflow_name: str,
+        run_id: str,
+        values: Dict[str, Any]
+    ) -> None:
+        """Save resume values for workflow resume.
+
+        Args:
+            workflow_name: Name of the workflow
+            run_id: Unique run identifier
+            values: Resume values to inject on workflow resume
+        """
+        run_dir = self._get_run_dir(workflow_name, run_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        resume_path = run_dir / "resume_values.json"
+        resume_path.write_text(json.dumps(values, indent=2))
+        resume_path.chmod(0o600)
+
+    def load_resume_values(
+        self,
+        workflow_name: str,
+        run_id: str
+    ) -> Dict[str, Any]:
+        """Load resume values for workflow resume.
+
+        Args:
+            workflow_name: Name of the workflow
+            run_id: Unique run identifier
+
+        Returns:
+            Resume values dict if found, empty dict if missing or corrupted
+        """
+        resume_path = self._get_run_dir(workflow_name, run_id) / "resume_values.json"
+        if not resume_path.exists():
+            return {}
+
+        try:
+            data = json.loads(resume_path.read_text())
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Corrupted resume values at {resume_path}: {e}")
+            return {}
+
     def list_children(self, parent_ns: str) -> List[str]:
         """List child checkpoint directories for a parent workflow.
 

@@ -283,6 +283,31 @@ class EventCollector:
                 except Exception as e:
                     logger.warning(f"Failed to persist channel_conflict event for run {run_id}: {e}")
 
+            # Handle node_completed event: update node_executions with checkpoint data
+            completed_node_id: Optional[str] = None
+            if event_type == "node_completed":
+                try:
+                    metadata = event_data.get("metadata", {})
+                    content_hash = metadata.get("content_hash")
+                    input_versions = metadata.get("input_versions")
+                    completed_node_id = event_data.get("node_id")
+
+                    if completed_node_id and (content_hash or input_versions):
+                        # Serialize input_versions to JSON if present
+                        input_versions_json = json.dumps(input_versions) if input_versions else None
+
+                        # Update the node_executions row with checkpoint data
+                        cursor.execute(
+                            """
+                            UPDATE node_executions
+                            SET content_hash = ?, input_versions = ?
+                            WHERE id = ?
+                            """,
+                            (content_hash, input_versions_json, completed_node_id)
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to persist checkpoint data for node {completed_node_id}: {e}")
+
             conn.commit()
         finally:
             conn.close()

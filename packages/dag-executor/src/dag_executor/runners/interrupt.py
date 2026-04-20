@@ -85,7 +85,8 @@ class InterruptRunner(BaseRunner):
             output={
                 "message": message,
                 "resume_key": resume_key,
-                "channels": channels
+                "channels": channels,
+                "node_type": "interrupt"
             }
         )
     
