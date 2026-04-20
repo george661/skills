@@ -285,3 +285,160 @@ def test_compute_layout_includes_failure_path_flag():
     assert nodes_by_name["B"]["failure_path"] is True
     # C skipped and depends on B → on failure path
     assert nodes_by_name["C"]["failure_path"] is True
+
+
+def test_compute_layout_conditional_edges():
+    """Test layout computation with conditional edges (edges: field)."""
+    nodes = [
+        {
+            "id": "run1:review",
+            "run_id": "run1",
+            "node_name": "review",
+            "status": "completed",
+            "depends_on": [],
+            "node_data": {
+                "edges": [
+                    {"target": "merge", "condition": "review.verdict == 'approve'"},
+                    {"target": "revise", "condition": "review.verdict == 'revise'"},
+                    {"target": "escalate", "default": True}
+                ]
+            }
+        },
+        {
+            "id": "run1:merge",
+            "run_id": "run1",
+            "node_name": "merge",
+            "status": "pending",
+            "depends_on": [],
+        },
+        {
+            "id": "run1:revise",
+            "run_id": "run1",
+            "node_name": "revise",
+            "status": "pending",
+            "depends_on": [],
+        },
+        {
+            "id": "run1:escalate",
+            "run_id": "run1",
+            "node_name": "escalate",
+            "status": "pending",
+            "depends_on": [],
+        },
+    ]
+
+    layout = compute_layout(nodes)
+
+    # Should have 3 edges (one per EdgeDef)
+    edges = layout["edges"]
+    assert len(edges) == 3
+
+    # Verify each edge has required metadata
+    for edge in edges:
+        assert "edge_id" in edge
+        assert "edge_group_id" in edge
+        assert "branch_set_id" in edge
+        assert edge["source"] == "review"
+        assert edge["target"] in ["merge", "revise", "escalate"]
+
+    # Find the default edge
+    default_edge = [e for e in edges if e.get("default") is True]
+    assert len(default_edge) == 1
+    assert default_edge[0]["target"] == "escalate"
+
+    # Verify non-default edges have conditions
+    non_default_edges = [e for e in edges if not e.get("default")]
+    assert len(non_default_edges) == 2
+    assert all("condition" in e for e in non_default_edges)
+
+
+def test_compute_layout_fan_out_multi_target():
+    """Test layout computation with fan-out edges (targets: [a, b])."""
+    nodes = [
+        {
+            "id": "run1:start",
+            "run_id": "run1",
+            "node_name": "start",
+            "status": "completed",
+            "depends_on": [],
+            "node_data": {
+                "edges": [
+                    {"targets": ["task_a", "task_b"], "condition": "start.go"},
+                    {"target": "task_a", "default": True}
+                ]
+            }
+        },
+        {
+            "id": "run1:task_a",
+            "run_id": "run1",
+            "node_name": "task_a",
+            "status": "pending",
+            "depends_on": [],
+        },
+        {
+            "id": "run1:task_b",
+            "run_id": "run1",
+            "node_name": "task_b",
+            "status": "pending",
+            "depends_on": [],
+        },
+    ]
+
+    layout = compute_layout(nodes)
+
+    # Should have 3 edges: 2 from fan-out + 1 default
+    edges = layout["edges"]
+    assert len(edges) == 3
+
+    # Find fan-out edges (same edge_group_id)
+    fan_out_edges = [e for e in edges if e.get("condition") == "start.go"]
+    assert len(fan_out_edges) == 2
+    assert fan_out_edges[0]["edge_group_id"] == fan_out_edges[1]["edge_group_id"]
+
+    # Verify targets
+    fan_out_targets = sorted([e["target"] for e in fan_out_edges])
+    assert fan_out_targets == ["task_a", "task_b"]
+
+
+def test_compute_layout_default_edge():
+    """Test layout computation with default edge as fallback."""
+    nodes = [
+        {
+            "id": "run1:gateway",
+            "run_id": "run1",
+            "node_name": "gateway",
+            "status": "completed",
+            "depends_on": [],
+            "node_data": {
+                "edges": [
+                    {"target": "path_a", "condition": "gateway.choice == 'a'"},
+                    {"target": "path_b", "default": True}
+                ]
+            }
+        },
+        {
+            "id": "run1:path_a",
+            "run_id": "run1",
+            "node_name": "path_a",
+            "status": "pending",
+            "depends_on": [],
+        },
+        {
+            "id": "run1:path_b",
+            "run_id": "run1",
+            "node_name": "path_b",
+            "status": "pending",
+            "depends_on": [],
+        },
+    ]
+
+    layout = compute_layout(nodes)
+
+    edges = layout["edges"]
+    assert len(edges) == 2
+
+    # Verify default edge exists and is marked
+    default_edges = [e for e in edges if e.get("default") is True]
+    assert len(default_edges) == 1
+    assert default_edges[0]["target"] == "path_b"
+    assert default_edges[0].get("condition") is None  # Default edges have no condition

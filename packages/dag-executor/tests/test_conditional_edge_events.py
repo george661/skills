@@ -34,7 +34,7 @@ def test_conditional_edge_emits_condition_evaluated():
     # The approve condition evaluates to true, so that gets evaluated and matches (first-match-wins)
     # The revise condition is NOT evaluated because first match already won
     # The default edge is not evaluated (no condition)
-    assert len(condition_events) >= 1, f"Expected at least 1 CONDITION_EVALUATED event, got {len(condition_events)}"
+    assert len(condition_events) == 1, f"Expected exactly 1 CONDITION_EVALUATED event, got {len(condition_events)}"
 
     # Check that the approve condition was evaluated
     approve_event = [e for e in condition_events if 'approve' in e.metadata.get('condition', '')]
@@ -114,10 +114,6 @@ def test_default_edge_fires_when_no_condition_matches():
         
         event_emitter = EventEmitter()
         event_emitter.add_listener(event_listener)
-
-        
-        
-
         
         executor = WorkflowExecutor()
         
@@ -157,7 +153,7 @@ def test_multi_target_fan_out_emits_one_event_per_target():
                 "script": 'echo \'{"go": true}\'',
                 "output_format": "json",
                 "edges": [
-                    {"targets": ["task_a", "task_b"], "condition": "start.go == True"},
+                    {"targets": ["task_a", "task_b"], "condition": "start.go"},
                     {"target": "task_a", "default": True}  # Default edge required
                 ]
             },
@@ -193,10 +189,6 @@ def test_multi_target_fan_out_emits_one_event_per_target():
         
         event_emitter = EventEmitter()
         event_emitter.add_listener(event_listener)
-
-        
-        
-
         
         executor = WorkflowExecutor()
         

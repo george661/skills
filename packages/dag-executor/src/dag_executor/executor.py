@@ -1,17 +1,20 @@
 """Core DAG workflow executor with layer-parallel execution."""
 import asyncio
 import copy
+import hashlib
 import json
 import random
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from simpleeval import SimpleEval  # type: ignore
 
 from dag_executor.channels import ChannelStore
+from dag_executor.events import EventEmitter, EventType, WorkflowEvent
 from dag_executor.graph import topological_sort_with_layers
 from dag_executor.runners import get_runner
 from dag_executor.runners.base import RunnerContext
@@ -22,7 +25,6 @@ from dag_executor.schema import (
 from dag_executor.variables import resolve_variables
 
 if TYPE_CHECKING:
-    from dag_executor.events import EventEmitter
     from dag_executor.checkpoint import CheckpointStore
     from dag_executor.channels import ChannelStore
 
@@ -841,12 +843,6 @@ class WorkflowExecutor:
             workflow_def: Workflow definition
             event_emitter: Optional event emitter for edge traversal events
         """
-        from datetime import datetime
-        from types import SimpleNamespace
-        import hashlib
-
-        from dag_executor.events import EventType, WorkflowEvent
-
         if node_def.edges is None:
             return
 

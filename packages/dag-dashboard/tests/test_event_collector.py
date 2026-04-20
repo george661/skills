@@ -293,3 +293,192 @@ async def test_collector_creates_workflow_runs_row(test_db: Path, events_dir: Pa
         
     finally:
         collector.stop()
+
+
+@pytest.mark.asyncio
+async def test_collector_persists_edge_traversed_event(test_db: Path, events_dir: Path, broadcaster: Broadcaster) -> None:
+    """Test that collector persists EDGE_TRAVERSED events."""
+    loop = asyncio.get_event_loop()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop
+    )
+
+    collector.start()
+
+    try:
+        run_id = "test_run_edge"
+        ndjson_file = events_dir / f"{run_id}.ndjson"
+
+        # Write workflow_started first (required for foreign key)
+        workflow_started = {
+            "workflow_name": "conditional_workflow",
+            "event_type": "workflow_started",
+            "payload": {"workflow_definition": "nodes: []"},
+            "created_at": "2026-04-20T12:00:00Z"
+        }
+        with open(ndjson_file, "w") as f:
+            f.write(json.dumps(workflow_started) + "\n")
+
+        await asyncio.sleep(0.2)
+
+        # Write EDGE_TRAVERSED event
+        edge_event = {
+            "workflow_name": "conditional_workflow",
+            "event_type": "edge_traversed",
+            "payload": {
+                "source_node_id": "review",
+                "target_node_id": "merge",
+                "edge_id": "review-merge-0",
+                "edge_group_id": "abc123",
+                "branch_set_id": "review",
+                "taken": True,
+                "condition": "review.verdict == 'approve'",
+                "evaluated_value": True
+            },
+            "created_at": "2026-04-20T12:01:00Z"
+        }
+
+        with open(ndjson_file, "a") as f:
+            f.write(json.dumps(edge_event) + "\n")
+
+        await asyncio.sleep(0.3)
+
+        # Verify event persisted
+        events = get_persisted_events(test_db, run_id)
+        edge_events = [e for e in events if e["event_type"] == "edge_traversed"]
+
+        assert len(edge_events) == 1
+        payload = json.loads(edge_events[0]["payload"])
+        assert payload["edge_id"] == "review-merge-0"
+        assert payload["taken"] is True
+
+    finally:
+        collector.stop()
+
+
+@pytest.mark.asyncio
+async def test_collector_broadcasts_edge_traversed_event(test_db: Path, events_dir: Path) -> None:
+    """Test that collector broadcasts EDGE_TRAVERSED events to subscribers."""
+    loop = asyncio.get_event_loop()
+    broadcaster = Broadcaster()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop
+    )
+
+    collector.start()
+
+    run_id = "test_run_broadcast"
+
+    try:
+        async with broadcaster.subscribe(run_id) as queue:
+            ndjson_file = events_dir / f"{run_id}.ndjson"
+
+            # Write workflow_started
+            workflow_started = {
+                "workflow_name": "conditional_workflow",
+                "event_type": "workflow_started",
+                "payload": {"workflow_definition": "nodes: []"},
+                "created_at": "2026-04-20T12:00:00Z"
+            }
+            with open(ndjson_file, "w") as f:
+                f.write(json.dumps(workflow_started) + "\n")
+
+            await asyncio.sleep(0.2)
+
+            # Write EDGE_TRAVERSED event
+            edge_event = {
+                "workflow_name": "conditional_workflow",
+                "event_type": "edge_traversed",
+                "payload": {
+                    "source_node_id": "review",
+                    "target_node_id": "merge",
+                    "edge_id": "review-merge-0",
+                    "taken": True
+                },
+                "created_at": "2026-04-20T12:01:00Z"
+            }
+
+            with open(ndjson_file, "a") as f:
+                f.write(json.dumps(edge_event) + "\n")
+
+            await asyncio.sleep(0.3)
+
+            # Collect events from queue
+            broadcasted_events = []
+            while not queue.empty():
+                event = await queue.get()
+                broadcasted_events.append(event)
+
+            # Verify broadcast
+            edge_events = [e for e in broadcasted_events if e["event_type"] == "edge_traversed"]
+            assert len(edge_events) == 1
+
+    finally:
+        collector.stop()
+
+
+@pytest.mark.asyncio
+async def test_collector_persists_condition_evaluated_event(test_db: Path, events_dir: Path, broadcaster: Broadcaster) -> None:
+    """Test that collector persists CONDITION_EVALUATED events."""
+    loop = asyncio.get_event_loop()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop
+    )
+
+    collector.start()
+
+    try:
+        run_id = "test_run_condition"
+        ndjson_file = events_dir / f"{run_id}.ndjson"
+
+        # Write workflow_started
+        workflow_started = {
+            "workflow_name": "conditional_workflow",
+            "event_type": "workflow_started",
+            "payload": {"workflow_definition": "nodes: []"},
+            "created_at": "2026-04-20T12:00:00Z"
+        }
+        with open(ndjson_file, "w") as f:
+            f.write(json.dumps(workflow_started) + "\n")
+
+        await asyncio.sleep(0.2)
+
+        # Write CONDITION_EVALUATED event
+        condition_event = {
+            "workflow_name": "conditional_workflow",
+            "event_type": "condition_evaluated",
+            "payload": {
+                "source_node_id": "review",
+                "target_node_id": "merge",
+                "condition": "review.verdict == 'approve'",
+                "evaluated_value": True,
+                "edge_index": 0
+            },
+            "created_at": "2026-04-20T12:01:00Z"
+        }
+
+        with open(ndjson_file, "a") as f:
+            f.write(json.dumps(condition_event) + "\n")
+
+        await asyncio.sleep(0.3)
+
+        # Verify event persisted
+        events = get_persisted_events(test_db, run_id)
+        condition_events = [e for e in events if e["event_type"] == "condition_evaluated"]
+
+        assert len(condition_events) == 1
+        payload = json.loads(condition_events[0]["payload"])
+        assert payload["condition"] == "review.verdict == 'approve'"
+        assert payload["evaluated_value"] is True
+
+    finally:
+        collector.stop()
