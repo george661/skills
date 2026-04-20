@@ -120,23 +120,66 @@ def compute_layout(nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "failure_path": node_name in failure_path,
             })
 
-    # Build edges from depends_on relationships
+    # Build edges from depends_on relationships and conditional edges
     edges = []
+    import hashlib
+
     for node in layout_nodes:
         node_name = node["node_name"]
+        node_data = node.get("node_data", {})
         depends_on = node.get("depends_on", [])
 
-        if depends_on:
+        # Check if node has conditional edges defined
+        conditional_edges = node_data.get("edges")
+
+        if conditional_edges:
+            # Build edges from conditional EdgeDef list
+            for edge_index, edge_def in enumerate(conditional_edges):
+                # Get source position
+                if node_name not in node_positions:
+                    continue
+                source_pos = node_positions[node_name]
+
+                # Handle both single target and multi-target (fan-out)
+                targets = edge_def.get("targets") or ([edge_def.get("target")] if edge_def.get("target") else [])
+
+                # Generate stable edge_group_id for fan-out siblings
+                edge_group_id = hashlib.sha256(f"{node_name}:{edge_index}".encode()).hexdigest()[:16]
+
+                for target_index, target_name in enumerate(targets):
+                    if target_name in node_positions:
+                        target_pos = node_positions[target_name]
+                        edge_id = f"{node_name}-{target_name}-{edge_index}"
+
+                        edges.append({
+                            "source": node_name,
+                            "target": target_name,
+                            "edge_id": edge_id,
+                            "edge_group_id": edge_group_id,
+                            "branch_set_id": node_name,  # All conditional edges from same source
+                            "edge_index": edge_index,
+                            "target_index": target_index,
+                            "condition": edge_def.get("condition"),
+                            "default": edge_def.get("default", False),
+                            "points": [
+                                {"x": source_pos[0], "y": source_pos[1] + NODE_HEIGHT / 2},
+                                {"x": target_pos[0], "y": target_pos[1] - NODE_HEIGHT / 2},
+                            ]
+                        })
+        elif depends_on:
+            # Fallback to depends_on for nodes without conditional edges
             for parent_name in depends_on:
                 if parent_name in node_positions:
                     source_pos = node_positions[parent_name]
                     target_pos = node_positions[node_name]
+                    edge_id = f"{parent_name}-{node_name}-0"
 
                     # Simple straight-line edge routing
                     # In a production system, you might use spline routing to avoid overlaps
                     edges.append({
                         "source": parent_name,
                         "target": node_name,
+                        "edge_id": edge_id,
                         "points": [
                             {"x": source_pos[0], "y": source_pos[1] + NODE_HEIGHT / 2},
                             {"x": target_pos[0], "y": target_pos[1] - NODE_HEIGHT / 2},
