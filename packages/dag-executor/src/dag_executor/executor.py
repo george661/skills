@@ -755,28 +755,28 @@ class WorkflowExecutor:
             return
 
         # Compute checkpoint data before emitting events (for completed nodes)
-        content_hash = None
-        input_versions = None
+        event_content_hash: Optional[str] = None
+        event_input_versions: Optional[Dict[str, int]] = None
         if enable_checkpoint and checkpoint_store and result.status == NodeStatus.COMPLETED:
             # Rebuild dependency outputs for hash computation
             dependency_outputs = {}
             for dep_id in node_def.depends_on:
                 if dep_id in ctx.node_outputs:
                     dependency_outputs[dep_id] = ctx.node_outputs[dep_id]
-            content_hash = checkpoint_store.compute_content_hash(node_def, dependency_outputs)
+            event_content_hash = checkpoint_store.compute_content_hash(node_def, dependency_outputs)
 
             # Capture current channel versions if channel_store available
-            input_versions = channel_store.get_versions() if channel_store else {}
+            event_input_versions = channel_store.get_versions() if channel_store else {}
 
         # Emit NODE_COMPLETED or NODE_FAILED event
         if event_emitter:
             if result.status == NodeStatus.COMPLETED:
                 # Build metadata with state_diff and checkpoint data
-                metadata = {"state_diff": state_diff}
-                if content_hash:
-                    metadata["content_hash"] = content_hash
-                if input_versions:
-                    metadata["input_versions"] = input_versions
+                metadata: Dict[str, Any] = {"state_diff": state_diff}
+                if event_content_hash:
+                    metadata["content_hash"] = event_content_hash
+                if event_input_versions:
+                    metadata["input_versions"] = event_input_versions
 
                 event_emitter.emit(WorkflowEvent(
                     event_type=EventType.NODE_COMPLETED,
@@ -804,8 +804,10 @@ class WorkflowExecutor:
 
         # Save checkpoint after successful execution (data already computed above)
         if enable_checkpoint and checkpoint_store and result.status == NodeStatus.COMPLETED:
+            assert event_content_hash is not None  # Computed above under same condition
             checkpoint_store.save_node(
-                workflow_def.name, run_id, node_id, result, content_hash, input_versions=input_versions
+                workflow_def.name, run_id, node_id, result, event_content_hash,
+                input_versions=event_input_versions,
             )
 
         # Handle failure
