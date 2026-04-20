@@ -549,6 +549,48 @@ body {
     stroke-width: 2;
 }
 
+/* Failure path highlighting */
+.node-status-failure-path {
+    stroke-width: 4;
+    stroke-dasharray: 4;
+    filter: drop-shadow(0 0 8px rgba(239, 68, 68, 0.6));
+}
+
+/* Workflow totals strip */
+.workflow-totals {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+}
+
+.totals-item {
+    display: flex;
+    flex-direction: column;
+}
+
+.totals-label {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.25rem;
+}
+
+.totals-value {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.totals-breakdown {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 0.25rem;
+}
+
 /* Edge styles */
 .dag-edge {
     fill: none;

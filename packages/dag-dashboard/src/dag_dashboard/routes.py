@@ -12,8 +12,8 @@ from fastapi.responses import StreamingResponse
 from .models import SortBy, RunStatus, StatusSummary, GateDecisionRequest
 from .queries import (
     get_run, list_runs, get_node, list_nodes, get_status_counts,
-    get_artifacts, get_chat_messages, get_gate_decisions,
-    insert_gate_decision, update_node, get_pending_gates, count_pending_gates
+    get_artifacts, get_chat_messages, get_gate_decisions, get_workflow_totals,
+    insert_gate_decision, update_node, get_pending_gates, count_pending_gates,
 )
 from .layout import compute_layout
 
@@ -76,10 +76,12 @@ async def get_workflow(request: Request, run_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
     nodes = list_nodes(db_path, run_id)
+    totals = get_workflow_totals(db_path, run_id)
 
     return {
         "run": run,
         "nodes": nodes,
+        "totals": totals,
     }
 
 

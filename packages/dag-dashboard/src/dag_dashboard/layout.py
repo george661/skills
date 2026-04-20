@@ -69,6 +69,9 @@ def compute_layout(nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not nodes:
         return {"nodes": [], "edges": []}
 
+    # Compute failure path
+    failure_path = compute_failure_path(nodes)
+
     # Assign layers using topological sort
     layers_dict = topological_sort_with_layers(nodes)
 
@@ -114,6 +117,7 @@ def compute_layout(nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "started_at": node_data.get("started_at"),
                 "finished_at": node_data.get("finished_at"),
                 "error": node_data.get("error"),
+                "failure_path": node_name in failure_path,
             })
 
     # Build edges from depends_on relationships
@@ -143,3 +147,52 @@ def compute_layout(nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
         "nodes": layout_nodes,
         "edges": edges,
     }
+
+
+def compute_failure_path(nodes: List[Dict[str, Any]]) -> set[str]:
+    """
+    Compute the failure path: set of nodes that are failed or depend on failed nodes.
+
+    A node is on the failure path if:
+    - Its status is 'failed', OR
+    - It transitively depends on a failed node AND its status is skipped/pending/not-started
+
+    Args:
+        nodes: List of node dicts with 'node_name', 'status', and 'depends_on' fields
+
+    Returns:
+        Set of node names on the failure path
+    """
+    # Build dependency graph (reverse: child → parents)
+    node_map = {node["node_name"]: node for node in nodes}
+    failure_path = set()
+
+    # First pass: mark all failed nodes
+    for node in nodes:
+        if node.get("status") == "failed":
+            failure_path.add(node["node_name"])
+
+    # Second pass: BFS to find all nodes that depend on failed nodes
+    # Build forward dependency graph (parent → children)
+    forward_deps: Dict[str, List[str]] = {}
+    for node in nodes:
+        node_name = node["node_name"]
+        depends_on = node.get("depends_on", [])
+        for parent in depends_on:
+            if parent not in forward_deps:
+                forward_deps[parent] = []
+            forward_deps[parent].append(node_name)
+
+    # BFS from failed nodes to find downstream
+    queue = deque(failure_path)
+    while queue:
+        current = queue.popleft()
+        # Add all children that are skipped/pending/not-started
+        for child in forward_deps.get(current, []):
+            if child not in failure_path:
+                child_status = node_map[child].get("status", "pending")
+                if child_status in ("skipped", "pending", "not-started"):
+                    failure_path.add(child)
+                    queue.append(child)
+
+    return failure_path

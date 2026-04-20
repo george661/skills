@@ -64,6 +64,22 @@ class NodeExecutionResponse(BaseModel):
     model: Optional[str] = None
     tokens: Optional[int] = None
     cost: Optional[float] = None
+    tokens_input: Optional[int] = None
+    tokens_output: Optional[int] = None
+    tokens_cache: Optional[int] = None
+
+
+class WorkflowTotalsResponse(BaseModel):
+    """Response model for workflow totals (cost, tokens, status counts)."""
+    model_config = {"extra": "forbid"}
+
+    cost: float
+    tokens_input: int
+    tokens_output: int
+    tokens_cache: int
+    total_tokens: int
+    failed_nodes: int
+    skipped_nodes: int
 
 
 T = TypeVar("T")
