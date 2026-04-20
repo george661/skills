@@ -1,8 +1,7 @@
 """Server-side DAG layout computation using layered graph layout (Sugiyama)."""
 import hashlib
-import json
 from collections import deque
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 def topological_sort_with_layers(nodes: List[Dict[str, Any]]) -> Dict[int, List[str]]:
@@ -20,7 +19,6 @@ def topological_sort_with_layers(nodes: List[Dict[str, Any]]) -> Dict[int, List[
     # Build adjacency list and in-degree map
     graph: Dict[str, List[str]] = {}
     in_degree: Dict[str, int] = {}
-    node_map = {node["node_name"]: node for node in nodes}
 
     for node in nodes:
         node_name = node["node_name"]

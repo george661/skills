@@ -1,8 +1,6 @@
 """Tests for DAG layout computation."""
 import time
-from typing import Any, Dict, List
 
-import pytest
 
 from dag_dashboard.layout import compute_layout, topological_sort_with_layers
 

@@ -1,7 +1,6 @@
 """Tests for chat relay with named pipes."""
 import os
 import time
-from pathlib import Path
 from threading import Thread
 
 import pytest

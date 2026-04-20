@@ -130,19 +130,16 @@ class EventCollector:
         workflow_name = event_data.get("workflow_name", "unknown")
         event_type = event_data.get("event_type", "unknown")
 
-        # For channel events emitted via WorkflowEvent, the payload is in the metadata field
-        # For backward compatibility, also check the payload field
-        raw_payload = event_data.get("payload") or event_data.get("metadata", {})
+        # Store the full event_data as payload (WorkflowEvent has no 'payload' field)
+        # This preserves node_id, metadata, timestamp, etc. for queries
+        # WorkflowEvent stores channel state in metadata, other data in metadata too
+        payload = json.dumps(event_data)
 
-        # Serialize payload to JSON string if it's a dict
-        if isinstance(raw_payload, dict):
-            payload = json.dumps(raw_payload)
-        elif isinstance(raw_payload, str):
-            payload = raw_payload
-        else:
-            payload = json.dumps({"value": raw_payload})
+        # Channel events (channel_updated, channel_conflict) carry a nested payload dict
+        raw_payload = event_data.get("payload", {})
 
-        created_at = event_data.get("created_at", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+        # Use timestamp field from WorkflowEvent, fallback to created_at or now
+        created_at = event_data.get("timestamp") or event_data.get("created_at", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 
         # Persist to SQLite
         conn = sqlite3.connect(self.db_path)
@@ -152,7 +149,8 @@ class EventCollector:
 
             # Handle workflow_started event: store workflow definition and create node stubs
             if event_type == "workflow_started":
-                workflow_definition = raw_payload.get("workflow_definition") if isinstance(raw_payload, dict) else None
+                # WorkflowEvent stores workflow_definition in metadata
+                workflow_definition = event_data.get("metadata", {}).get("workflow_definition")
 
                 # Insert workflow_runs row with workflow_definition (use INSERT OR IGNORE + UPDATE to avoid cascade delete)
                 cursor.execute(
@@ -303,19 +301,20 @@ class EventCollector:
 
         # Slack notification (best effort — errors logged, never raised)
         if self.slack_notifier is not None:
-            self._notify_slack(run_id, event_type, workflow_name, raw_payload)
+            self._notify_slack(run_id, event_type, workflow_name, event_data)
 
     def _notify_slack(
         self,
         run_id: str,
         event_type: str,
         workflow_name: str,
-        raw_payload: Any,
+        event_data: Dict[str, Any],
     ) -> None:
         """Build a Block Kit card for lifecycle events and forward to Slack."""
         assert self.slack_notifier is not None
 
-        payload: Dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+        # event_data is already a dict containing the full WorkflowEvent
+        payload: Dict[str, Any] = event_data
         card: Optional[Dict[str, Any]] = None
 
         if event_type == "workflow_started":

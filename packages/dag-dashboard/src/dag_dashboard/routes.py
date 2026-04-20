@@ -9,11 +9,12 @@ from typing import Any, AsyncIterator, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from .models import SortBy, RunStatus, StatusSummary, GateDecisionRequest
+from .models import SortBy, RunStatus, StatusSummary, GateDecisionRequest, NodeStateDiff
 from .queries import (
     get_run, list_runs, get_node, list_nodes, get_status_counts,
-    get_artifacts, get_chat_messages, get_gate_decisions, get_workflow_totals,
+    get_artifacts, get_chat_messages, get_workflow_totals,
     insert_gate_decision, update_node, get_pending_gates, count_pending_gates,
+    get_state_diff_timeline,
 )
 from .layout import compute_layout
 
@@ -320,3 +321,28 @@ async def get_pending_gates_route(request: Request) -> Dict[str, Any]:
         "count": count,
         "gates": gates,
     }
+
+
+@router.get("/workflows/{run_id}/state-diff-timeline")
+async def get_state_diff_timeline_route(request: Request, run_id: str) -> list[NodeStateDiff]:
+    """
+    Get state diff timeline for a workflow run.
+
+    Returns chronological list of node executions with state changes
+    (added/changed/removed channel keys with before/after values).
+    Returns empty list if no node_completed events exist for the run.
+    Returns 404 if the run does not exist.
+    """
+    db_path = get_db_path(request)
+
+    # Get timeline (will be empty if no events)
+    timeline = get_state_diff_timeline(db_path, run_id)
+
+    # If timeline is empty, verify the run exists to distinguish between
+    # "run exists but no events" vs "run doesn't exist"
+    if not timeline:
+        run = get_run(db_path, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    return [NodeStateDiff(**entry) for entry in timeline]
