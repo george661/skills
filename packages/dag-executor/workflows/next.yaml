@@ -1,0 +1,261 @@
+---
+name: Next Issue Workflow
+config:
+  checkpoint_prefix: next
+  labels:
+    on_failure: outcome:next-failed
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command next"
+      run_on: [completed, failed]
+
+inputs: {}
+
+state:
+  validation_drain:
+    type: dict
+    reducer: overwrite
+  smoke_result:
+    type: dict
+    reducer: overwrite
+  needs_attention:
+    type: list
+    reducer: overwrite
+  validation_queue:
+    type: list
+    reducer: overwrite
+  bugs_todo:
+    type: list
+    reducer: overwrite
+  tasks_todo:
+    type: list
+    reducer: overwrite
+  sequence_manifest:
+    type: dict
+    reducer: overwrite
+  selected_issue:
+    type: string
+    reducer: overwrite
+
+nodes:
+  # Phase 0: Validation Drain Check (BLOCKING GATE)
+  - id: validation_drain_check
+    name: Validation Drain Check
+    type: bash
+    writes:
+      - validation_drain
+    script: |
+      result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
+        "{\"jql\": \"project = $TENANT_PROJECT AND status = Validation AND labels not in (step:needs-human)\", \"fields\": \"key,summary\"}")
+      count=$(echo "$result" | jq -r '.issues | length')
+      issues=$(echo "$result" | jq -r '.issues | map(.key) | @json')
+      echo "{\"validation_drain\": {\"count\": $count, \"issues\": $issues}}"
+    output_format: json
+
+  - id: validation_drain_gate
+    name: Validation Drain Gate
+    type: gate
+    depends_on:
+      - validation_drain_check
+    reads:
+      - validation_drain
+    condition: "$validation_drain.count == 0"
+    on_failure: stop
+
+  # Phase 1: Smoke Check (non-blocking)
+  - id: smoke_check
+    name: Smoke Check
+    type: bash
+    depends_on:
+      - validation_drain_gate
+    writes:
+      - smoke_result
+    script: |
+      if [ -n "$TENANT_SMOKE_TEST_PATH" ] && [ -f "$TENANT_SMOKE_TEST_PATH" ]; then
+        if output=$("$TENANT_SMOKE_TEST_PATH" 2>&1); then
+          passed=true
+        else
+          passed=false
+        fi
+        printf '{"smoke_result": {"passed": %s, "output": %s}}\n' "$passed" "$(printf '%s' "$output" | jq -Rs .)"
+      else
+        echo "{\"smoke_result\": {\"passed\": true, \"output\": \"No smoke test configured\"}}"
+      fi
+    output_format: json
+    on_failure: continue
+
+  # Phase 2: Load Sequence Manifest
+  - id: load_sequence_manifest
+    name: Load Sequence Manifest
+    type: bash
+    depends_on:
+      - validation_drain_gate
+    writes:
+      - sequence_manifest
+    script: |
+      result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/recall_query.ts \
+        "{\"query\": \"sequence-manifest-latest\", \"top_k\": 1}" 2>/dev/null || echo "{}")
+      echo "{\"sequence_manifest\": $result}"
+    output_format: json
+
+  # Phase 3: Query Issues (Parallel)
+  - id: query_needs_attention
+    name: Query Needs Attention
+    type: bash
+    depends_on:
+      - validation_drain_gate
+    writes:
+      - needs_attention
+    script: |
+      result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
+        "{\"jql\": \"project = $TENANT_PROJECT AND labels IN (outcome:needs-changes, outcome:failure-validation, outcome:failure-merge-blocked) ORDER BY updated DESC\", \"fields\": \"key,summary,status\"}")
+      issues=$(echo "$result" | jq -r '.issues | map({key, summary: .fields.summary, status: .fields.status.name}) | @json')
+      echo "{\"needs_attention\": $issues}"
+    output_format: json
+
+  - id: query_validation_queue
+    name: Query Validation Queue
+    type: bash
+    depends_on:
+      - validation_drain_gate
+    writes:
+      - validation_queue
+    script: |
+      result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
+        "{\"jql\": \"project = $TENANT_PROJECT AND status = Validation ORDER BY updated ASC\", \"fields\": \"key,summary\"}")
+      issues=$(echo "$result" | jq -r '.issues | map({key, summary: .fields.summary}) | @json')
+      echo "{\"validation_queue\": $issues}"
+    output_format: json
+
+  - id: query_bugs
+    name: Query Bugs
+    type: bash
+    depends_on:
+      - validation_drain_gate
+    writes:
+      - bugs_todo
+    script: |
+      result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
+        "{\"jql\": \"project = $TENANT_PROJECT AND issuetype = Bug AND status IN (To Do, Open, Backlog) ORDER BY priority DESC, created ASC\", \"fields\": \"key,summary,priority\"}")
+      issues=$(echo "$result" | jq -r '.issues | map({key, summary: .fields.summary, priority: .fields.priority.name}) | @json')
+      echo "{\"bugs_todo\": $issues}"
+    output_format: json
+
+  - id: query_tasks
+    name: Query Tasks
+    type: bash
+    depends_on:
+      - validation_drain_gate
+    writes:
+      - tasks_todo
+    script: |
+      result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
+        "{\"jql\": \"project = $TENANT_PROJECT AND issuetype != Bug AND status IN (To Do, Open, Backlog) ORDER BY rank ASC\", \"fields\": \"key,summary,parent\"}")
+      issues=$(echo "$result" | jq -r '.issues | map({key, summary: .fields.summary, parent: .fields.parent.key}) | @json')
+      echo "{\"tasks_todo\": $issues}"
+    output_format: json
+
+  # Phase 4: Skeleton Dependency Check
+  - id: skeleton_dependency_check
+    name: Skeleton Dependency Check
+    type: prompt
+    depends_on:
+      - query_tasks
+      - load_sequence_manifest
+    reads:
+      - tasks_todo
+      - sequence_manifest
+    prompt: |
+      For each candidate issue in $tasks_todo, filter out non-skeleton issues
+      when parent epic has pending skeletons.
+
+      Check sequence manifest for skeleton dependencies.
+      Output the filtered list.
+    model: sonnet
+    dispatch: inline
+    output_format: json
+
+  # Phase 5: Present Results
+  - id: present_results
+    name: Present Results
+    type: prompt
+    depends_on:
+      - query_needs_attention
+      - query_validation_queue
+      - query_bugs
+      - query_tasks
+      - load_sequence_manifest
+      - skeleton_dependency_check
+    reads:
+      - needs_attention
+      - validation_queue
+      - bugs_todo
+      - tasks_todo
+      - sequence_manifest
+    prompt: |
+      Render the priority table for issue selection:
+
+      Priority order:
+      1. Needs Attention: $needs_attention
+      2. Validation Queue: $validation_queue
+      3. Bugs: $bugs_todo
+      4. Tasks: $tasks_todo
+
+      Include Seq/Unblocks from manifest: $sequence_manifest
+
+      Present the table with numbered options (1-N) for selection.
+    model: opus
+    dispatch: inline
+
+  # Phase 6: Selection Interrupt
+  - id: selection_interrupt
+    name: Selection Interrupt
+    type: interrupt
+    depends_on:
+      - present_results
+    writes:
+      - selected_issue
+    message: "Select issue to work (1-N or key):"
+    resume_key: user_selection
+    channels:
+      - terminal
+
+  # Phase 7: Dispatch Selected Issue
+  - id: dispatch_selected
+    name: Dispatch Selected Issue
+    type: prompt
+    depends_on:
+      - selection_interrupt
+    reads:
+      - selected_issue
+      - needs_attention
+      - validation_queue
+      - bugs_todo
+      - tasks_todo
+    prompt: |
+      Route to /work or /validate based on selected issue $selected_issue status.
+
+      If issue is in Validation queue, dispatch /validate.
+      Otherwise, dispatch /work.
+
+      Execute the command inline.
+    model: opus
+    dispatch: inline
+
+  # Phase 8: Store Pattern
+  - id: store_pattern
+    name: Store Pattern
+    type: bash
+    depends_on:
+      - dispatch_selected
+    trigger_rule: all_done
+    reads:
+      - selected_issue
+    script: |
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/pattern_store.ts "{
+        \"task_type\": \"next-issue-selection\",
+        \"approach\": \"priority-based\",
+        \"success_rate\": 1.0,
+        \"metadata\": {\"selected_issue\": \"$selected_issue\"}
+      }"
