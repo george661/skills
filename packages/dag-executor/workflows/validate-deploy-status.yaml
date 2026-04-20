@@ -1,0 +1,97 @@
+---
+name: Validate Deploy Status Sub-DAG
+config:
+  checkpoint_prefix: validate-deploy-status
+  worktree: false
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+state:
+  issue_data:
+    strategy: overwrite
+  ci_status:
+    strategy: overwrite
+  deploy_status:
+    strategy: overwrite
+
+outputs:
+  deploy_status:
+    node: output_result
+    field: deploy_status
+  repo:
+    node: output_result
+    field: repo
+  pipeline:
+    node: output_result
+    field: pipeline
+  build_id:
+    node: output_result
+    field: build_id
+  env_url:
+    node: output_result
+    field: env_url
+
+nodes:
+  - id: load_issue
+    name: Load Issue Data
+    type: bash
+    script: |
+      npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"summary,status,labels,description\"}"
+    output_format: json
+    writes:
+      - issue_data
+
+  - id: check_pipeline
+    name: Check CI Pipeline Status
+    type: bash
+    depends_on:
+      - load_issue
+    script: |
+      # Extract repo from issue labels
+      repo=$(echo "$issue_data" | jq -r '.fields.labels[] | select(startswith("repo-")) | sub("repo-"; "")')
+      if [ -z "$repo" ]; then
+        echo '{"status": "unknown", "reason": "no repo label found"}'
+        exit 0
+      fi
+      
+      # Get latest builds for the repo
+      npx tsx ~/.claude/skills/ci/list_builds.ts "{\"pipeline\": \"$repo\", \"limit\": 5}"
+    output_format: json
+    reads:
+      - issue_data
+    writes:
+      - ci_status
+
+  - id: output_result
+    name: Output Deploy Status
+    type: bash
+    depends_on:
+      - check_pipeline
+    script: |
+      # Parse CI status and extract key fields
+      repo=$(echo "$issue_data" | jq -r '.fields.labels[] | select(startswith("repo-")) | sub("repo-"; "")')
+      pipeline="$repo"
+      build_id=$(echo "$ci_status" | jq -r '.[0].id // 0')
+      status=$(echo "$ci_status" | jq -r '.[0].status // "unknown"')
+
+      # Construct env_url based on repo and environment
+      env_url="https://api.dev.generalwisdom.com"
+
+      # Output structured result using jq to avoid YAML parsing issues
+      jq -n \
+        --arg deploy_status "$status" \
+        --arg repo "$repo" \
+        --arg pipeline "$pipeline" \
+        --argjson build_id "$build_id" \
+        --arg env_url "$env_url" \
+        '{deploy_status: $deploy_status, repo: $repo, pipeline: $pipeline, build_id: $build_id, env_url: $env_url}'
+    output_format: json
+    reads:
+      - issue_data
+      - ci_status
+    writes:
+      - deploy_status

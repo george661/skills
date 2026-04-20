@@ -1,0 +1,123 @@
+---
+name: Validate Evaluate Sub-DAG
+config:
+  checkpoint_prefix: validate-evaluate
+  worktree: false
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+  test_results_path:
+    type: string
+    required: false
+  evidence_path:
+    type: string
+    required: false
+
+state:
+  criteria:
+    strategy: overwrite
+  contradictions:
+    strategy: overwrite
+  verdict:
+    strategy: overwrite
+
+outputs:
+  verdict:
+    node: produce_verdict
+    field: verdict
+  overall:
+    node: produce_verdict
+    field: overall
+  criteria_passed:
+    node: produce_verdict
+    field: criteria_passed
+  criteria_failed:
+    node: produce_verdict
+    field: criteria_failed
+  contradiction_detected:
+    node: produce_verdict
+    field: contradiction_detected
+  evidence_quality:
+    node: produce_verdict
+    field: evidence_quality
+
+nodes:
+  - id: load_inputs
+    name: Load Validation Inputs
+    type: bash
+    script: |
+      # Load test results and evidence
+      test_results_path="${test_results_path:-/tmp/validate-$issue_key-test-results.txt}"
+      evidence_path="${evidence_path:-/tmp/validate-$issue_key-evidence.txt}"
+      
+      test_results=""
+      if [ -f "$test_results_path" ]; then
+        test_results=$(cat "$test_results_path")
+      fi
+      
+      evidence=""
+      if [ -f "$evidence_path" ]; then
+        evidence=$(cat "$evidence_path")
+      fi
+      
+      # Fetch criteria from Jira
+      criteria=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"description\"}")
+      
+      jq -n \
+        --arg test_results "$test_results" \
+        --arg evidence "$evidence" \
+        --argjson criteria "$criteria" \
+        '{test_results: $test_results, evidence: $evidence, criteria: $criteria}'
+    output_format: json
+    writes:
+      - criteria
+
+  - id: produce_verdict
+    name: Produce Validation Verdict
+    type: prompt
+    depends_on:
+      - load_inputs
+    prompt: |
+      Evaluate validation results for $issue_key and produce a verdict.
+
+      Test results: $criteria.test_results
+      Evidence: $criteria.evidence
+      Acceptance criteria: $criteria.criteria
+
+      For each criterion, match to test results and evidence.
+
+      Contradiction detection (MANDATORY):
+        - If Phase 2 tests show PASS but Phase 3 evidence shows 404/login/error → re-take fresh authenticated screenshot
+        - If still unresolvable → verdict NEEDS_HUMAN
+
+      Playwright hard gate:
+        - If code_repo is e2e-tests AND any Playwright test FAILED → TRANSITION_TODO
+
+      Verdict rules:
+        - All criteria PASS → TRANSITION_DONE
+        - Any criteria FAIL → TRANSITION_TODO
+        - Ambiguous → NEEDS_HUMAN
+        - Deploy not ready → NEEDS_DEPLOY
+
+      Write full validation report to /tmp/validate-$issue_key-report.md.
+
+      Output JSON: {
+        "verdict": "<TRANSITION_DONE|TRANSITION_TODO|NEEDS_DEPLOY|NEEDS_HUMAN>",
+        "overall": "<PASS|FAIL>",
+        "criteria_passed": <N>,
+        "criteria_failed": <M>,
+        "contradiction_detected": <bool>,
+        "evidence_quality": "<sufficient|insufficient>",
+        "rationale": "<explanation>"
+      }
+    model: opus
+    dispatch: inline
+    output_format: json
+    checkpoint: true
+    reads:
+      - criteria
+    writes:
+      - verdict

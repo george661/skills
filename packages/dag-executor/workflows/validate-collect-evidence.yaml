@@ -1,0 +1,73 @@
+---
+name: Validate Collect Evidence Sub-DAG
+config:
+  checkpoint_prefix: validate-collect-evidence
+  worktree: false
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+state:
+  evidence:
+    strategy: overwrite
+  evidence_manifest:
+    strategy: overwrite
+
+outputs:
+  artifact_count:
+    node: output_manifest
+    field: artifact_count
+  runtime_evidence_count:
+    node: output_manifest
+    field: runtime_evidence_count
+  evidence_quality:
+    node: output_manifest
+    field: evidence_quality
+
+nodes:
+  - id: collect_artifacts
+    name: Collect Evidence Artifacts
+    type: bash
+    script: |
+      # Collect screenshots, logs, and API responses
+      # Write manifest to /tmp/validate-$issue_key-evidence.txt
+      artifact_count=0
+      runtime_count=0
+      
+      # Stub implementation
+      echo "Evidence collection stub for $issue_key" > /tmp/validate-$issue_key-evidence.txt
+      
+      echo "{\"artifacts\": [], \"count\": $artifact_count, \"runtime_count\": $runtime_count}"
+    output_format: json
+    writes:
+      - evidence
+
+  - id: output_manifest
+    name: Output Evidence Manifest
+    type: bash
+    depends_on:
+      - collect_artifacts
+    script: |
+      artifact_count=$(echo "$evidence" | jq -r '.count // 0')
+      runtime_count=$(echo "$evidence" | jq -r '.runtime_count // 0')
+      
+      # Determine evidence quality
+      quality="sufficient"
+      if [ "$artifact_count" -eq 0 ]; then
+        quality="insufficient"
+      fi
+      
+      jq -n \
+        --argjson artifact_count "$artifact_count" \
+        --argjson runtime_evidence_count "$runtime_count" \
+        --arg evidence_quality "$quality" \
+        --arg auth_status "not_required" \
+        '{artifact_count: $artifact_count, runtime_evidence_count: $runtime_evidence_count, evidence_quality: $evidence_quality, auth_status: $auth_status}'
+    output_format: json
+    reads:
+      - evidence
+    writes:
+      - evidence_manifest
