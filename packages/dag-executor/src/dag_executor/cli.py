@@ -638,24 +638,45 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Parse inputs
         inputs = parse_inputs(args.inputs)
 
-        # Setup event emitter if streaming requested
+        # Setup event emitter if streaming or notifications configured
         event_emitter = None
-        if args.stream:
+        notification_unsubscribe = None
+
+        # Check if notifications configured
+        needs_emitter = args.stream or (
+            workflow_def.config.notifications is not None and
+            workflow_def.config.notifications.slack is not None
+        )
+
+        if needs_emitter:
             event_emitter = EventEmitter()
-            mode = StreamMode.STATE_UPDATES if args.stream == "state_updates" else StreamMode.ALL
 
-            def _print_event(event: WorkflowEvent) -> None:
-                ts = event.timestamp.strftime("%H:%M:%S")
-                node = f" [{event.node_id}]" if event.node_id else ""
-                print(f"[{ts}]{node} {event.event_type.value}", file=sys.stderr)
+            # Wire up streaming if requested
+            if args.stream:
+                mode = StreamMode.STATE_UPDATES if args.stream == "state_updates" else StreamMode.ALL
 
-            event_emitter.subscribe(_print_event, mode)
+                def _print_event(event: WorkflowEvent) -> None:
+                    ts = event.timestamp.strftime("%H:%M:%S")
+                    node = f" [{event.node_id}]" if event.node_id else ""
+                    print(f"[{ts}]{node} {event.event_type.value}", file=sys.stderr)
+
+                event_emitter.subscribe(_print_event, mode)
 
         # Setup checkpoint store if needed
         checkpoint_store = None
         checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
         if checkpoint_dir:
             checkpoint_store = CheckpointStore(checkpoint_dir)
+
+        # Wire up notifications if configured
+        if event_emitter and checkpoint_store:
+            from dag_executor.notifications import attach_to
+            db_path = Path(checkpoint_dir) / "notifications.db"
+            notification_unsubscribe = attach_to(
+                event_emitter,
+                workflow_def.config,
+                db_path
+            )
         
         # Resume mode
         if args.resume:
@@ -699,9 +720,13 @@ def main(argv: Optional[List[str]] = None) -> None:
                 event_emitter=event_emitter,
             )
         
+        # Cleanup notification listener if attached
+        if notification_unsubscribe:
+            notification_unsubscribe()
+
         # Print summary
         print_summary(result)
-        
+
         # Exit with appropriate code
         if result.status == WorkflowStatus.COMPLETED:
             print("Workflow completed successfully")
