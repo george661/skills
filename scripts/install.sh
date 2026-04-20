@@ -821,6 +821,24 @@ install_hooks() {
     log_ok "Hooks installed"
 }
 
+# Install statusline script to ~/.claude/statusline-command.sh
+# Referenced by settings.template.json "statusLine.command"
+install_statusline() {
+    log_section "Installing Statusline"
+
+    local statusline_src="${REPO_DIR}/scripts/statusline-command.sh"
+    local statusline_dst="${CLAUDE_DIR}/statusline-command.sh"
+
+    if [[ ! -f "$statusline_src" ]]; then
+        log_warn "Statusline script not found: ${statusline_src}"
+        return 1
+    fi
+
+    cp "$statusline_src" "$statusline_dst"
+    chmod +x "$statusline_dst"
+    log_ok "Statusline installed: ${statusline_dst}"
+}
+
 # Install hook configuration to global settings.json
 # This installs the hooks section from settings.template.json to ~/.claude/settings.json
 install_global_hook_config() {
@@ -1983,6 +2001,7 @@ main() {
     setup_project_mcp_servers
     install_commands
     install_hooks
+    install_statusline
     install_global_hook_config
     setup_project_hooks
     install_skills

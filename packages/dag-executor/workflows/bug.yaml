@@ -1,0 +1,242 @@
+---
+# Bug Report Workflow
+#
+# Evidence collection → reproduction steps → test verification → issue creation
+
+name: Bug Report
+config:
+  checkpoint_prefix: bug
+  worktree: false
+  labels:
+    on_failure: "outcome:bug-report-failed"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command bug"
+      run_on: [completed, failed]
+
+inputs:
+  description:
+    type: string
+    required: true
+  pipeline_url:
+    type: string
+    required: false
+  source_issue:
+    type: string
+    required: false
+
+state:
+  evidence:
+    type: dict
+    reducer: overwrite
+  classification:
+    type: dict
+    reducer: overwrite
+  root_cause:
+    type: dict
+    reducer: overwrite
+  creation_result:
+    type: dict
+    reducer: overwrite
+  test_result:
+    type: dict
+    reducer: overwrite
+
+outputs:
+  bug_key:
+    node: create_bug_issue
+    field: bug_key
+  test_branches:
+    node: failing_test_gate
+    field: test_branches
+  is_duplicate:
+    node: duplicate_detection
+    field: is_duplicate
+
+nodes:
+  # Phase 1: Load context
+  - id: load_context
+    name: Load Context
+    type: bash
+    writes:
+      - evidence
+    script: |
+      # Check if pipeline mode (skip episodic search if set)
+      pipeline_mode="false"
+      if [ -n "$pipeline_url" ]; then
+        pipeline_mode="true"
+      fi
+      
+      # Output context
+      echo "{\"pipeline_mode\": $pipeline_mode, \"source_issue\": \"${source_issue:-}\", \"pipeline_url\": \"${pipeline_url:-}\"}"
+
+  # Phase 2: Collect evidence
+  - id: collect_evidence
+    name: Collect Evidence
+    type: bash
+    depends_on:
+      - load_context
+    reads:
+      - evidence
+    writes:
+      - evidence
+    script: |
+      # In pipeline mode, stub minimal evidence
+      # In normal mode, collect logs/errors
+      pipeline_mode="${evidence_pipeline_mode:-false}"
+      
+      if [ "$pipeline_mode" = "true" ]; then
+        echo "{\"logs\": \"Pipeline mode: logs collected from CI\", \"errors\": \"See pipeline_url for details\", \"pipeline_mode\": true}"
+      else
+        # Collect full evidence (stubbed for now - real implementation would gather system state)
+        echo "{\"logs\": \"Collected local logs\", \"errors\": \"Collected error traces\", \"pipeline_mode\": false}"
+      fi
+
+  # Phase 3: Duplicate detection
+  - id: duplicate_detection
+    name: Duplicate Detection
+    type: prompt
+    depends_on:
+      - collect_evidence
+    model: opus
+    dispatch: inline
+    reads:
+      - evidence
+    writes:
+      - classification
+    prompt: |
+      Search for duplicate bug reports for: ${description}
+      
+      Use the issues router to search existing bugs:
+      ```bash
+      npx tsx ~/.claude/skills/issues/search_issues.ts '{"jql": "project = ${TENANT_PROJECT} AND issuetype = Bug AND text ~ \"${description}\"", "max_results": 5}'
+      ```
+      
+      Evidence:
+      ${evidence}
+      
+      Determine if this is a duplicate of an existing bug.
+      Output as JSON: {"is_duplicate": true/false, "duplicate_key": "GW-XXXX" or null, "reasoning": "why duplicate or not"}
+
+  # Gate passes (proceeds) when is_duplicate is false. STOP on duplicate avoids
+  # creating a second Jira issue for the same problem.
+  - id: duplicate_gate
+    name: Duplicate Gate
+    type: gate
+    depends_on:
+      - duplicate_detection
+    condition: "$duplicate_detection.is_duplicate == false"
+    on_failure: stop
+
+  # Phase 4: Analyze root cause
+  - id: analyze_root_cause
+    name: Analyze Root Cause
+    type: prompt
+    depends_on:
+      - duplicate_gate
+    model: sonnet
+    dispatch: local
+    reads:
+      - evidence
+      - classification
+    writes:
+      - root_cause
+    prompt: |
+      Analyze the root cause of this bug: ${description}
+      
+      Evidence:
+      ${evidence}
+      
+      CRITICAL: Do NOT prescribe fixes. Focus on:
+      1. Root cause hypothesis
+      2. Investigation areas
+      3. Reproduction steps
+      
+      Output as JSON: {"hypothesis": "root cause theory", "investigation_areas": ["area1", "area2"], "reproduction_steps": "step by step"}
+
+  # Phase 5: Create bug issue
+  - id: create_bug_issue
+    name: Create Bug Issue
+    type: prompt
+    depends_on:
+      - analyze_root_cause
+    model: opus
+    dispatch: inline
+    reads:
+      - evidence
+      - root_cause
+      - classification
+    writes:
+      - creation_result
+    prompt: |
+      Create a Jira bug issue for: ${description}
+      
+      Root cause analysis:
+      ${root_cause}
+      
+      Evidence:
+      ${evidence}
+      
+      Use the issues router to create the bug:
+      ```bash
+      npx tsx ~/.claude/skills/issues/create_issue.ts '{"project_key": "${TENANT_PROJECT}", "summary": "Bug: <summary>", "description": "<description>", "issue_type": "Bug", "labels": ["bug:unverified"]}'
+      ```
+      
+      Output as JSON: {"bug_key": "GW-XXXX", "summary": "created summary"}
+
+  # Phase 6: Failing test gate (optional based on pipeline mode)
+  - id: failing_test_gate
+    name: Failing Test Gate
+    type: prompt
+    depends_on:
+      - create_bug_issue
+    model: sonnet
+    dispatch: local
+    reads:
+      - evidence
+      - root_cause
+      - creation_result
+    writes:
+      - test_result
+    prompt: |
+      Create a failing test for bug ${creation_result_bug_key}.
+      
+      Root cause:
+      ${root_cause}
+      
+      Pipeline mode: ${evidence_pipeline_mode}
+      
+      If pipeline_mode is true, skip test creation and output: {"test_branches": [], "skipped": true}
+      
+      Otherwise, create a test branch with a failing test that reproduces the bug.
+      Output as JSON: {"test_branches": ["<branch-name>"], "test_file": "<path>", "skipped": false}
+
+  # Phase 7: Transition and link
+  - id: transition_and_link
+    name: Transition and Link
+    type: bash
+    depends_on:
+      - failing_test_gate
+    reads:
+      - creation_result
+      - test_result
+      - evidence
+    script: |
+      bug_key="${creation_result_bug_key}"
+      source_issue="${source_issue:-}"
+      
+      # Transition bug to To Do
+      transitions=$(npx tsx ~/.claude/skills/issues/list_transitions.ts "{\"issue_key\": \"$bug_key\"}")
+      transition_id=$(echo "$transitions" | jq -r '.transitions[] | select(.name == "To Do") | .id')
+      npx tsx ~/.claude/skills/issues/transition_issue.ts "{\"issue_key\": \"$bug_key\", \"transition_id\": \"$transition_id\"}"
+      
+      # Add traceability link if source_issue is set
+      if [ -n "$source_issue" ]; then
+        npx tsx ~/.claude/skills/issues/add_issue_link.ts "{\"inward_issue_key\": \"$bug_key\", \"outward_issue_key\": \"$source_issue\", \"link_type\": \"Relates\"}"
+      fi
+      
+      # Set step and outcome labels
+      npx tsx ~/.claude/skills/issues/update_issue.ts "{\"issue_key\": \"$bug_key\", \"labels\": [\"step:to-do\", \"outcome:success-bug-created\"], \"notify_users\": false}"
+      
+      echo "{\"bug_key\": \"$bug_key\", \"status\": \"complete\"}"
