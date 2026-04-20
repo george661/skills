@@ -38,3 +38,30 @@ def test_missing_static_file_404(client: TestClient) -> None:
     """Test that missing static files return 404."""
     response = client.get("/nonexistent.html")
     assert response.status_code == 404
+
+
+def test_app_js_renders_trigger_source_field() -> None:
+    """Test that app.js includes trigger_source field rendering."""
+    from pathlib import Path
+
+    app_js_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "app.js"
+    content = app_js_path.read_text()
+
+    # Check that trigger_source is referenced
+    assert "trigger_source" in content
+    assert "trigger-source-badge" in content
+
+
+def test_trigger_source_column_responsive() -> None:
+    """Test that CSS has mobile breakpoint for Source column."""
+    from pathlib import Path
+
+    css_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "css" / "styles.css"
+    content = css_path.read_text()
+
+    # Check for trigger-source-badge styles
+    assert "trigger-source-badge" in content
+
+    # Check for mobile breakpoint hiding Source column
+    assert "max-width: 767px" in content or "max-width:767px" in content
+    assert "nth-child(5)" in content  # Source is 5th column

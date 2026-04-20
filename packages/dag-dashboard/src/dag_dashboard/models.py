@@ -37,6 +37,7 @@ class WorkflowRunResponse(BaseModel):
     outputs: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     workflow_definition: Optional[str] = None
+    trigger_source: Optional[str] = None
 
     @field_validator("workflow_name")
     @classmethod

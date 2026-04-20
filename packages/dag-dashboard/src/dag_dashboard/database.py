@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     inputs TEXT,
     outputs TEXT,
     error TEXT,
-    workflow_definition TEXT
+    workflow_definition TEXT,
+    trigger_source TEXT
 );
 
 -- 2. node_executions: Per-node execution within a workflow run
@@ -194,6 +195,11 @@ def init_db(db_path: Path) -> None:
 
         try:
             cursor.execute("ALTER TABLE chat_messages ADD COLUMN operator_username TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE workflow_runs ADD COLUMN trigger_source TEXT")
         except sqlite3.OperationalError:
             pass
 

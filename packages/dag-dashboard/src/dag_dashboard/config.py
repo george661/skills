@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     events_dir: Path = Path("dag-events")
     max_sse_connections: int = 50
 
+    # Trigger endpoint settings
+    trigger_enabled: bool = False
+    trigger_secret: Optional[str] = None
+    trigger_rate_limit_per_min: int = 10
+    workflows_dir: Path = Path("workflows")
+
     # Slack notification settings
     slack_enabled: bool = False
     slack_webhook_url: Optional[str] = None
