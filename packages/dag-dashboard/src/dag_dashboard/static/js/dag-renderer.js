@@ -281,6 +281,78 @@ class DAGRenderer {
             });
         }
     }
+
+    updateRetryProgress(nodeName, retryState) {
+        const nodeGroup = this.g.querySelector(`[data-node-name="${nodeName}"]`);
+        if (!nodeGroup) return;
+
+        // Find or create retry overlay container
+        let overlay = nodeGroup.querySelector('.retry-overlay');
+        if (!overlay) {
+            overlay = document.createElementNS('http://www.w3.org/2000/svg', 'foreignObject');
+            overlay.setAttribute('class', 'retry-overlay');
+            // Position below the node card
+            const node = this.g.querySelector(`[data-node-name="${nodeName}"] rect`);
+            const x = parseFloat(node.getAttribute('x'));
+            const y = parseFloat(node.getAttribute('y')) + parseFloat(node.getAttribute('height')) + 5;
+            overlay.setAttribute('x', x);
+            overlay.setAttribute('y', y);
+            overlay.setAttribute('width', '200');
+            overlay.setAttribute('height', '60');
+            nodeGroup.appendChild(overlay);
+        }
+
+        // Compute remaining delay (handle SSE replay edge case)
+        const now = Date.now();
+        const eventTime = new Date(retryState.timestamp).getTime();
+        const elapsed = now - eventTime;
+        const remainingMs = Math.max(0, retryState.delay_ms - elapsed);
+
+        // Render retry badge content
+        const errorSnippet = (retryState.last_error || '').substring(0, 30);
+        const errorText = errorSnippet.length === 30 ? errorSnippet + '...' : errorSnippet;
+
+        overlay.innerHTML = `
+            <div xmlns="http://www.w3.org/1999/xhtml" class="retry-overlay-content">
+                <span class="retry-badge">Retry ${retryState.attempt}/${retryState.max_attempts}</span>
+                <span class="retry-countdown">${(remainingMs / 1000).toFixed(1)}s</span>
+                <span class="retry-error-snippet" title="${retryState.last_error || ''}">${errorText}</span>
+            </div>
+        `;
+
+        // Start countdown timer (update every 100ms)
+        if (!overlay.dataset.intervalId) {
+            const intervalId = setInterval(() => {
+                const now = Date.now();
+                const elapsed = now - eventTime;
+                const remaining = Math.max(0, retryState.delay_ms - elapsed);
+                const countdownSpan = overlay.querySelector('.retry-countdown');
+                if (countdownSpan) {
+                    countdownSpan.textContent = `${(remaining / 1000).toFixed(1)}s`;
+                }
+                if (remaining === 0) {
+                    clearInterval(intervalId);
+                    delete overlay.dataset.intervalId;
+                }
+            }, 100);
+            overlay.dataset.intervalId = intervalId;
+        }
+    }
+
+    clearRetryProgress(nodeName) {
+        const nodeGroup = this.g.querySelector(`[data-node-name="${nodeName}"]`);
+        if (!nodeGroup) return;
+
+        const overlay = nodeGroup.querySelector('.retry-overlay');
+        if (overlay) {
+            // Clear countdown interval
+            if (overlay.dataset.intervalId) {
+                clearInterval(parseInt(overlay.dataset.intervalId));
+                delete overlay.dataset.intervalId;
+            }
+            overlay.remove();
+        }
+    }
 }
 
 // Export for use in app.js
