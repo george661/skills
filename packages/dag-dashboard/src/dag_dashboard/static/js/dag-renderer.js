@@ -1,0 +1,266 @@
+/**
+ * DAG Renderer - SVG-based visualization with zoom/pan
+ */
+
+class DAGRenderer {
+    constructor(containerId) {
+        this.container = document.getElementById(containerId);
+        this.svg = null;
+        this.g = null;
+        this.scale = 1;
+        this.translateX = 0;
+        this.translateY = 0;
+        this.isDragging = false;
+        this.lastX = 0;
+        this.lastY = 0;
+    }
+
+    render(layoutData) {
+        if (!this.container) {
+            console.error('DAG container not found');
+            return;
+        }
+
+        // Clear existing content
+        this.container.innerHTML = '';
+
+        // Create SVG element
+        this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        this.svg.style.width = '100%';
+        this.svg.style.height = '600px';
+        this.svg.style.border = '1px solid var(--border)';
+        this.svg.style.borderRadius = 'var(--radius)';
+        this.svg.style.background = 'var(--bg-secondary)';
+        this.svg.style.touchAction = 'none'; // For pinch-to-zoom
+
+        // Create main group for zoom/pan
+        this.g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        this.svg.appendChild(this.g);
+
+        // Add defs for arrow markers
+        const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+        const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+        marker.setAttribute('id', 'arrowhead');
+        marker.setAttribute('markerWidth', '10');
+        marker.setAttribute('markerHeight', '10');
+        marker.setAttribute('refX', '9');
+        marker.setAttribute('refY', '3');
+        marker.setAttribute('orient', 'auto');
+        const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+        polygon.setAttribute('points', '0 0, 10 3, 0 6');
+        polygon.setAttribute('fill', 'var(--text-secondary)');
+        marker.appendChild(polygon);
+        defs.appendChild(marker);
+        this.svg.appendChild(defs);
+
+        // Render edges first (so they appear behind nodes)
+        layoutData.edges.forEach(edge => this.renderEdge(edge, layoutData.nodes));
+
+        // Render nodes
+        layoutData.nodes.forEach(node => this.renderNode(node));
+
+        // Center the view
+        this.centerView(layoutData.nodes);
+
+        // Setup zoom/pan interactions
+        this.setupInteractions();
+
+        this.container.appendChild(this.svg);
+    }
+
+    renderNode(node) {
+        const nodeGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        nodeGroup.setAttribute('class', 'dag-node');
+        nodeGroup.setAttribute('data-node-name', node.node_name);
+        nodeGroup.style.cursor = 'pointer';
+
+        // Node background
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', node.x - 100);
+        rect.setAttribute('y', node.y - 40);
+        rect.setAttribute('width', '200');
+        rect.setAttribute('height', '80');
+        rect.setAttribute('rx', '8');
+        rect.setAttribute('class', `node-status-${node.status}`);
+        nodeGroup.appendChild(rect);
+
+        // Node name
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', node.x);
+        text.setAttribute('y', node.y - 10);
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('font-size', '14');
+        text.setAttribute('fill', 'var(--text)');
+        text.textContent = node.node_name;
+        nodeGroup.appendChild(text);
+
+        // Status text
+        const statusText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        statusText.setAttribute('x', node.x);
+        statusText.setAttribute('y', node.y + 10);
+        statusText.setAttribute('text-anchor', 'middle');
+        statusText.setAttribute('font-size', '12');
+        statusText.setAttribute('fill', 'var(--text-secondary)');
+        statusText.textContent = node.status;
+        nodeGroup.appendChild(statusText);
+
+        // Cost display (if available)
+        if (node.cost) {
+            const costText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            costText.setAttribute('x', node.x);
+            costText.setAttribute('y', node.y + 25);
+            costText.setAttribute('text-anchor', 'middle');
+            costText.setAttribute('font-size', '11');
+            costText.setAttribute('fill', 'var(--text-secondary)');
+            costText.textContent = `$${node.cost.toFixed(4)}`;
+            nodeGroup.appendChild(costText);
+        }
+
+        // Click handler
+        nodeGroup.addEventListener('click', () => {
+            const event = new CustomEvent('node-click', { detail: node });
+            window.dispatchEvent(event);
+        });
+
+        this.g.appendChild(nodeGroup);
+    }
+
+    renderEdge(edge, nodes) {
+        const sourceNode = nodes.find(n => n.node_name === edge.source);
+        const targetNode = nodes.find(n => n.node_name === edge.target);
+
+        if (!sourceNode || !targetNode) return;
+
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        const d = `M ${edge.points[0].x} ${edge.points[0].y} L ${edge.points[1].x} ${edge.points[1].y}`;
+        path.setAttribute('d', d);
+        path.setAttribute('class', 'dag-edge');
+        path.setAttribute('marker-end', 'url(#arrowhead)');
+        
+        // Animate edge if source node is running
+        if (sourceNode.status === 'running') {
+            path.classList.add('edge-animated');
+        }
+
+        this.g.appendChild(path);
+    }
+
+    centerView(nodes) {
+        if (!nodes || nodes.length === 0) return;
+
+        // Calculate bounding box
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        nodes.forEach(node => {
+            minX = Math.min(minX, node.x - 100);
+            maxX = Math.max(maxX, node.x + 100);
+            minY = Math.min(minY, node.y - 40);
+            maxY = Math.max(maxY, node.y + 40);
+        });
+
+        const width = maxX - minX;
+        const height = maxY - minY;
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+
+        // Calculate scale to fit
+        const svgWidth = this.svg.clientWidth;
+        const svgHeight = this.svg.clientHeight;
+        const scaleX = svgWidth / (width + 200);
+        const scaleY = svgHeight / (height + 200);
+        this.scale = Math.min(scaleX, scaleY, 1);
+
+        // Center translate
+        this.translateX = svgWidth / 2 - centerX * this.scale;
+        this.translateY = svgHeight / 2 - centerY * this.scale;
+
+        this.updateTransform();
+    }
+
+    setupInteractions() {
+        // Mouse wheel zoom
+        this.svg.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            this.scale *= delta;
+            this.scale = Math.max(0.1, Math.min(this.scale, 3));
+            this.updateTransform();
+        });
+
+        // Mouse drag pan
+        this.svg.addEventListener('mousedown', (e) => {
+            this.isDragging = true;
+            this.lastX = e.clientX;
+            this.lastY = e.clientY;
+        });
+
+        this.svg.addEventListener('mousemove', (e) => {
+            if (!this.isDragging) return;
+            const dx = e.clientX - this.lastX;
+            const dy = e.clientY - this.lastY;
+            this.translateX += dx;
+            this.translateY += dy;
+            this.lastX = e.clientX;
+            this.lastY = e.clientY;
+            this.updateTransform();
+        });
+
+        this.svg.addEventListener('mouseup', () => {
+            this.isDragging = false;
+        });
+
+        this.svg.addEventListener('mouseleave', () => {
+            this.isDragging = false;
+        });
+
+        // Touch pinch-to-zoom
+        let initialDistance = 0;
+        let initialScale = 1;
+
+        this.svg.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 2) {
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                initialDistance = Math.sqrt(dx * dx + dy * dy);
+                initialScale = this.scale;
+            }
+        });
+
+        this.svg.addEventListener('touchmove', (e) => {
+            if (e.touches.length === 2) {
+                e.preventDefault();
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                this.scale = initialScale * (distance / initialDistance);
+                this.scale = Math.max(0.1, Math.min(this.scale, 3));
+                this.updateTransform();
+            }
+        });
+    }
+
+    updateTransform() {
+        this.g.setAttribute('transform', `translate(${this.translateX}, ${this.translateY}) scale(${this.scale})`);
+    }
+
+    updateNodeStatus(nodeName, status) {
+        const nodeGroup = this.g.querySelector(`[data-node-name="${nodeName}"]`);
+        if (nodeGroup) {
+            const rect = nodeGroup.querySelector('rect');
+            rect.setAttribute('class', `node-status-${status}`);
+
+            // Update edge animations if node is running
+            const edges = this.g.querySelectorAll('.dag-edge');
+            edges.forEach(edge => {
+                // This is a simplified check - in production you'd track edge-node mappings
+                if (status === 'running') {
+                    edge.classList.add('edge-animated');
+                } else {
+                    edge.classList.remove('edge-animated');
+                }
+            });
+        }
+    }
+}
+
+// Export for use in app.js
+window.DAGRenderer = DAGRenderer;
