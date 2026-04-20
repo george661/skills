@@ -30,6 +30,7 @@ def main() -> None:
         max_sse_connections=settings.max_sse_connections,
         slack_notifier=slack_notifier,
         dashboard_url=settings.dashboard_url,
+        checkpoint_dir_fallback=settings.checkpoint_dir,
     )
 
     logger.info(f"Starting DAG Dashboard on {settings.host}:{settings.port}")

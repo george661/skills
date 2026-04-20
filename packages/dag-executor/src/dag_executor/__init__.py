@@ -237,10 +237,14 @@ def resume_workflow(
     else:
         inputs = inputs.copy()
 
-    # Load interrupt checkpoint if present
-    interrupt_checkpoint = checkpoint_store.load_interrupt(workflow_name, run_id)
-    if interrupt_checkpoint and resume_values:
-        # Inject resume values into workflow inputs
+    # Load checkpoint-based resume values and merge into inputs
+    checkpoint_resume_values = checkpoint_store.load_resume_values(workflow_name, run_id)
+    if checkpoint_resume_values:
+        for key, value in checkpoint_resume_values.items():
+            inputs[key] = value
+
+    # Explicit resume_values argument takes precedence over checkpoint values
+    if resume_values:
         for resume_key, resume_value in resume_values.items():
             inputs[resume_key] = resume_value
 
