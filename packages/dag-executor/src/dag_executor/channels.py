@@ -9,7 +9,7 @@ Thread-safe: all writes acquire internal locks.
 """
 import threading
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Set, List, Tuple, Optional
+from typing import Any, Dict, Set, List, Tuple, Optional, Callable
 
 from dag_executor.reducers import ReducerRegistry
 from dag_executor.schema import ReducerDef, ReducerStrategy, WorkflowDef
@@ -48,13 +48,14 @@ class Channel(ABC):
         pass
 
     @abstractmethod
-    def write(self, value: Any, writer_node_id: str) -> int:
+    def write(self, value: Any, writer_node_id: str, emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> int:
         """Write a value to the channel.
-        
+
         Args:
             value: Value to write
             writer_node_id: ID of the node writing the value
-            
+            emitter: Optional event emitter for channel state events
+
         Returns:
             New version number after write
         """
@@ -108,7 +109,7 @@ class LastValueChannel(Channel):
         with self._lock:
             return (self._value, self._version)
 
-    def write(self, value: Any, writer_node_id: str, emitter=None) -> int:
+    def write(self, value: Any, writer_node_id: str, emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> int:
         """Write a value, raising ChannelConflictError if multiple writers.
 
         Args:
@@ -213,7 +214,7 @@ class ReducerChannel(Channel):
         with self._lock:
             return (self._value, self._version)
 
-    def write(self, value: Any, writer_node_id: str, emitter=None) -> int:
+    def write(self, value: Any, writer_node_id: str, emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> int:
         """Write a value, applying reducer to merge with current value.
 
         Args:
@@ -309,7 +310,7 @@ class BarrierChannel(Channel):
             else:
                 return (None, self._version)
 
-    def write(self, value: Any, writer_node_id: str, emitter=None) -> int:
+    def write(self, value: Any, writer_node_id: str, emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> int:
         """Write a value, accumulating until all expected writers have written.
 
         Args:
@@ -385,7 +386,7 @@ class ChannelStore:
     channels from WorkflowDef.state.
     """
 
-    def __init__(self, emitter=None) -> None:
+    def __init__(self, emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> None:
         """Initialize ChannelStore.
 
         Args:
@@ -457,7 +458,7 @@ class ChannelStore:
             channel.reset()
 
     @classmethod
-    def from_workflow_def(cls, workflow_def: WorkflowDef, emitter=None) -> "ChannelStore":
+    def from_workflow_def(cls, workflow_def: WorkflowDef, emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> "ChannelStore":
         """Factory method to build ChannelStore from WorkflowDef.
 
         Creates channels based on state field definitions:
