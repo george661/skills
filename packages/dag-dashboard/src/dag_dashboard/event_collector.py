@@ -210,6 +210,78 @@ class EventCollector:
                 (run_id, event_type, payload, created_at)
             )
 
+            # Handle channel events
+            if event_type == "channel_updated" and isinstance(raw_payload, dict):
+                try:
+                    channel_key = raw_payload.get("channel_key")
+                    channel_type = raw_payload.get("channel_type")
+                    value = raw_payload.get("value")
+                    version = raw_payload.get("version")
+                    writer_node_id = raw_payload.get("writer_node_id")
+                    reducer_strategy = raw_payload.get("reducer_strategy")
+
+                    if channel_key and channel_type is not None and version is not None:
+                        # Serialize value to JSON
+                        value_json = json.dumps(value) if value is not None else None
+
+                        # Get existing writers or initialize
+                        cursor.execute(
+                            "SELECT writers_json FROM channel_states WHERE run_id = ? AND channel_key = ?",
+                            (run_id, channel_key)
+                        )
+                        existing_row = cursor.fetchone()
+                        if existing_row and existing_row[0]:
+                            writers = json.loads(existing_row[0])
+                            if writer_node_id and writer_node_id not in writers:
+                                writers.append(writer_node_id)
+                        else:
+                            writers = [writer_node_id] if writer_node_id else []
+
+                        writers_json = json.dumps(writers)
+
+                        # UPSERT channel state
+                        cursor.execute(
+                            """
+                            INSERT INTO channel_states
+                            (run_id, channel_key, channel_type, reducer_strategy, value_json, version, writers_json, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(run_id, channel_key) DO UPDATE SET
+                                channel_type = excluded.channel_type,
+                                reducer_strategy = excluded.reducer_strategy,
+                                value_json = excluded.value_json,
+                                version = excluded.version,
+                                writers_json = excluded.writers_json,
+                                updated_at = excluded.updated_at
+                            """,
+                            (run_id, channel_key, channel_type, reducer_strategy, value_json, version, writers_json, created_at)
+                        )
+                    else:
+                        logger.warning(f"Malformed channel_updated event for run {run_id}: missing required fields")
+                except Exception as e:
+                    logger.warning(f"Failed to persist channel_updated event for run {run_id}: {e}")
+
+            elif event_type == "channel_conflict" and isinstance(raw_payload, dict):
+                try:
+                    channel_key = raw_payload.get("channel_key")
+                    writers = raw_payload.get("writers", [])
+                    message = raw_payload.get("message", "Channel conflict")
+
+                    if channel_key:
+                        conflict_json = json.dumps({"message": message, "timestamp": created_at})
+                        writers_json = json.dumps(writers)
+
+                        # Update existing row with conflict information
+                        cursor.execute(
+                            """
+                            UPDATE channel_states
+                            SET conflict_json = ?, writers_json = ?, updated_at = ?
+                            WHERE run_id = ? AND channel_key = ?
+                            """,
+                            (conflict_json, writers_json, created_at, run_id, channel_key)
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to persist channel_conflict event for run {run_id}: {e}")
+
             conn.commit()
         finally:
             conn.close()
