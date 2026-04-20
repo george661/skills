@@ -232,19 +232,22 @@ def insert_node(
     model: Optional[str] = None,
     tokens: Optional[int] = None,
     cost: Optional[float] = None,
+    tokens_input: Optional[int] = None,
+    tokens_output: Optional[int] = None,
+    tokens_cache: Optional[int] = None,
 ) -> str:
     """Insert a new node execution."""
     conn = get_connection(db_path)
     try:
         conn.execute(
             """
-            INSERT INTO node_executions (id, run_id, node_name, status, started_at, inputs, depends_on, model, tokens, cost)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO node_executions (id, run_id, node_name, status, started_at, inputs, depends_on, model, tokens, cost, tokens_input, tokens_output, tokens_cache)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (node_id, run_id, node_name, status, started_at,
              json.dumps(inputs) if inputs else None,
              json.dumps(depends_on) if depends_on else None,
-             model, tokens, cost)
+             model, tokens, cost, tokens_input, tokens_output, tokens_cache)
         )
         conn.commit()
         return node_id
@@ -400,16 +403,17 @@ def insert_artifact(
     created_at: str,
     path: Optional[str] = None,
     content: Optional[str] = None,
+    url: Optional[str] = None,
 ) -> Optional[int]:
     """Insert an artifact for a node execution."""
     conn = get_connection(db_path)
     try:
         cursor = conn.execute(
             """
-            INSERT INTO artifacts (execution_id, name, artifact_type, path, content, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO artifacts (execution_id, name, artifact_type, path, content, created_at, url)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (execution_id, name, artifact_type, path, content, created_at)
+            (execution_id, name, artifact_type, path, content, created_at, url)
         )
         conn.commit()
         return cursor.lastrowid
@@ -426,5 +430,54 @@ def get_artifacts(db_path: Path, execution_id: str) -> List[Dict[str, Any]]:
             (execution_id,)
         )
         return [_row_to_dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_workflow_totals(db_path: Path, run_id: str) -> Dict[str, Any]:
+    """Get aggregated totals for a workflow run.
+
+    Returns:
+        Dict with keys: cost, tokens_input, tokens_output, tokens_cache,
+        total_tokens, failed_nodes, skipped_nodes
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(cost), 0.0) as total_cost,
+                COALESCE(SUM(tokens_input), 0) as total_tokens_input,
+                COALESCE(SUM(tokens_output), 0) as total_tokens_output,
+                COALESCE(SUM(tokens_cache), 0) as total_tokens_cache,
+                COALESCE(SUM(COALESCE(tokens_input, 0) + COALESCE(tokens_output, 0) + COALESCE(tokens_cache, 0)), 0) as total_all_tokens,
+                COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_count,
+                COUNT(CASE WHEN status = 'skipped' THEN 1 END) as skipped_count
+            FROM node_executions
+            WHERE run_id = ?
+            """,
+            (run_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "cost": float(row[0]),
+                "tokens_input": int(row[1]),
+                "tokens_output": int(row[2]),
+                "tokens_cache": int(row[3]),
+                "total_tokens": int(row[4]),
+                "failed_nodes": int(row[5]),
+                "skipped_nodes": int(row[6]),
+            }
+        else:
+            return {
+                "cost": 0.0,
+                "tokens_input": 0,
+                "tokens_output": 0,
+                "tokens_cache": 0,
+                "total_tokens": 0,
+                "failed_nodes": 0,
+                "skipped_nodes": 0,
+            }
     finally:
         conn.close()

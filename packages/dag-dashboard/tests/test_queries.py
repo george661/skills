@@ -407,3 +407,125 @@ def test_list_runs_sort_by_duration(db_path: Path):
     assert result["items"][0]["id"] == "run-2"  # 10 min
     assert result["items"][1]["id"] == "run-1"  # 5 min
     assert result["items"][2]["id"] == "run-3"  # 2 min
+
+
+def test_insert_node_with_token_breakdown(db_path: Path):
+    """Test inserting node with token breakdown (input/output/cache)."""
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+
+    from dag_dashboard.queries import insert_node
+    node_id = insert_node(
+        db_path,
+        node_id="node-1",
+        run_id="run-1",
+        node_name="tokenized-node",
+        status="completed",
+        started_at="2026-04-17T12:00:00Z",
+        tokens_input=1500,
+        tokens_output=500,
+        tokens_cache=200,
+        cost=0.0125,
+    )
+
+    # Read back and verify breakdown is preserved
+    node = get_node(db_path, "node-1")
+    assert node is not None
+    assert node["tokens_input"] == 1500
+    assert node["tokens_output"] == 500
+    assert node["tokens_cache"] == 200
+    assert node["cost"] == 0.0125
+
+
+def test_insert_artifact_with_url(db_path: Path):
+    """Test inserting artifact with URL."""
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(
+        db_path, "node-1", "run-1", "test-node", "completed", "2026-04-17T12:00:00Z"
+    )
+
+    artifact_id = insert_artifact(
+        db_path,
+        execution_id="node-1",
+        name="PR #1",
+        artifact_type="pull-request",
+        created_at="2026-04-17T12:00:00Z",
+        url="https://github.com/george661/skills/pull/1",
+    )
+
+    artifacts = get_artifacts(db_path, "node-1")
+    assert len(artifacts) == 1
+    assert artifacts[0]["url"] == "https://github.com/george661/skills/pull/1"
+
+
+def test_get_workflow_totals_empty(db_path: Path):
+    """Test get_workflow_totals returns zeros for unknown run."""
+    from dag_dashboard.queries import get_workflow_totals
+
+    totals = get_workflow_totals(db_path, "nonexistent-run")
+    assert totals["cost"] == 0.0
+    assert totals["tokens_input"] == 0
+    assert totals["tokens_output"] == 0
+    assert totals["tokens_cache"] == 0
+    assert totals["total_tokens"] == 0
+    assert totals["failed_nodes"] == 0
+    assert totals["skipped_nodes"] == 0
+
+
+def test_get_workflow_totals_aggregates(db_path: Path):
+    """Test get_workflow_totals aggregates costs/tokens and counts statuses."""
+    from dag_dashboard.queries import get_workflow_totals
+
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+
+    # Node 1: completed
+    insert_node(
+        db_path, "node-1", "run-1", "n1", "completed", "2026-04-17T12:00:00Z",
+        tokens_input=1000, tokens_output=200, tokens_cache=100, cost=0.01
+    )
+
+    # Node 2: failed
+    insert_node(
+        db_path, "node-2", "run-1", "n2", "failed", "2026-04-17T12:01:00Z",
+        tokens_input=500, tokens_output=50, tokens_cache=0, cost=0.005
+    )
+
+    # Node 3: skipped
+    insert_node(
+        db_path, "node-3", "run-1", "n3", "skipped", "2026-04-17T12:02:00Z",
+        tokens_input=0, tokens_output=0, tokens_cache=0, cost=0.0
+    )
+
+    totals = get_workflow_totals(db_path, "run-1")
+
+    # Cost total: 0.01 + 0.005 + 0.0 = 0.015
+    assert totals["cost"] == 0.015
+
+    # Token totals
+    assert totals["tokens_input"] == 1500
+    assert totals["tokens_output"] == 250
+    assert totals["tokens_cache"] == 100
+    assert totals["total_tokens"] == 1850
+
+    # Status counts
+    assert totals["failed_nodes"] == 1
+    assert totals["skipped_nodes"] == 1
+
+
+def test_get_workflow_totals_handles_null_cost_and_tokens(db_path: Path):
+    """Test get_workflow_totals treats NULL values as 0."""
+    from dag_dashboard.queries import get_workflow_totals
+
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+
+    # Node with no cost or token info
+    insert_node(
+        db_path, "node-1", "run-1", "n1", "completed", "2026-04-17T12:00:00Z"
+    )
+
+    totals = get_workflow_totals(db_path, "run-1")
+
+    assert totals["cost"] == 0.0
+    assert totals["tokens_input"] == 0
+    assert totals["tokens_output"] == 0
+    assert totals["tokens_cache"] == 0
+    assert totals["total_tokens"] == 0

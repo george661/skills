@@ -32,7 +32,10 @@ CREATE TABLE IF NOT EXISTS node_executions (
     depends_on TEXT,
     model TEXT,
     tokens INTEGER,
-    cost REAL
+    cost REAL,
+    tokens_input INTEGER,
+    tokens_output INTEGER,
+    tokens_cache INTEGER
 );
 
 -- 3. chat_messages: LLM chat messages per node execution
@@ -64,7 +67,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
     artifact_type TEXT NOT NULL,
     path TEXT,
     content TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    url TEXT
 );
 
 -- 6. events: Workflow-level event log
@@ -143,6 +147,30 @@ def init_db(db_path: Path) -> None:
 
         try:
             cursor.execute("ALTER TABLE node_executions ADD COLUMN cost REAL")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN tokens_input INTEGER")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN tokens_output INTEGER")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN tokens_cache INTEGER")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE artifacts ADD COLUMN url TEXT")
         except sqlite3.OperationalError:
             # Column already exists
             pass

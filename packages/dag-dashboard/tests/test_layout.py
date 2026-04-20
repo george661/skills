@@ -181,6 +181,107 @@ def test_compute_layout_performance_50_nodes():
 def test_compute_layout_empty():
     """Test layout computation with no nodes."""
     layout = compute_layout([])
-    
+
     assert layout["nodes"] == []
     assert layout["edges"] == []
+
+
+def test_compute_failure_path_no_failures():
+    """Test compute_failure_path returns empty set when all nodes completed."""
+    from dag_dashboard.layout import compute_failure_path
+
+    nodes = [
+        {"node_name": "A", "status": "completed", "depends_on": []},
+        {"node_name": "B", "status": "completed", "depends_on": ["A"]},
+        {"node_name": "C", "status": "completed", "depends_on": ["B"]},
+    ]
+
+    failure_path = compute_failure_path(nodes)
+    assert failure_path == set()
+
+
+def test_compute_failure_path_marks_failed_and_downstream():
+    """Test failure path marks failed node and skipped downstream nodes."""
+    from dag_dashboard.layout import compute_failure_path
+
+    # Diamond DAG: A completed, B failed, C depends on A (completed), D depends on B (pending)
+    nodes = [
+        {"node_name": "A", "status": "completed", "depends_on": []},
+        {"node_name": "B", "status": "failed", "depends_on": ["A"]},
+        {"node_name": "C", "status": "completed", "depends_on": ["A"]},
+        {"node_name": "D", "status": "pending", "depends_on": ["B"]},
+    ]
+
+    failure_path = compute_failure_path(nodes)
+
+    # B is failed, D is downstream of B and pending → both on failure path
+    assert "B" in failure_path
+    assert "D" in failure_path
+    # A and C are not on failure path
+    assert "A" not in failure_path
+    assert "C" not in failure_path
+
+
+def test_compute_failure_path_multiple_failures():
+    """Test failure path with multiple failed branches."""
+    from dag_dashboard.layout import compute_failure_path
+
+    # Two independent branches: A→B (B failed), C→D (D failed), E→F (both completed)
+    nodes = [
+        {"node_name": "A", "status": "completed", "depends_on": []},
+        {"node_name": "B", "status": "failed", "depends_on": ["A"]},
+        {"node_name": "C", "status": "completed", "depends_on": []},
+        {"node_name": "D", "status": "failed", "depends_on": ["C"]},
+        {"node_name": "E", "status": "completed", "depends_on": []},
+        {"node_name": "F", "status": "completed", "depends_on": ["E"]},
+    ]
+
+    failure_path = compute_failure_path(nodes)
+
+    # B and D are both failed → both on failure path
+    assert "B" in failure_path
+    assert "D" in failure_path
+    # Others are not
+    assert "A" not in failure_path
+    assert "C" not in failure_path
+    assert "E" not in failure_path
+    assert "F" not in failure_path
+
+
+def test_compute_layout_includes_failure_path_flag():
+    """Test compute_layout adds failure_path boolean to nodes."""
+    nodes = [
+        {
+            "id": "run1:A",
+            "run_id": "run1",
+            "node_name": "A",
+            "status": "completed",
+            "depends_on": [],
+        },
+        {
+            "id": "run1:B",
+            "run_id": "run1",
+            "node_name": "B",
+            "status": "failed",
+            "depends_on": ["A"],
+        },
+        {
+            "id": "run1:C",
+            "run_id": "run1",
+            "node_name": "C",
+            "status": "skipped",
+            "depends_on": ["B"],
+        },
+    ]
+
+    layout = compute_layout(nodes)
+
+    # Find nodes by name
+    nodes_by_name = {n["node_name"]: n for n in layout["nodes"]}
+
+    # A completed → not on failure path
+    assert nodes_by_name["A"]["failure_path"] is False
+    # B failed → on failure path
+    assert nodes_by_name["B"]["failure_path"] is True
+    # C skipped and depends on B → on failure path
+    assert nodes_by_name["C"]["failure_path"] is True
