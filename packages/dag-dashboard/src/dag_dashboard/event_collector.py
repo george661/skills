@@ -135,6 +135,9 @@ class EventCollector:
         # WorkflowEvent stores channel state in metadata, other data in metadata too
         payload = json.dumps(event_data)
 
+        # Channel events (channel_updated, channel_conflict) carry a nested payload dict
+        raw_payload = event_data.get("payload", {})
+
         # Use timestamp field from WorkflowEvent, fallback to created_at or now
         created_at = event_data.get("timestamp") or event_data.get("created_at", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 

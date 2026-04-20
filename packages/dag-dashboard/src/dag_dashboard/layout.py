@@ -18,7 +18,6 @@ def topological_sort_with_layers(nodes: List[Dict[str, Any]]) -> Dict[int, List[
     # Build adjacency list and in-degree map
     graph: Dict[str, List[str]] = {}
     in_degree: Dict[str, int] = {}
-    node_map = {node["node_name"]: node for node in nodes}
 
     for node in nodes:
         node_name = node["node_name"]
