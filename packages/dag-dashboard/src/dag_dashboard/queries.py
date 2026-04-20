@@ -462,6 +462,7 @@ def count_pending_gates(db_path: Path) -> int:
             AND wr.status = 'running'
             """
         )
-        return cursor.fetchone()[0]
+        result = cursor.fetchone()
+        return int(result[0]) if result else 0
     finally:
         conn.close()
