@@ -516,6 +516,60 @@ function setupLiveUpdates(runId, dagRenderer, nodes) {
     }, { once: true });
 }
 
+// Gate Indicator - Pulsing notification for pending gates
+class GateIndicator {
+    constructor() {
+        this.indicator = document.getElementById('gate-indicator');
+        this.pollInterval = null;
+        this.init();
+    }
+
+    init() {
+        // Start polling for pending gates
+        this.poll();
+        this.pollInterval = setInterval(() => this.poll(), 5000); // Poll every 5 seconds
+    }
+
+    async poll() {
+        try {
+            const response = await fetch('/api/gates/pending');
+            if (!response.ok) return;
+
+            const data = await response.json();
+            this.update(data.count, data.gates);
+        } catch (error) {
+            console.error('Error polling pending gates:', error);
+        }
+    }
+
+    update(count, gates) {
+        if (count > 0) {
+            this.indicator.textContent = count;
+            this.indicator.classList.remove('hidden');
+
+            // Add click handler to navigate to first pending gate
+            if (gates && gates.length > 0) {
+                this.indicator.onclick = () => {
+                    const firstGate = gates[0];
+                    window.location.hash = `/workflow/${firstGate.run_id}`;
+                };
+            }
+        } else {
+            this.indicator.classList.add('hidden');
+            this.indicator.onclick = null;
+        }
+    }
+
+    stop() {
+        if (this.pollInterval) {
+            clearInterval(this.pollInterval);
+        }
+    }
+}
+
+// Initialize gate indicator
+const gateIndicator = new GateIndicator();
+
 // Initialize router
 const router = new Router();
 router.register('/', renderDashboard);
