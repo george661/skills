@@ -1,0 +1,566 @@
+---
+name: Groom Command Workflow
+config:
+  checkpoint_prefix: groom
+  worktree: false
+  labels:
+    on_failure: "outcome:grooming-incomplete"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command groom"
+      run_on: [completed, failed]
+
+inputs:
+  epic_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+state:
+  prp_state:
+    type: dict
+    reducer: overwrite
+  issue_list:
+    type: list
+    reducer: append
+    default: []
+  dependency_graph:
+    type: dict
+    reducer: overwrite
+  review_verdicts:
+    type: list
+    reducer: append
+    default: []
+  skeleton_output:
+    type: dict
+    reducer: overwrite
+
+nodes:
+  # ──────────────────────────────────────────────────────────
+  # Phase 0: Initialize
+  # ──────────────────────────────────────────────────────────
+  - id: init_session
+    name: Initialize Grooming Session
+    type: bash
+    label: "step:grooming"
+    script: |
+      # Load AgentDB patterns for grooming context
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts \
+        "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"groom-$epic_key\", \"k\": 3}"
+      # Set step label on Jira
+      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
+      labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not)) + ["step:grooming"] | @json')
+      npx tsx ~/.claude/skills/issues/update_issue.ts "{\"issue_key\": \"$epic_key\", \"labels\": $labels, \"notify_users\": false}"
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 0.5: Design Discovery
+  # ──────────────────────────────────────────────────────────
+  - id: design_discovery
+    name: Design Session Inheritance
+    type: prompt
+    depends_on:
+      - init_session
+    prompt: |
+      Search for existing design sessions that may inform grooming of
+      Epic $epic_key. Check AgentDB for prior architecture decisions,
+      design documents, and related PRP patterns. Output design_session_id
+      if found, or "none" if this is greenfield work.
+    model: opus
+    dispatch: inline
+    output_format: json
+    checkpoint: true
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 1: Fetch Epic from Jira
+  # ──────────────────────────────────────────────────────────
+  - id: fetch_epic
+    name: Fetch Epic from Jira
+    type: bash
+    depends_on:
+      - design_discovery
+    on_failure: stop
+    output_format: json
+    script: |
+      # Fetch Epic details
+      epic=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
+        "{\"issue_key\": \"$epic_key\", \"fields\": \"summary,description,labels,status,issuelinks,comment\"}")
+      
+      # Verify Epic status is GROOMING (or transition to it)
+      current_status=$(echo "$epic" | jq -r '.fields.status.name')
+      if [ "$current_status" != "GROOMING" ]; then
+        transitions=$(npx tsx ~/.claude/skills/issues/list_transitions.ts "{\"issue_key\": \"$epic_key\"}")
+        groom_transition=$(echo "$transitions" | jq -r '.transitions[] | select(.name == "GROOMING") | .id')
+        if [ -n "$groom_transition" ]; then
+          npx tsx ~/.claude/skills/issues/transition_issue.ts "{\"issue_key\": \"$epic_key\", \"transition_id\": \"$groom_transition\"}"
+        fi
+      fi
+      
+      echo "$epic"
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 2: Parse PRP into Tasks
+  # ──────────────────────────────────────────────────────────
+  - id: parse_prp
+    name: Parse PRP into Tasks
+    type: prompt
+    depends_on:
+      - fetch_epic
+    dispatch: local
+    checkpoint: true
+    writes:
+      - prp_state
+    prompt: |
+      Parse the PRP comment on Epic $epic_key into a structured task list.
+      Extract all test tasks, implementation tasks, and infrastructure tasks.
+      For each task, identify: title, acceptance criteria, affected repos,
+      type (BACKEND_LOGIC, FRONTEND_FEATURE, API_ENDPOINT, etc), and
+      estimated complexity (S/M/L). Output as structured JSON.
+    model: sonnet
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 2.5: Domain Derivation (CML cross-reference)
+  # ──────────────────────────────────────────────────────────
+  - id: domain_derivation
+    name: CML Cross-Reference and Derivation
+    type: prompt
+    depends_on:
+      - parse_prp
+    on_failure: continue
+    checkpoint: true
+    reads:
+      - prp_state
+    writes:
+      - prp_state
+    prompt: |
+      For each task from the parsed PRP, cross-reference against the CML
+      domain model at $TENANT_DOMAIN_PATH. Identify: which bounded contexts
+      are affected, which aggregates/entities/commands/events, and whether
+      any domain concepts are missing from the model. Annotate each task
+      with: domain_context, affected_aggregates, and deviation_notes
+      (if the task introduces concepts not in CML). Skip if TENANT_DOMAIN_PATH
+      is unset.
+    model: opus
+    dispatch: inline
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3: Calculate Dependency Tiers
+  # ──────────────────────────────────────────────────────────
+  - id: calculate_tiers
+    name: Topological Sort into Tiers
+    type: prompt
+    depends_on:
+      - domain_derivation
+    trigger_rule: all_done
+    checkpoint: true
+    reads:
+      - prp_state
+    writes:
+      - dependency_graph
+    prompt: |
+      Analyze the tasks from the parsed PRP and determine their dependency
+      relationships. Build a directed acyclic graph (DAG) where task A
+      depends on task B if A requires B's implementation. Perform a
+      topological sort and assign each task to a tier (tier 0 = no deps,
+      tier 1 = depends on tier 0, etc). Output as dependency_graph:
+      { tasks: [{id, tier, blocks: [], blocked_by: []}], tier_count }.
+    model: sonnet
+    dispatch: inline
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3.5: Skeleton Sub-DAG Pipeline
+  # ──────────────────────────────────────────────────────────
+  - id: create_skeleton
+    name: Create Walking Skeleton
+    type: command
+    command: create-skeleton
+    args:
+      - "$epic_key"
+    depends_on:
+      - calculate_tiers
+    reads:
+      - prp_state
+      - dependency_graph
+    writes:
+      - skeleton_output
+    dispatch: inline
+
+  - id: review_skeleton
+    name: Review Walking Skeleton
+    type: command
+    command: review-skeleton
+    args:
+      - "$epic_key"
+    depends_on:
+      - create_skeleton
+    reads:
+      - skeleton_output
+    writes:
+      - review_verdicts
+    dispatch: inline
+
+  - id: skeleton_gate
+    name: Skeleton Approval Gate
+    type: gate
+    depends_on:
+      - review_skeleton
+    condition: "$review_skeleton.verdict == 'APPROVED'"
+    on_failure: continue
+
+  - id: fix_skeleton
+    name: Fix Walking Skeleton
+    type: command
+    command: fix-skeleton
+    args:
+      - "$epic_key"
+    depends_on:
+      - skeleton_gate
+    trigger_rule: all_done
+    reads:
+      - skeleton_output
+    writes:
+      - skeleton_output
+    retry:
+      max_attempts: 2
+      delay_ms: 0
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 4: Create Jira Issues
+  # ──────────────────────────────────────────────────────────
+  - id: create_issues_batch
+    name: Create Issue Batch Structure
+    type: prompt
+    depends_on:
+      - fix_skeleton
+      - skeleton_gate
+    trigger_rule: one_success
+    dispatch: local
+    checkpoint: true
+    reads:
+      - prp_state
+      - dependency_graph
+    writes:
+      - issue_list
+    prompt: |
+      Draft Jira issue definitions for all tasks from the parsed PRP.
+      For each task, generate: summary (title), description (acceptance
+      criteria + affected repos + tier + domain context), issue_type
+      (Story/Task/Bug), priority (based on tier and blocking relationship),
+      labels (tier:N, repo-X, lang:Y, type:Z). Include test tasks as
+      separate issues. Output as structured JSON batch (NOT individual
+      create calls - the next node will do that).
+    model: sonnet
+    output_format: json
+
+  - id: create_issues
+    name: Create Jira Issues
+    type: bash
+    depends_on:
+      - create_issues_batch
+    reads:
+      - create_issues_batch
+    writes:
+      - issue_list
+    script: |
+      # Read the issue batch from previous node output
+      issue_batch="$DAG_CREATE_ISSUES_BATCH"
+      
+      # Loop through each issue and create via issues router
+      echo "$issue_batch" | jq -c '.issues[]' | while read -r issue_def; do
+        summary=$(echo "$issue_def" | jq -r '.summary')
+        description=$(echo "$issue_def" | jq -r '.description')
+        issue_type=$(echo "$issue_def" | jq -r '.issue_type // "Task"')
+        priority=$(echo "$issue_def" | jq -r '.priority // "Medium"')
+        labels=$(echo "$issue_def" | jq -r '.labels | @json')
+        
+        created_issue=$(npx tsx ~/.claude/skills/issues/create_issue.ts \
+          "{\"project_key\": \"${TENANT_PROJECT}\", \"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"$issue_type\", \"priority\": \"$priority\", \"labels\": $labels}")
+        
+        issue_key=$(echo "$created_issue" | jq -r '.key')
+        echo "{\"key\": \"$issue_key\", \"tier\": $(echo "$issue_def" | jq '.tier')}"
+      done | jq -s '.'
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 4.5: Set Priorities and Labels
+  # ──────────────────────────────────────────────────────────
+  - id: set_priorities
+    name: Set Priorities and Tier Labels
+    type: bash
+    depends_on:
+      - create_issues
+    reads:
+      - issue_list
+      - dependency_graph
+    script: |
+      # Read dependency graph and issue list
+      dep_graph="$DAG_DEPENDENCY_GRAPH"
+      issues="$DAG_ISSUE_LIST"
+      
+      # For each issue, update with tier label and adjusted priority
+      echo "$issues" | jq -c '.[]' | while read -r issue; do
+        key=$(echo "$issue" | jq -r '.key')
+        tier=$(echo "$issue" | jq -r '.tier')
+        
+        # Get current labels and add tier label
+        current=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$key\", \"fields\": \"labels\"}")
+        labels=$(echo "$current" | jq -r ".fields.labels // [] | . + [\"tier:$tier\"] | unique | @json")
+        
+        # Update labels
+        npx tsx ~/.claude/skills/issues/update_issue.ts \
+          "{\"issue_key\": \"$key\", \"labels\": $labels, \"notify_users\": false}"
+      done
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 5: Add Dependency Links
+  # ──────────────────────────────────────────────────────────
+  - id: add_dep_links
+    name: Add Dependency Links
+    type: bash
+    depends_on:
+      - set_priorities
+    reads:
+      - dependency_graph
+      - issue_list
+    script: |
+      # Read dependency graph and issue list
+      dep_graph="$DAG_DEPENDENCY_GRAPH"
+      issues="$DAG_ISSUE_LIST"
+      
+      # For each blocking relationship, create a "blocks" link
+      echo "$dep_graph" | jq -c '.tasks[] | select(.blocks | length > 0)' | while read -r task; do
+        blocker_id=$(echo "$task" | jq -r '.id')
+        blocker_key=$(echo "$issues" | jq -r ".[] | select(.task_id == \"$blocker_id\") | .key")
+        
+        echo "$task" | jq -c '.blocks[]' | while read -r blocked_id; do
+          blocked_key=$(echo "$issues" | jq -r ".[] | select(.task_id == \"$blocked_id\") | .key")
+          
+          npx tsx ~/.claude/skills/issues/add_issue_link.ts \
+            "{\"inward_issue_key\": \"$blocker_key\", \"outward_issue_key\": \"$blocked_key\", \"link_type\": \"Blocks\"}"
+        done
+      done
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 6: First Review (Completeness)
+  # ──────────────────────────────────────────────────────────
+  - id: first_review
+    name: Completeness Review
+    type: prompt
+    depends_on:
+      - add_dep_links
+    on_failure: stop
+    label: "step:reviewing"
+    reads:
+      - prp_state
+      - issue_list
+      - review_verdicts
+    writes:
+      - review_verdicts
+    prompt: |
+      Review the grooming output for Epic $epic_key for completeness.
+      Verify: all PRP tasks are represented as Jira issues, all issues
+      have clear acceptance criteria, tiers are correctly assigned, and
+      dependencies are captured. Check that test tasks exist for each
+      implementation task. Output verdict: APPROVED or NEEDS_REVISION
+      with specific feedback.
+    model: sonnet
+    dispatch: inline
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 7: Architectural Review
+  # ──────────────────────────────────────────────────────────
+  - id: arch_review
+    name: Architectural Review
+    type: prompt
+    depends_on:
+      - first_review
+    on_failure: stop
+    reads:
+      - prp_state
+      - issue_list
+      - review_verdicts
+    writes:
+      - review_verdicts
+    prompt: |
+      Review the grooming output for Epic $epic_key for architectural
+      correctness. Verify: cross-repo dependencies are sound, API
+      contracts are consistent, domain boundaries are respected, and
+      sequencing respects architectural layers (data → service → API →
+      UI). Output verdict: APPROVED or NEEDS_REVISION with specific
+      feedback.
+    model: sonnet
+    dispatch: inline
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 8: Final Review
+  # ──────────────────────────────────────────────────────────
+  - id: final_review
+    name: Final Grooming Review
+    type: prompt
+    depends_on:
+      - arch_review
+    on_failure: stop
+    reads:
+      - prp_state
+      - issue_list
+      - review_verdicts
+    writes:
+      - review_verdicts
+    prompt: |
+      Final review of grooming output for Epic $epic_key. Verify: all
+      feedback from completeness and architectural reviews has been
+      addressed, issue descriptions are clear and actionable, priorities
+      align with Epic goals, and the grooming is ready for developer
+      assignment. Output verdict: APPROVED or NEEDS_REVISION.
+    model: sonnet
+    dispatch: inline
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 9 (optional): Human Approval Interrupt
+  # ──────────────────────────────────────────────────────────
+  - id: grooming_approval_interrupt
+    name: Grooming Approval Gate
+    type: interrupt
+    depends_on:
+      - final_review
+    message: "Grooming complete for $epic_key. Review issues before transitioning. Type 'resume' to continue."
+    resume_key: grooming_signoff
+    channels:
+      - terminal
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 10: Transition Issues to To Do
+  # ──────────────────────────────────────────────────────────
+  - id: transition_issues
+    name: Transition Issues to To Do
+    type: bash
+    depends_on:
+      - grooming_approval_interrupt
+    reads:
+      - issue_list
+    script: |
+      # Transition all created issues to "To Do" status
+      echo "$DAG_ISSUE_LIST" | jq -c '.[]' | while read -r issue; do
+        key=$(echo "$issue" | jq -r '.key')
+        
+        transitions=$(npx tsx ~/.claude/skills/issues/list_transitions.ts "{\"issue_key\": \"$key\"}")
+        todo_transition=$(echo "$transitions" | jq -r '.transitions[] | select(.name == "To Do") | .id')
+        
+        if [ -n "$todo_transition" ]; then
+          npx tsx ~/.claude/skills/issues/transition_issue.ts \
+            "{\"issue_key\": \"$key\", \"transition_id\": \"$todo_transition\"}"
+        fi
+      done
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 11: Update Epic Comment with Dependency Graph
+  # ──────────────────────────────────────────────────────────
+  - id: update_epic_comment
+    name: Add Dependency Graph Comment
+    type: bash
+    depends_on:
+      - transition_issues
+    reads:
+      - dependency_graph
+      - issue_list
+    script: |
+      # Format dependency graph as markdown comment
+      dep_graph="$DAG_DEPENDENCY_GRAPH"
+      issues="$DAG_ISSUE_LIST"
+      tier_count=$(echo "$dep_graph" | jq -r '.tier_count')
+      
+      comment="## Grooming Complete\n\n"
+      comment+="Created $(echo "$issues" | jq 'length') issues across $tier_count tiers.\n\n"
+      comment+="### Dependency Graph by Tier\n\n"
+      
+      for ((tier=0; tier<tier_count; tier++)); do
+        comment+="**Tier $tier:**\n"
+        echo "$dep_graph" | jq -c ".tasks[] | select(.tier == $tier)" | while read -r task; do
+          task_id=$(echo "$task" | jq -r '.id')
+          issue_key=$(echo "$issues" | jq -r ".[] | select(.task_id == \"$task_id\") | .key")
+          comment+="- $issue_key\n"
+        done
+        comment+="\n"
+      done
+      
+      npx tsx ~/.claude/skills/issues/add_comment.ts \
+        "{\"issue_key\": \"$epic_key\", \"body\": \"$comment\"}"
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 12: Evaluate Completeness
+  # ──────────────────────────────────────────────────────────
+  - id: evaluate_completeness
+    name: Evaluate Grooming Completeness
+    type: prompt
+    depends_on:
+      - update_epic_comment
+    on_failure: stop
+    reads:
+      - prp_state
+      - issue_list
+      - dependency_graph
+    prompt: |
+      Evaluate whether the grooming for Epic $epic_key is complete and
+      ready for Epic transition. Check: all PRP sections have corresponding
+      issues, tier 0 issues are unblocked, test coverage is planned, and
+      no critical gaps exist. Output verdict: COMPLETE or INCOMPLETE with
+      missing elements.
+    model: sonnet
+    dispatch: inline
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 13: Transition Epic
+  # ──────────────────────────────────────────────────────────
+  - id: transition_epic
+    name: Transition Epic to Groomed
+    type: bash
+    depends_on:
+      - evaluate_completeness
+    script: |
+      # Transition Epic to "Groomed" status
+      transitions=$(npx tsx ~/.claude/skills/issues/list_transitions.ts "{\"issue_key\": \"$epic_key\"}")
+      groomed_transition=$(echo "$transitions" | jq -r '.transitions[] | select(.name == "Groomed" or .name == "GROOMED") | .id')
+      
+      if [ -n "$groomed_transition" ]; then
+        npx tsx ~/.claude/skills/issues/transition_issue.ts \
+          "{\"issue_key\": \"$epic_key\", \"transition_id\": \"$groomed_transition\"}"
+      fi
+      
+      # Add outcome label
+      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
+      labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("outcome:") | not)) + ["outcome:success-groomed"] | @json')
+      npx tsx ~/.claude/skills/issues/update_issue.ts \
+        "{\"issue_key\": \"$epic_key\", \"labels\": $labels, \"notify_users\": false}"
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 14: Store Reflexion Episode
+  # ──────────────────────────────────────────────────────────
+  - id: store_episode
+    name: Store Grooming Episode in AgentDB
+    type: bash
+    depends_on:
+      - transition_epic
+    reads:
+      - issue_list
+      - dependency_graph
+    script: |
+      # Store grooming outcome in AgentDB for pattern learning
+      issue_count=$(echo "$DAG_ISSUE_LIST" | jq 'length')
+      tier_count=$(echo "$DAG_DEPENDENCY_GRAPH" | jq -r '.tier_count')
+      
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts \
+        "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"groom-$epic_key\", \"input\": {\"epic_key\": \"$epic_key\", \"issue_count\": $issue_count, \"tier_count\": $tier_count}, \"output\": \"Grooming complete\", \"reward\": 1.0, \"success\": true, \"critique\": \"Epic groomed successfully with $issue_count issues across $tier_count tiers\"}"
+
+outputs:
+  issues_created:
+    node: create_issues
+    field: count
+  design_session:
+    node: design_discovery
+    field: session_id
