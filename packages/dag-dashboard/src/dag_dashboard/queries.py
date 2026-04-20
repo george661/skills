@@ -627,3 +627,61 @@ def count_pending_gates(db_path: Path) -> int:
         return int(result[0]) if result else 0
     finally:
         conn.close()
+
+
+def get_channel_states(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
+    """Get all channel states for a workflow run.
+
+    Args:
+        db_path: Path to SQLite database
+        run_id: Workflow run ID
+
+    Returns:
+        List of channel state dicts with deserialized JSON fields, sorted by channel_key
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT run_id, channel_key, channel_type, reducer_strategy,
+                   value_json, version, writers_json, conflict_json, updated_at
+            FROM channel_states
+            WHERE run_id = ?
+            ORDER BY channel_key
+            """,
+            (run_id,)
+        )
+        rows = cursor.fetchall()
+
+        # Deserialize JSON fields
+        result = []
+        for row in rows:
+            state = dict(row)
+            # Parse JSON columns
+            if state.get("value_json"):
+                state["value"] = json.loads(state["value_json"])
+                del state["value_json"]
+            else:
+                state["value"] = None
+                del state["value_json"]
+
+            if state.get("writers_json"):
+                state["writers"] = json.loads(state["writers_json"])
+                del state["writers_json"]
+            else:
+                state["writers"] = []
+                del state["writers_json"]
+
+            if state.get("conflict_json"):
+                state["conflict"] = json.loads(state["conflict_json"])
+                del state["conflict_json"]
+            else:
+                state["conflict"] = None
+                del state["conflict_json"]
+
+            result.append(state)
+
+        return result
+    finally:
+        conn.close()
