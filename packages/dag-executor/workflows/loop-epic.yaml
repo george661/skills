@@ -1,0 +1,191 @@
+---
+name: Loop Epic Workflow
+config:
+  checkpoint_prefix: loop-epic
+  labels:
+    on_failure: outcome:loop-epic-failed
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command loop-epic"
+      run_on: [completed, failed]
+
+inputs:
+  epic_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+state:
+  epic_issues:
+    type: list
+    reducer: overwrite
+  completed_issues:
+    type: list
+    reducer: append
+    default: []
+  blocked_issues:
+    type: list
+    reducer: append
+    default: []
+  waiting_issues:
+    type: list
+    reducer: append
+    default: []
+  current_issue:
+    type: string
+    reducer: overwrite
+  progress:
+    type: dict
+    reducer: overwrite
+  epic_status:
+    type: string
+    reducer: overwrite
+
+nodes:
+  # Phase 0: Fetch Epic Children
+  - id: fetch_epic_children
+    name: Fetch Epic Children
+    type: bash
+    writes:
+      - epic_issues
+    script: |
+      result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
+        "{\"jql\": \"parent = $epic_key ORDER BY rank ASC\", \"fields\": \"key,summary,status\"}")
+      issues=$(echo "$result" | jq -r '.issues | map(.key) | @json')
+      echo "{\"epic_issues\": $issues}"
+    output_format: json
+
+  # Phase 1: Confidence Check
+  - id: confidence_check
+    name: Confidence Check
+    type: prompt
+    depends_on:
+      - fetch_epic_children
+    reads:
+      - epic_issues
+    prompt: |
+      Verify readiness for epic $epic_key:
+      - Children: ${epic_issues}
+      - Check for needs-human labels
+      - Verify CLAUDE.md accessibility
+      - Count total issues
+
+      If not ready, fail this node to stop the workflow.
+      Output: {"confidence": "ready"} or fail
+    model: opus
+    dispatch: inline
+    output_format: json
+
+  # Phase 2: Iterate Issues
+  - id: iterate_issues
+    name: Iterate Issues
+    type: prompt
+    depends_on:
+      - confidence_check
+    reads:
+      - epic_issues
+      - completed_issues
+      - blocked_issues
+      - waiting_issues
+    writes:
+      - completed_issues
+      - blocked_issues
+      - waiting_issues
+      - progress
+      - current_issue
+    prompt: |
+      Iterate through epic issues and dispatch /loop-issue for each:
+      - Epic issues: ${epic_issues}
+      - Already completed: ${completed_issues}
+      - Already blocked: ${blocked_issues}
+      - Already waiting: ${waiting_issues}
+
+      For each remaining issue:
+      1. Set current_issue to the issue key
+      2. Dispatch /loop-issue inline for that issue
+      3. Check the result and update the appropriate list:
+         - If done/merged: append to completed_issues
+         - If needs-human: append to blocked_issues
+         - If loop-waiting-pipeline: append to waiting_issues
+      4. Update progress: {"total": N, "done": X, "blocked": Y, "waiting": Z}
+      5. Continue until all issues are processed
+
+      Use checkpoint state to resume from where you left off.
+      Output all updated channels in JSON.
+    model: opus
+    dispatch: inline
+    output_format: json
+    checkpoint: true
+    on_failure: continue
+
+  # Phase 3: Validate Epic Completion
+  - id: validate_epic_completion
+    name: Validate Epic Completion
+    type: prompt
+    depends_on:
+      - iterate_issues
+    reads:
+      - epic_issues
+      - completed_issues
+      - blocked_issues
+      - waiting_issues
+    writes:
+      - epic_status
+    prompt: |
+      Verify epic $epic_key completion:
+      - Total issues: ${epic_issues}
+      - Completed: ${completed_issues}
+      - Blocked: ${blocked_issues}
+      - Waiting: ${waiting_issues}
+
+      Check if all children are Done and validated.
+      Set epic_status to one of: completed, paused, blocked
+      Output: {"epic_status": "<status>"}
+    model: opus
+    dispatch: inline
+    output_format: json
+
+  # Phase 4: Store Episode
+  - id: store_episode
+    name: Store Episode
+    type: bash
+    depends_on:
+      - validate_epic_completion
+    trigger_rule: all_done
+    reads:
+      - epic_status
+      - progress
+    script: |
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
+        \"session_id\": \"${TENANT_NAMESPACE}\",
+        \"task\": \"loop-epic-$epic_key\",
+        \"input\": {\"epic_key\": \"$epic_key\"},
+        \"output\": \"Epic status: ${epic_status}\",
+        \"reward\": 0.8,
+        \"success\": true,
+        \"critique\": \"Epic iteration complete\"
+      }"
+
+  # Phase 5: Print Summary
+  - id: print_summary
+    name: Print Summary
+    type: prompt
+    depends_on:
+      - store_episode
+    trigger_rule: all_done
+    reads:
+      - epic_status
+      - progress
+      - completed_issues
+      - blocked_issues
+      - waiting_issues
+    prompt: |
+      Print summary for loop-epic $epic_key:
+      - Epic Status: ${epic_status}
+      - Progress: ${progress}
+      - Completed: ${completed_issues}
+      - Blocked: ${blocked_issues}
+      - Waiting: ${waiting_issues}
+    model: sonnet
+    dispatch: inline
