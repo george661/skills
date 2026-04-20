@@ -123,33 +123,7 @@ function renderChange(change) {
     `;
 }
 
-/**
- * Subscribe to SSE events and refresh timeline when node_completed events arrive
- * @param {HTMLElement} container - Container to refresh
- * @param {string} runId - Workflow run ID
- * @param {EventSource} eventSource - SSE connection
- */
-function subscribeToStateDiffUpdates(container, runId, eventSource) {
-    if (!eventSource || !container || !runId) {
-        console.warn('subscribeToStateDiffUpdates: missing parameters');
-        return;
-    }
-
-    eventSource.addEventListener('node_completed', (event) => {
-        try {
-            const data = JSON.parse(event.data);
-            if (data.run_id === runId) {
-                // Re-fetch and re-render timeline
-                renderStateDiffTimeline(container, runId);
-            }
-        } catch (error) {
-            console.error('Error handling node_completed event:', error);
-        }
-    });
-}
-
 // Export for use in app.js
 if (typeof window !== 'undefined') {
     window.renderStateDiffTimeline = renderStateDiffTimeline;
-    window.subscribeToStateDiffUpdates = subscribeToStateDiffUpdates;
 }

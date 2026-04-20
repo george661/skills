@@ -3,7 +3,7 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 from .database import ensure_dir
 from .queries import insert_chat_message

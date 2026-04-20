@@ -664,10 +664,16 @@ def get_state_diff_timeline(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
     try:
         cursor = conn.execute(
             """
-            SELECT payload, created_at
-            FROM events
-            WHERE run_id = ? AND event_type = 'node_completed'
-            ORDER BY created_at
+            SELECT
+                e.payload,
+                e.created_at,
+                ne.node_name,
+                ne.started_at,
+                ne.finished_at
+            FROM events e
+            LEFT JOIN node_executions ne ON json_extract(e.payload, '$.node_id') = ne.id
+            WHERE e.run_id = ? AND e.event_type = 'node_completed'
+            ORDER BY e.created_at
             """,
             (run_id,)
         )
@@ -680,13 +686,15 @@ def get_state_diff_timeline(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
             payload_str = row[0]
             payload = json.loads(payload_str)
 
-            # Extract fields
-            node_name = payload.get("node_name", "unknown")
+            # WorkflowEvent shape: node_id, metadata, timestamp
             node_id = payload.get("node_id", "unknown")
-            started_at = payload.get("started_at")
-            finished_at = payload.get("finished_at")
             metadata = payload.get("metadata", {})
             state_diff = metadata.get("state_diff", {})
+
+            # Get node_name and timestamps from node_executions JOIN
+            node_name = row[2] if row[2] else "unknown"
+            started_at = row[3]
+            finished_at = row[4]
 
             # Build changes list for this node
             changes = []
@@ -694,16 +702,20 @@ def get_state_diff_timeline(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
                 before_value = running_state.get(key)
 
                 # Determine change type
+                # NOTE: Executor contract treats state_diff[key]=None as "key was removed",
+                # not "key was set to Python None value". This is a semantic convention
+                # where state_diff encodes delta operations, not literal new values.
                 if key not in running_state:
                     # Key not in prior state
                     if after_value is None:
-                        # Per plan review warning: state_diff[key]=None means removed
-                        # If key never existed before, this is a removal from empty (edge case)
+                        # Executor says "remove this key" but it never existed.
+                        # Edge case: treat as "removed" to match executor semantics,
+                        # even though logically it's removing from empty state.
                         change_type = "removed"
                     else:
                         change_type = "added"
                 elif after_value is None:
-                    # Key was in prior state, now None -> removed
+                    # Key was in prior state, executor says "remove it"
                     change_type = "removed"
                 else:
                     # Key was in prior state, has non-None value -> changed

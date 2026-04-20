@@ -1,8 +1,6 @@
 """Tests for database initialization and schema."""
 import sqlite3
-import os
 from pathlib import Path
-import pytest
 from dag_dashboard.database import ensure_dir, init_db
 
 

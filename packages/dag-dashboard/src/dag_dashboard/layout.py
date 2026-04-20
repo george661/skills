@@ -1,7 +1,6 @@
 """Server-side DAG layout computation using layered graph layout (Sugiyama)."""
-import json
 from collections import deque
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 def topological_sort_with_layers(nodes: List[Dict[str, Any]]) -> Dict[int, List[str]]:

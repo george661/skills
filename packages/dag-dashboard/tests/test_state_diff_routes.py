@@ -49,9 +49,29 @@ def _insert_event(
     payload: dict,
     created_at: str
 ) -> None:
-    """Helper to insert an event."""
+    """Helper to insert an event with WorkflowEvent-shaped payload.
+
+    Also creates node_executions entry if payload has node_id, so JOINs work.
+    """
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys=ON")
+
+    # Extract node info for node_executions table
+    node_id = payload.get("node_id")
+    node_name = payload.get("node_name")
+    started_at = payload.get("started_at")
+    finished_at = payload.get("finished_at")
+
+    # Create node_executions entry if this is a node event
+    if node_id and node_name:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO node_executions (id, run_id, node_name, status, started_at, finished_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (node_id, run_id, node_name, "completed", started_at, finished_at)
+        )
+
     conn.execute(
         """
         INSERT INTO events (run_id, event_type, payload, created_at)

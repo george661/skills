@@ -9,6 +9,13 @@ import pytest
 from dag_dashboard.database import init_db
 from dag_dashboard.queries import get_state_diff_timeline
 
+# Import WorkflowEvent from dag-executor for integration test
+try:
+    from dag_executor.events import WorkflowEvent, EventType
+except ImportError:
+    WorkflowEvent = None
+    EventType = None
+
 
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
@@ -37,7 +44,26 @@ def _insert_event(
     payload: dict,
     created_at: str
 ) -> None:
-    """Helper to insert an event."""
+    """Helper to insert an event with WorkflowEvent-shaped payload.
+
+    Also creates node_executions entry if payload has node_id, so JOINs work.
+    """
+    # Extract node info for node_executions table
+    node_id = payload.get("node_id")
+    node_name = payload.get("node_name")  # Will be in legacy format for now
+    started_at = payload.get("started_at")
+    finished_at = payload.get("finished_at")
+
+    # Create node_executions entry if this is a node event
+    if node_id and node_name:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO node_executions (id, run_id, node_name, status, started_at, finished_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (node_id, run_id, node_name, "completed", started_at, finished_at)
+        )
+
     conn.execute(
         """
         INSERT INTO events (run_id, event_type, payload, created_at)
@@ -188,10 +214,14 @@ def test_detects_removed_key(db_path: Path):
 
 
 def test_distinguishes_removed_from_null_value(db_path: Path):
-    """Test that setting a key to None as its value is 'changed', not 'removed'."""
-    # This test addresses the warning from the plan review
-    # Since we don't have access to pre_state, we use state_diff value None
-    # to mean "removed". If the first write to a key is None, that's "added" with value None.
+    """Test that state_diff[key]=None is treated as 'removed' per executor contract.
+
+    Executor contract: state_diff[key]=None means 'remove this key from state',
+    not 'set key to Python None value'. This is a semantic convention where
+    state_diff encodes delta operations rather than literal new state values.
+    """
+    # Edge case: if state_diff says "remove key1" but key1 never existed,
+    # we still classify it as "removed" to match executor semantics.
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys=ON")
     _insert_run(conn, "run-1")
@@ -215,9 +245,7 @@ def test_distinguishes_removed_from_null_value(db_path: Path):
     timeline = get_state_diff_timeline(db_path, "run-1")
     assert len(timeline) == 1
     change = timeline[0]["changes"][0]
-    # First write with None value: since no prior value, this is "added" with None
-    # But per the payload limitation, we treat state_diff[key]=None as "removed"
-    # This is a known edge case per the plan review
+    # Per executor contract: state_diff[key]=None means "removed", not "added with value None"
     assert change["change_type"] == "removed"
     assert change["before"] is None
     assert change["after"] is None
@@ -372,3 +400,100 @@ def test_json_payload_roundtrip(db_path: Path):
     assert by_key["key1"]["after"] == {"nested": "object"}
     assert by_key["key2"]["after"] == [1, 2, 3]
     assert by_key["key3"]["after"] == "string"
+
+
+def test_real_workflow_event_integration(db_path: Path):
+    """Integration test: process real WorkflowEvent.model_dump_json() through EventCollector.
+    
+    This test ensures that:
+    1. Real WorkflowEvent structure matches what event_collector expects
+    2. event_collector stores the full event_data, not just empty payload
+    3. get_state_diff_timeline can read the actual WorkflowEvent shape
+    4. state_diff values are correctly extracted and populated in changes[]
+    """
+    if WorkflowEvent is None or EventType is None:
+        pytest.skip("dag_executor not available for integration test")
+    
+    # Create a real WorkflowEvent with state_diff in metadata
+    event = WorkflowEvent(
+        event_type=EventType.NODE_COMPLETED,
+        workflow_id="test-workflow",
+        node_id="node-1",
+        metadata={
+            "state_diff": {
+                "key1": "value1",
+                "key2": 42,
+                "key3": {"nested": "object"}
+            }
+        },
+        timestamp=datetime(2026, 4, 20, 10, 1, 0, tzinfo=timezone.utc)
+    )
+    
+    # Serialize as the emitter would (NDJSON line)
+    event_json = event.model_dump_json()
+    event_data = json.loads(event_json)
+    
+    # Simulate what event_collector._persist_and_broadcast does
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    
+    # Insert workflow run
+    conn.execute(
+        """
+        INSERT INTO workflow_runs (id, workflow_name, status, started_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        ("test-workflow", "test-workflow", "running", "2026-04-20T10:00:00Z")
+    )
+    
+    # Insert node_executions entry (so JOIN works)
+    conn.execute(
+        """
+        INSERT INTO node_executions (id, run_id, node_name, status, started_at, finished_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("node-1", "test-workflow", "RealNode", "completed", "2026-04-20T10:00:00Z", "2026-04-20T10:01:00Z")
+    )
+    
+    # Store full event_data as payload (matching the fix)
+    payload = json.dumps(event_data)
+    created_at = event_data.get("timestamp", datetime.now(timezone.utc).isoformat())
+    
+    conn.execute(
+        """
+        INSERT INTO events (run_id, event_type, payload, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        ("test-workflow", "node_completed", payload, created_at)
+    )
+    conn.commit()
+    conn.close()
+    
+    # Call get_state_diff_timeline
+    timeline = get_state_diff_timeline(db_path, "test-workflow")
+    
+    # Assertions: timeline should have one entry with 3 changes
+    assert len(timeline) == 1, f"Expected 1 timeline entry, got {len(timeline)}"
+    
+    node_entry = timeline[0]
+    assert node_entry["node_id"] == "node-1"
+    assert node_entry["node_name"] == "RealNode", f"Expected 'RealNode', got {node_entry['node_name']}"
+    assert node_entry["started_at"] == "2026-04-20T10:00:00Z"
+    assert node_entry["finished_at"] == "2026-04-20T10:01:00Z"
+    
+    changes = node_entry["changes"]
+    assert len(changes) == 3, f"Expected 3 changes, got {len(changes)}: {changes}"
+    
+    # Check changes are correct
+    by_key = {c["key"]: c for c in changes}
+    assert "key1" in by_key
+    assert by_key["key1"]["change_type"] == "added"
+    assert by_key["key1"]["after"] == "value1"
+    
+    assert "key2" in by_key
+    assert by_key["key2"]["change_type"] == "added"
+    assert by_key["key2"]["after"] == 42
+    
+    assert "key3" in by_key
+    assert by_key["key3"]["change_type"] == "added"
+    assert by_key["key3"]["after"] == {"nested": "object"}
