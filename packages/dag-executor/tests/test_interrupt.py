@@ -345,5 +345,40 @@ nodes:
     
     with open(interrupt_checkpoint) as f:
         checkpoint_data = json.load(f)
-    
+
     assert checkpoint_data["timeout"] == 120
+
+
+def test_interrupt_output_includes_node_type(tmp_path):
+    """Test that interrupt node output includes node_type field for UI discrimination."""
+    workflow_yaml = """
+name: interrupt_type_test
+config:
+  checkpoint_prefix: .dag-checkpoints
+nodes:
+  - id: wait_for_input
+    name: Wait for Input
+    type: interrupt
+    message: "Enter value"
+    resume_key: "user_input"
+"""
+    workflow_file = tmp_path / "workflow.yaml"
+    workflow_file.write_text(workflow_yaml)
+
+    workflow_def = load_workflow(str(workflow_file))
+    checkpoint_store = CheckpointStore(str(tmp_path / ".dag-checkpoints"))
+
+    result = execute_workflow(
+        workflow_def,
+        inputs={},
+        checkpoint_store=checkpoint_store
+    )
+
+    # Find interrupt node
+    interrupt_node = next(n for n in result.nodes if n.id == "wait_for_input")
+    assert interrupt_node.status == NodeStatus.INTERRUPTED
+
+    # Output should include node_type
+    node_result = result.node_results["wait_for_input"]
+    assert "node_type" in node_result.output
+    assert node_result.output["node_type"] == "interrupt"

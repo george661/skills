@@ -36,6 +36,13 @@ jobs:
         if: steps.packages.outputs.found == 'true'
         run: |
           set -e
+          # Install dag-executor first (required by dag-dashboard tests)
+          if [ -d "packages/dag-executor" ]; then
+            echo "::group::packages/dag-executor (install only)"
+            pip install -e "packages/dag-executor"
+            echo "::endgroup::"
+          fi
+          # Now install, test, and type-check each package
           while IFS= read -r pkg; do
             [ -z "$pkg" ] && continue
             echo "::group::$pkg"
