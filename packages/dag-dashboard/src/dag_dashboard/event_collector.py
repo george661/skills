@@ -142,13 +142,21 @@ class EventCollector:
             if event_type == "workflow_started":
                 workflow_definition = raw_payload.get("workflow_definition") if isinstance(raw_payload, dict) else None
 
-                # Insert workflow_runs row with workflow_definition
+                # Insert workflow_runs row with workflow_definition (use INSERT OR IGNORE + UPDATE to avoid cascade delete)
                 cursor.execute(
                     """
-                    INSERT OR REPLACE INTO workflow_runs (id, workflow_name, status, started_at, workflow_definition)
+                    INSERT OR IGNORE INTO workflow_runs (id, workflow_name, status, started_at, workflow_definition)
                     VALUES (?, ?, ?, ?, ?)
                     """,
                     (run_id, workflow_name, "running", created_at, workflow_definition)
+                )
+                cursor.execute(
+                    """
+                    UPDATE workflow_runs
+                    SET workflow_definition = ?, status = ?, started_at = ?
+                    WHERE id = ? AND workflow_definition IS NULL
+                    """,
+                    (workflow_definition, "running", created_at, run_id)
                 )
 
                 # Parse workflow definition to extract nodes and their dependencies

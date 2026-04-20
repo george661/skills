@@ -81,7 +81,7 @@ class DAGRenderer {
         rect.setAttribute('width', '200');
         rect.setAttribute('height', '80');
         rect.setAttribute('rx', '8');
-        rect.setAttribute('class', `node-status-${node.status}`);
+        rect.setAttribute('class', `node-status-${node.status.replace(/[^a-z-]/g, '')}`);
         nodeGroup.appendChild(rect);
 
         // Node name
@@ -136,7 +136,8 @@ class DAGRenderer {
         path.setAttribute('d', d);
         path.setAttribute('class', 'dag-edge');
         path.setAttribute('marker-end', 'url(#arrowhead)');
-        
+        path.setAttribute('data-source', edge.source);
+
         // Animate edge if source node is running
         if (sourceNode.status === 'running') {
             path.classList.add('edge-animated');
@@ -246,12 +247,11 @@ class DAGRenderer {
         const nodeGroup = this.g.querySelector(`[data-node-name="${nodeName}"]`);
         if (nodeGroup) {
             const rect = nodeGroup.querySelector('rect');
-            rect.setAttribute('class', `node-status-${status}`);
+            rect.setAttribute('class', `node-status-${status.replace(/[^a-z-]/g, '')}`);
 
-            // Update edge animations if node is running
-            const edges = this.g.querySelectorAll('.dag-edge');
+            // Update edge animations only for edges originating from this node
+            const edges = this.g.querySelectorAll(`.dag-edge[data-source="${nodeName}"]`);
             edges.forEach(edge => {
-                // This is a simplified check - in production you'd track edge-node mappings
                 if (status === 'running') {
                     edge.classList.add('edge-animated');
                 } else {
