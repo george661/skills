@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     db_dir: Path = Path.home() / ".dag-dashboard"
     events_dir: Path = Path("dag-events")
     max_sse_connections: int = 50
+    checkpoint_prefix: Optional[Path] = None
 
     # Slack notification settings
     slack_enabled: bool = False

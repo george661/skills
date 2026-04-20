@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 from .broadcast import Broadcaster
 from .chat_relay import ChatRelay
 from .chat_routes import create_chat_router
+from .checkpoint_routes import router as checkpoint_router
 from .database import ensure_dir, init_db
 from .event_collector import EventCollector
 from .notifier import SlackNotifier
@@ -29,6 +30,7 @@ def create_app(
     max_sse_connections: int = 50,
     slack_notifier: Optional[SlackNotifier] = None,
     dashboard_url: str = "http://127.0.0.1:8100",
+    checkpoint_prefix: Optional[Path] = None,
 ) -> FastAPI:
     """Create and configure FastAPI application."""
 
@@ -91,12 +93,17 @@ def create_app(
         lifespan=lifespan
     )
 
-    # Store db_dir and events_dir in app state for lifespan and route access
+    # Store db_dir, events_dir, and checkpoint_prefix in app state for lifespan and route access
     app.state.db_dir = db_dir
     app.state.events_dir = events_dir
+    app.state.checkpoint_prefix = checkpoint_prefix
 
     # Register routes
     app.include_router(router)
+
+    # Register checkpoint routes if checkpoint_prefix is set
+    if checkpoint_prefix is not None:
+        app.include_router(checkpoint_router)
 
     # Register chat routes
     chat_router = create_chat_router(db_path)

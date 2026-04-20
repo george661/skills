@@ -191,3 +191,55 @@ class NodeStateDiff(BaseModel):
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     changes: List[StateDiffChange]
+
+
+# Checkpoint models for replay/inspect UI
+class CheckpointRunSummary(BaseModel):
+    """Summary of a workflow run from checkpoint metadata."""
+    model_config = {"extra": "forbid"}
+
+    run_id: str
+    workflow_name: str
+    started_at: str
+    status: str
+    node_count: int
+    inputs: Dict[str, Any]
+
+
+class CheckpointNodeSummary(BaseModel):
+    """Summary of a node checkpoint (without full output)."""
+    model_config = {"extra": "forbid"}
+
+    node_id: str
+    status: str
+    started_at: str
+    completed_at: str
+    content_hash: str
+    has_error: bool
+
+
+class CheckpointRunDetail(BaseModel):
+    """Full run details including node summaries."""
+    model_config = {"extra": "forbid"}
+
+    metadata: CheckpointRunSummary
+    nodes: List[CheckpointNodeSummary]
+
+
+class ReplayRequest(BaseModel):
+    """Request body for replay endpoint."""
+    model_config = {"extra": "forbid"}
+
+    from_node: str = Field(min_length=1)
+    overrides: Dict[str, Any] = Field(default_factory=dict)
+    workflow_path: str = Field(min_length=1)
+
+
+class ReplaySummary(BaseModel):
+    """Response from replay execution."""
+    model_config = {"extra": "forbid"}
+
+    new_run_id: str
+    parent_run_id: str
+    replayed_from: str
+    nodes_cleared: List[str]
