@@ -8,8 +8,16 @@ TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 echo "1. Installing package from source..."
-cd "$(dirname "$0")/.."
-pip install -q . --target="$TMPDIR/site-packages" --upgrade
+DASHBOARD_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+EXECUTOR_DIR="$(cd "$DASHBOARD_DIR/../dag-executor" && pwd)"
+
+# dag-dashboard depends on dag-executor (sibling path dep). Install both to temp site-packages.
+pip install -q "$EXECUTOR_DIR" --target="$TMPDIR/site-packages" --upgrade
+pip install -q "$DASHBOARD_DIR" --target="$TMPDIR/site-packages" --upgrade --no-deps
+
+# Static assets live next to the installed package; also install runtime deps into the same tree.
+pip install -q --target="$TMPDIR/site-packages" --upgrade \
+    fastapi uvicorn "pydantic>=2.0" pydantic-settings "watchdog>=3.0,<5.0" PyYAML httpx
 
 # Add to Python path
 export PYTHONPATH="$TMPDIR/site-packages:${PYTHONPATH:-}"
