@@ -72,17 +72,88 @@ def test_init_db_sets_file_permissions(tmp_path: Path) -> None:
 def test_init_db_is_idempotent(tmp_path: Path) -> None:
     """Running init_db twice should not raise errors."""
     db_path = tmp_path / "test.db"
-    
+
     # First run
     init_db(db_path)
-    
+
     # Second run should not error
     init_db(db_path)
-    
+
     # Verify tables still exist (exclude sqlite_sequence)
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence'")
     count = cursor.fetchone()[0]
     assert count == 7
+    conn.close()
+
+
+def test_migration_adds_token_breakdown_columns(tmp_path: Path) -> None:
+    """Migration should add tokens_input, tokens_output, tokens_cache columns to node_executions."""
+    db_path = tmp_path / "old-schema.db"
+
+    # Create a minimal old-schema DB without the new columns
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE node_executions (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            node_name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            tokens INTEGER,
+            cost REAL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    # Run migration
+    init_db(db_path)
+
+    # Verify new columns exist
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(node_executions)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    assert 'tokens_input' in columns
+    assert 'tokens_output' in columns
+    assert 'tokens_cache' in columns
+    # Old tokens column should still exist for back-compat
+    assert 'tokens' in columns
+    conn.close()
+
+
+def test_migration_adds_artifact_url_column(tmp_path: Path) -> None:
+    """Migration should add url column to artifacts table."""
+    db_path = tmp_path / "old-artifacts.db"
+
+    # Create a minimal old-schema DB without the url column
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE artifacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            execution_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            artifact_type TEXT NOT NULL,
+            path TEXT,
+            content TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    # Run migration
+    init_db(db_path)
+
+    # Verify url column exists
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(artifacts)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    assert 'url' in columns
     conn.close()

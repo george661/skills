@@ -32,17 +32,22 @@ CREATE TABLE IF NOT EXISTS node_executions (
     depends_on TEXT,
     model TEXT,
     tokens INTEGER,
-    cost REAL
+    cost REAL,
+    tokens_input INTEGER,
+    tokens_output INTEGER,
+    tokens_cache INTEGER
 );
 
--- 3. chat_messages: LLM chat messages per node execution
+-- 3. chat_messages: LLM chat messages per node execution or workflow
 CREATE TABLE IF NOT EXISTS chat_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    execution_id TEXT NOT NULL REFERENCES node_executions(id),
+    execution_id TEXT REFERENCES node_executions(id),
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    metadata TEXT
+    metadata TEXT,
+    run_id TEXT REFERENCES workflow_runs(id),
+    operator_username TEXT
 );
 
 -- 4. gate_decisions: Human-in-the-loop gate outcomes
@@ -64,7 +69,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
     artifact_type TEXT NOT NULL,
     path TEXT,
     content TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    url TEXT
 );
 
 -- 6. events: Workflow-level event log
@@ -145,6 +151,36 @@ def init_db(db_path: Path) -> None:
             cursor.execute("ALTER TABLE node_executions ADD COLUMN cost REAL")
         except sqlite3.OperationalError:
             # Column already exists
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN tokens_input INTEGER")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN tokens_output INTEGER")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN tokens_cache INTEGER")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE artifacts ADD COLUMN url TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE chat_messages ADD COLUMN run_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE chat_messages ADD COLUMN operator_username TEXT")
+        except sqlite3.OperationalError:
             pass
 
         conn.commit()

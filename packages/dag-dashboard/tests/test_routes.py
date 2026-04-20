@@ -1,11 +1,12 @@
 """Tests for REST API routes."""
+import json
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from dag_dashboard.database import init_db
-from dag_dashboard.queries import insert_run, insert_node
+from dag_dashboard.queries import insert_run, insert_node, get_node, get_gate_decisions
 from dag_dashboard.server import create_app
 
 
@@ -18,9 +19,17 @@ def test_db(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def client(tmp_path: Path, test_db: Path) -> TestClient:
+def events_dir(tmp_path: Path) -> Path:
+    """Create a test events directory."""
+    events = tmp_path / "dag-events"
+    events.mkdir(exist_ok=True)
+    return events
+
+
+@pytest.fixture
+def client(tmp_path: Path, test_db: Path, events_dir: Path) -> TestClient:
     """Create a test client with initialized database."""
-    app = create_app(tmp_path)
+    app = create_app(tmp_path, events_dir=events_dir)
     return TestClient(app, raise_server_exceptions=True)
 
 
@@ -215,3 +224,190 @@ def test_get_workflows_date_range_filter(client: TestClient, test_db: Path):
     run_ids = [item["id"] for item in data["items"]]
     assert "run-2" in run_ids
     assert "run-3" in run_ids
+
+
+def test_get_workflow_includes_totals(client: TestClient, test_db: Path):
+    """Test GET /api/workflows/{run_id} returns totals object."""
+    insert_run(test_db, "run-totals", "test-workflow", "running", "2026-04-17T12:00:00Z")
+    insert_node(test_db, "node-1", "run-totals", "step-1", "completed", "2026-04-17T12:00:00Z",
+                model="gpt-4", tokens_input=100, tokens_output=50, tokens_cache=25, cost=0.05)
+    insert_node(test_db, "node-2", "run-totals", "step-2", "failed", "2026-04-17T12:01:00Z",
+                model="gpt-4", tokens_input=200, tokens_output=75, tokens_cache=30, cost=0.08)
+
+    response = client.get("/api/workflows/run-totals")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Verify totals object exists
+    assert "totals" in data
+    totals = data["totals"]
+
+    # Verify totals structure
+    assert "cost" in totals
+    assert "tokens_input" in totals
+    assert "tokens_output" in totals
+    assert "tokens_cache" in totals
+    assert "total_tokens" in totals
+    assert "failed_nodes" in totals
+    assert "skipped_nodes" in totals
+
+    # Verify aggregated values
+    assert totals["tokens_input"] == 300
+    assert totals["tokens_output"] == 125
+    assert totals["tokens_cache"] == 55
+    assert totals["total_tokens"] == 480
+    assert totals["cost"] == 0.13
+    assert totals["failed_nodes"] == 1
+
+
+def test_get_workflow_node_returns_token_breakdown(client: TestClient, test_db: Path):
+    """Test GET /api/workflows/{run_id}/nodes/{node_id} returns token breakdown fields."""
+    insert_run(test_db, "run-tokens", "test-workflow", "running", "2026-04-17T12:00:00Z")
+    insert_node(test_db, "node-tokens", "run-tokens", "step-with-tokens", "completed",
+                "2026-04-17T12:00:00Z",
+                model="gpt-4", tokens_input=500, tokens_output=300, tokens_cache=100, cost=0.15)
+
+    response = client.get("/api/workflows/run-tokens/nodes/node-tokens")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Verify token breakdown fields are present
+    assert "tokens_input" in data
+    assert "tokens_output" in data
+    assert "tokens_cache" in data
+
+    # Verify values
+    assert data["tokens_input"] == 500
+    assert data["tokens_output"] == 300
+    assert data["tokens_cache"] == 100
+
+
+def test_get_workflow_node_artifact_url_present(client: TestClient, test_db: Path):
+    """Test GET /api/workflows/{run_id}/nodes/{node_id} includes artifact URL in enriched response."""
+    from dag_dashboard.queries import insert_artifact
+
+    insert_run(test_db, "run-artifact", "test-workflow", "running", "2026-04-17T12:00:00Z")
+    insert_node(test_db, "node-artifact", "run-artifact", "step-with-artifact", "completed",
+                "2026-04-17T12:00:00Z")
+    insert_artifact(test_db, "node-artifact", "output.json", "application/json",
+                    "2026-04-17T12:01:30Z", url="https://example.com/artifacts/output.json")
+
+    response = client.get("/api/workflows/run-artifact/nodes/node-artifact")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Verify artifacts are present in enriched response
+    assert "artifacts" in data
+    assert len(data["artifacts"]) > 0
+
+    # Verify URL field is present in artifact
+    artifact = data["artifacts"][0]
+    assert "url" in artifact
+    assert artifact["url"] == "https://example.com/artifacts/output.json"
+
+
+def test_post_gate_approve_success(client: TestClient, test_db: Path, events_dir: Path):
+    """Test POST /api/workflows/{run_id}/gates/{node_name}/approve returns 200 with decision record."""
+    insert_run(test_db, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(test_db, "run-1:gate-1", "run-1", "gate-1", "interrupted", started_at="2026-04-17T12:00:00Z")
+
+    response = client.post(
+        "/api/workflows/run-1/gates/gate-1/approve",
+        json={"decided_by": "alice", "comment": "LGTM"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["decision"] == "approved"
+    assert data["decided_by"] == "alice"
+    assert data["comment"] == "LGTM"
+
+    # Verify node status updated to completed
+    node = get_node(test_db, "run-1:gate-1")
+    assert node["status"] == "completed"
+
+    # Verify gate decision persisted in DB
+    decisions = get_gate_decisions(test_db, "run-1")
+    assert len(decisions) == 1
+    assert decisions[0]["decision"] == "approved"
+
+    # Verify NDJSON event appended
+    event_file = events_dir / "run-1.ndjson"
+    assert event_file.exists()
+    with open(event_file) as f:
+        lines = f.readlines()
+        assert len(lines) == 1
+        event = json.loads(lines[0])
+        assert event["event_type"] == "gate.decided"
+        payload = json.loads(event["payload"])
+        assert payload["node_name"] == "gate-1"
+        assert payload["decision"] == "approved"
+
+
+def test_post_gate_reject_success(client: TestClient, test_db: Path, events_dir: Path):
+    """Test POST /api/workflows/{run_id}/gates/{node_name}/reject returns 200 with decision record."""
+    insert_run(test_db, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(test_db, "run-1:gate-1", "run-1", "gate-1", "interrupted", started_at="2026-04-17T12:00:00Z")
+
+    response = client.post(
+        "/api/workflows/run-1/gates/gate-1/reject",
+        json={"decided_by": "bob", "comment": "Needs more testing"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["decision"] == "rejected"
+    assert data["decided_by"] == "bob"
+
+    # Verify node status updated to failed
+    node = get_node(test_db, "run-1:gate-1")
+    assert node["status"] == "failed"
+
+    # Verify gate decision persisted
+    decisions = get_gate_decisions(test_db, "run-1")
+    assert len(decisions) == 1
+    assert decisions[0]["decision"] == "rejected"
+
+
+def test_post_gate_approve_run_not_found(client: TestClient, test_db: Path):
+    """Test POST approve on non-existent run returns 404."""
+    response = client.post(
+        "/api/workflows/nonexistent/gates/gate-1/approve",
+        json={"decided_by": "alice"}
+    )
+    assert response.status_code == 404
+
+
+def test_post_gate_approve_node_not_interrupted(client: TestClient, test_db: Path):
+    """Test POST approve on non-interrupted node returns 409."""
+    insert_run(test_db, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(test_db, "run-1:node-1", "run-1", "node-1", "completed", started_at="2026-04-17T12:00:00Z")
+
+    response = client.post(
+        "/api/workflows/run-1/gates/node-1/approve",
+        json={"decided_by": "alice"}
+    )
+    assert response.status_code == 409
+
+
+def test_get_gates_pending_empty(client: TestClient, test_db: Path):
+    """Test GET /api/gates/pending returns empty list when no pending gates."""
+    insert_run(test_db, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(test_db, "run-1:node-1", "run-1", "node-1", "completed", started_at="2026-04-17T12:00:00Z")
+
+    response = client.get("/api/gates/pending")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 0
+    assert data["gates"] == []
+
+
+def test_get_gates_pending_with_gates(client: TestClient, test_db: Path):
+    """Test GET /api/gates/pending returns list of pending gates with count."""
+    insert_run(test_db, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(test_db, "run-1:gate-1", "run-1", "gate-1", "interrupted", started_at="2026-04-17T12:00:00Z")
+    insert_node(test_db, "run-1:gate-2", "run-1", "gate-2", "interrupted", started_at="2026-04-17T12:01:00Z")
+
+    response = client.get("/api/gates/pending")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 2
+    assert len(data["gates"]) == 2

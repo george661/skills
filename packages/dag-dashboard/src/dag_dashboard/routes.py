@@ -1,16 +1,19 @@
 """FastAPI routes for workflow dashboard."""
 import asyncio
 import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from .models import SortBy, RunStatus, StatusSummary
+from .models import SortBy, RunStatus, StatusSummary, GateDecisionRequest
 from .queries import (
     get_run, list_runs, get_node, list_nodes, get_status_counts,
-    get_artifacts, get_chat_messages, get_gate_decisions
+    get_artifacts, get_chat_messages, get_gate_decisions, get_workflow_totals,
+    insert_gate_decision, update_node, get_pending_gates, count_pending_gates,
 )
 from .layout import compute_layout
 
@@ -21,6 +24,12 @@ def get_db_path(request: Request) -> Path:
     """Extract database path from app state."""
     db_dir: Path = request.app.state.db_dir
     return db_dir / "dashboard.db"
+
+
+def get_events_dir(request: Request) -> Path:
+    """Extract events directory path from app state."""
+    events_dir: Path = request.app.state.events_dir
+    return events_dir
 
 
 @router.get("/workflows/summary")
@@ -67,10 +76,12 @@ async def get_workflow(request: Request, run_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
     nodes = list_nodes(db_path, run_id)
+    totals = get_workflow_totals(db_path, run_id)
 
     return {
         "run": run,
         "nodes": nodes,
+        "totals": totals,
     }
 
 
@@ -139,3 +150,151 @@ async def sse_endpoint() -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/workflows/{run_id}/gates/{node_name}/approve")
+async def approve_gate(
+    request: Request,
+    run_id: str,
+    node_name: str,
+    body: GateDecisionRequest,
+) -> Dict[str, Any]:
+    """Approve a gate decision for a workflow node."""
+    db_path = get_db_path(request)
+    events_dir = get_events_dir(request)
+
+    # Verify run exists
+    run = get_run(db_path, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    # Verify node exists and is interrupted
+    node_id = f"{run_id}:{node_name}"
+    node = get_node(db_path, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found")
+    if node["status"] != "interrupted":
+        raise HTTPException(status_code=409, detail="Node is not in interrupted state")
+
+    # Get decided_by from request body or default to OS user
+    decided_by = body.decided_by or os.getlogin()
+    decided_at = datetime.now(timezone.utc).isoformat()
+
+    # Insert gate decision
+    insert_gate_decision(
+        db_path,
+        run_id=run_id,
+        node_name=node_name,
+        decision="approved",
+        decided_by=decided_by,
+        decided_at=decided_at,
+        reason=body.comment,
+    )
+
+    # Update node status to completed
+    update_node(db_path, node_id, status="completed", finished_at=decided_at)
+
+    # Append NDJSON event to {run_id}.ndjson for executor signaling
+    event_file = events_dir / f"{run_id}.ndjson"
+    event = {
+        "event_type": "gate.decided",
+        "payload": json.dumps({
+            "node_name": node_name,
+            "decision": "approved",
+            "decided_by": decided_by,
+            "comment": body.comment,
+        }),
+        "created_at": decided_at,
+    }
+    with open(event_file, "a") as f:
+        f.write(json.dumps(event) + "\n")
+
+    return {
+        "run_id": run_id,
+        "node_name": node_name,
+        "decision": "approved",
+        "decided_by": decided_by,
+        "decided_at": decided_at,
+        "comment": body.comment,
+    }
+
+
+@router.post("/workflows/{run_id}/gates/{node_name}/reject")
+async def reject_gate(
+    request: Request,
+    run_id: str,
+    node_name: str,
+    body: GateDecisionRequest,
+) -> Dict[str, Any]:
+    """Reject a gate decision for a workflow node."""
+    db_path = get_db_path(request)
+    events_dir = get_events_dir(request)
+
+    # Verify run exists
+    run = get_run(db_path, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    # Verify node exists and is interrupted
+    node_id = f"{run_id}:{node_name}"
+    node = get_node(db_path, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found")
+    if node["status"] != "interrupted":
+        raise HTTPException(status_code=409, detail="Node is not in interrupted state")
+
+    # Get decided_by from request body or default to OS user
+    decided_by = body.decided_by or os.getlogin()
+    decided_at = datetime.now(timezone.utc).isoformat()
+
+    # Insert gate decision
+    insert_gate_decision(
+        db_path,
+        run_id=run_id,
+        node_name=node_name,
+        decision="rejected",
+        decided_by=decided_by,
+        decided_at=decided_at,
+        reason=body.comment,
+    )
+
+    # Update node status to failed
+    update_node(db_path, node_id, status="failed", finished_at=decided_at)
+
+    # Append NDJSON event to {run_id}.ndjson for executor signaling
+    event_file = events_dir / f"{run_id}.ndjson"
+    event = {
+        "event_type": "gate.decided",
+        "payload": json.dumps({
+            "node_name": node_name,
+            "decision": "rejected",
+            "decided_by": decided_by,
+            "comment": body.comment,
+        }),
+        "created_at": decided_at,
+    }
+    with open(event_file, "a") as f:
+        f.write(json.dumps(event) + "\n")
+
+    return {
+        "run_id": run_id,
+        "node_name": node_name,
+        "decision": "rejected",
+        "decided_by": decided_by,
+        "decided_at": decided_at,
+        "comment": body.comment,
+    }
+
+
+@router.get("/gates/pending")
+async def get_pending_gates_route(request: Request) -> Dict[str, Any]:
+    """Get all pending gate approvals (interrupted nodes in running workflows)."""
+    db_path = get_db_path(request)
+
+    gates = get_pending_gates(db_path)
+    count = count_pending_gates(db_path)
+
+    return {
+        "count": count,
+        "gates": gates,
+    }

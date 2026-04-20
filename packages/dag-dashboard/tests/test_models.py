@@ -7,8 +7,11 @@ from dag_dashboard.models import (
     RunStatus,
     WorkflowRunResponse,
     NodeExecutionResponse,
+    WorkflowTotalsResponse,
     PaginatedResponse,
     ListParams,
+    GateDecision,
+    GateDecisionRequest,
 )
 
 
@@ -143,3 +146,107 @@ def test_list_params_valid_status():
     """Test ListParams accepts valid status values."""
     params = ListParams(status=RunStatus.COMPLETED)
     assert params.status == RunStatus.COMPLETED
+
+
+def test_node_execution_response_token_breakdown():
+    """Test NodeExecutionResponse accepts and validates token breakdown fields."""
+    data = {
+        "id": "node-456",
+        "run_id": "run-456",
+        "node_name": "step-2",
+        "status": "completed",
+        "started_at": "2026-04-17T12:00:00Z",
+        "finished_at": "2026-04-17T12:05:00Z",
+        "tokens_input": 500,
+        "tokens_output": 300,
+        "tokens_cache": 100,
+    }
+    node = NodeExecutionResponse(**data)
+    assert node.tokens_input == 500
+    assert node.tokens_output == 300
+    assert node.tokens_cache == 100
+
+    # Test with None values (optional fields)
+    data_no_breakdown = {
+        "id": "node-457",
+        "run_id": "run-457",
+        "node_name": "step-3",
+        "status": "completed",
+        "started_at": "2026-04-17T12:00:00Z",
+    }
+    node_no_breakdown = NodeExecutionResponse(**data_no_breakdown)
+    assert node_no_breakdown.tokens_input is None
+    assert node_no_breakdown.tokens_output is None
+    assert node_no_breakdown.tokens_cache is None
+
+
+def test_workflow_totals_response_shape():
+    """Test WorkflowTotalsResponse strict validation with extra=forbid."""
+    # Valid data should work
+    valid_data = {
+        "cost": 1.25,
+        "tokens_input": 1000,
+        "tokens_output": 500,
+        "tokens_cache": 200,
+        "total_tokens": 1700,
+        "failed_nodes": 2,
+        "skipped_nodes": 3,
+    }
+    totals = WorkflowTotalsResponse(**valid_data)
+    assert totals.cost == 1.25
+    assert totals.tokens_input == 1000
+    assert totals.tokens_output == 500
+    assert totals.tokens_cache == 200
+    assert totals.total_tokens == 1700
+    assert totals.failed_nodes == 2
+    assert totals.skipped_nodes == 3
+
+    # Extra fields should be rejected (extra=forbid)
+    invalid_data = {
+        "cost": 1.25,
+        "tokens_input": 1000,
+        "tokens_output": 500,
+        "tokens_cache": 200,
+        "total_tokens": 1700,
+        "failed_nodes": 2,
+        "skipped_nodes": 3,
+        "unexpected_field": "should fail",
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        WorkflowTotalsResponse(**invalid_data)
+    assert "unexpected_field" in str(exc_info.value)
+
+
+def test_gate_decision_enum_values():
+    """Test GateDecision enum has approved and rejected values."""
+    assert GateDecision.APPROVED == "approved"
+    assert GateDecision.REJECTED == "rejected"
+
+
+def test_gate_decision_request_valid():
+    """Test GateDecisionRequest accepts valid data."""
+    data = {
+        "decided_by": "alice",
+        "comment": "Looks good to proceed",
+    }
+    request = GateDecisionRequest(**data)
+    assert request.decided_by == "alice"
+    assert request.comment == "Looks good to proceed"
+
+
+def test_gate_decision_request_optional_fields():
+    """Test GateDecisionRequest allows optional fields."""
+    request = GateDecisionRequest()
+    assert request.decided_by is None
+    assert request.comment is None
+
+
+def test_gate_decision_request_rejects_long_comment():
+    """Test GateDecisionRequest rejects comment > 1000 chars."""
+    data = {
+        "decided_by": "alice",
+        "comment": "x" * 1001,
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        GateDecisionRequest(**data)
+    assert "comment" in str(exc_info.value)

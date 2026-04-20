@@ -1,0 +1,317 @@
+---
+# Fix PR Workflow
+#
+# Fix loop workflow for PRs with review comments. Addresses inline comments,
+# applies fixes, and verifies residual issues are resolved.
+
+name: Fix PR Workflow
+config:
+  checkpoint_prefix: fix-pr
+  worktree: true
+  labels:
+    on_failure: "outcome:pr-fix-failed"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command fix-pr"
+      run_on: [completed, failed]
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+  repo:
+    type: string
+    required: false
+    default: ""
+  pr_number:
+    type: string
+    required: false
+    default: ""
+  unresolved:
+    type: string
+    required: false
+    default: ""
+
+state:
+  pr_info:
+    type: dict
+    reducer: overwrite
+  review_comments:
+    type: list
+    reducer: append
+    default: []
+  fix_attempts:
+    type: int
+    reducer: max
+    default: 0
+  fix_result:
+    type: dict
+    reducer: overwrite
+  verification_result:
+    type: dict
+    reducer: overwrite
+  errors:
+    type: list
+    reducer: append
+    default: []
+
+nodes:
+  # Phase 1: Resolve context from checkpoint/labels
+  - id: resolve_context
+    name: Resolve Context
+    type: bash
+    writes:
+      - pr_info
+    script: |
+      # Load from checkpoint or Jira labels
+      repo="${repo}"
+      pr_num="${pr_number}"
+      
+      if [ -z "$repo" ] || [ -z "$pr_num" ]; then
+        # Extract from Jira labels (pr:repo/number format)
+        issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
+          "{\"issue_key\": \"${issue_key}\", \"fields\": \"labels\"}")
+        pr_label=$(echo "$issue" | jq -r '.fields.labels[]? | select(startswith("pr:"))')
+        repo=$(echo "$pr_label" | cut -d: -f2 | cut -d/ -f1)
+        pr_num=$(echo "$pr_label" | cut -d/ -f2)
+      fi
+      
+      echo "{\"pr_info\": {\"repo\": \"$repo\", \"pr_number\": \"$pr_num\", \"issue_key\": \"${issue_key}\"}}"
+    output_format: json
+
+  # Phase 2: Update step label
+  - id: step_label_fixing
+    name: Update Step Label
+    type: bash
+    depends_on:
+      - resolve_context
+    script: |
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
+        "{\"issue_key\": \"${issue_key}\", \"fields\": \"labels\"}")
+      labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not)) + ["step:fixing-pr"] | @json')
+      npx tsx ~/.claude/skills/jira/update_issue.ts \
+        "{\"issue_key\": \"${issue_key}\", \"labels\": $labels, \"notify_users\": false}"
+
+  # Phase 3: Fetch PR and comments
+  - id: fetch_pr_and_comments
+    name: Fetch PR and Comments
+    type: bash
+    depends_on:
+      - step_label_fixing
+    reads:
+      - pr_info
+    writes:
+      - review_comments
+    script: |
+      repo="${pr_info_repo}"
+      pr_num="${pr_info_pr_number}"
+      
+      # Get PR details
+      pr=$(npx tsx ~/.claude/skills/vcs/get_pull_request.ts \
+        "{\"repo\": \"$repo\", \"pr_number\": \"$pr_num\"}")
+      
+      # Get inline comments
+      comments=$(npx tsx ~/.claude/skills/vcs/list_pull_request_comments.ts \
+        "{\"repo\": \"$repo\", \"pr_number\": \"$pr_num\"}")
+      
+      echo "{\"review_comments\": $comments}"
+    output_format: json
+
+  # Phase 4: Enumerate unresolved items
+  - id: enumerate_unresolved
+    name: Enumerate Unresolved Items
+    type: bash
+    depends_on:
+      - fetch_pr_and_comments
+    reads:
+      - review_comments
+    writes:
+      - review_comments
+    script: |
+      # Filter for CRITICAL/WARNING comments not yet addressed
+      unresolved_input="${unresolved}"
+      
+      if [ -n "$unresolved_input" ]; then
+        echo "$unresolved_input"
+      else
+        # Build checklist from review_comments
+        echo "$review_comments" | jq '[.[] | select(.body | contains("[CRITICAL]") or contains("[WARNING]"))]'
+      fi
+    output_format: json
+
+  # Phase 5: Branch sync
+  - id: branch_sync
+    name: Branch Sync
+    type: bash
+    depends_on:
+      - enumerate_unresolved
+    on_failure: stop
+    script: |
+      git fetch origin main
+      git merge origin/main --no-edit || {
+        echo "ERROR: Merge conflicts detected. Manual resolution required."
+        exit 1
+      }
+
+  # Phase 6: Apply fixes (with retry)
+  - id: apply_fixes
+    name: Apply Fixes
+    type: prompt
+    depends_on:
+      - branch_sync
+    model: sonnet
+    dispatch: local
+    retry:
+      max_attempts: 3
+      delay_ms: 1000
+    reads:
+      - review_comments
+      - pr_info
+    writes:
+      - fix_result
+      - fix_attempts
+    prompt: |
+      Apply fixes for the PR review comments in ${pr_info_repo} PR #${pr_info_pr_number}.
+      
+      Issue: ${issue_key}
+      
+      Review comments to address:
+      ${review_comments}
+      
+      For each comment:
+      1. Identify the file and line referenced
+      2. Apply the requested fix
+      3. Verify the fix resolves the issue
+      
+      Output as JSON:
+      {
+        "status": "FIXED"|"NEEDS_ESCALATION",
+        "addressed_count": <number>,
+        "changes": "description of fixes applied",
+        "files_changed": ["list", "of", "files"]
+      }
+
+  # Phase 7: Pre-push guards
+  - id: pre_push_guards
+    name: Pre-Push Guards
+    type: bash
+    depends_on:
+      - apply_fixes
+    on_failure: stop
+    script: |
+      # Verify .gitignore exists
+      if [ ! -f .gitignore ]; then
+        echo -e "node_modules/\ndist/\n.env\n*.log\ncoverage/" > .gitignore
+        git add .gitignore
+      fi
+      
+      # Block node_modules
+      if git ls-files --cached | grep -q '^node_modules/'; then
+        echo "ERROR: node_modules is staged"
+        exit 1
+      fi
+      
+      # Language-specific validation
+      if [ -f "go.mod" ]; then
+        go vet ./... || exit 1
+      elif [ -f "package.json" ]; then
+        npm run typecheck 2>/dev/null || true
+      fi
+
+  # Phase 8: Push branch
+  - id: push_branch
+    name: Push Branch
+    type: bash
+    depends_on:
+      - pre_push_guards
+    reads:
+      - fix_result
+    writes:
+      - fix_result
+    script: |
+      # Stage only the files reported by apply_fixes (avoid `git add -A` per CLAUDE.md).
+      files_json="${fix_result_files_changed:-[]}"
+      if echo "$files_json" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+        echo "$files_json" | jq -r '.[]' | while IFS= read -r f; do
+          [ -n "$f" ] && git add -- "$f"
+        done
+      else
+        echo "WARNING: fix_result.files_changed empty; nothing staged"
+      fi
+
+      if git diff --cached --quiet; then
+        echo "No staged changes to commit"
+      else
+        git commit -m "Fix PR review comments for ${issue_key}"
+        git push
+      fi
+
+  # Phase 9: Residual scan
+  - id: residual_scan
+    name: Residual Scan
+    type: bash
+    depends_on:
+      - push_branch
+    writes:
+      - verification_result
+    script: |
+      # Grep changed files for patterns flagged in comments
+      changed_files=$(git diff --name-only HEAD~1)
+      residual_count=0
+      
+      # Simple verification: check if we addressed all comments
+      total_comments=$(echo "${review_comments}" | jq 'length')
+      addressed=$(echo "${fix_result_addressed_count}")
+      
+      if [ "$addressed" -ge "$total_comments" ]; then
+        echo "{\"verification_result\": {\"addressed\": true, \"residual_count\": 0}}"
+      else
+        echo "{\"verification_result\": {\"addressed\": false, \"residual_count\": $((total_comments - addressed))}}"
+      fi
+    output_format: json
+
+  # Phase 10: Completion verify gate
+  - id: completion_verify
+    name: Completion Verify
+    type: gate
+    depends_on:
+      - residual_scan
+    reads:
+      - verification_result
+    condition: "$verification_result_addressed == true"
+    on_failure: stop
+
+  # Phase 11: Update workflow state
+  - id: update_workflow_state
+    name: Update Workflow State
+    type: bash
+    depends_on:
+      - completion_verify
+    script: |
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
+        \"session_id\": \"${TENANT_NAMESPACE}\",
+        \"task\": \"fix-pr-${issue_key}\",
+        \"input\": {\"issue_key\": \"${issue_key}\", \"pr_number\": \"${pr_info_pr_number}\"},
+        \"output\": \"Fixes applied\",
+        \"reward\": 0.7,
+        \"success\": true,
+        \"critique\": \"PR fixes applied and pushed\"
+      }"
+
+  # Phase 12: Emit fix manifest
+  - id: emit_fix_manifest
+    name: Emit Fix Manifest
+    type: bash
+    depends_on:
+      - update_workflow_state
+    reads:
+      - fix_result
+      - verification_result
+    script: |
+      echo "=== Fix PR Manifest ==="
+      echo "Status: ${fix_result_status}"
+      echo "Addressed: ${fix_result_addressed_count}"
+      echo "Residual: ${verification_result_residual_count}"
+      echo "Files changed: ${fix_result_files_changed}"

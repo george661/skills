@@ -3,41 +3,63 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Dict
+from typing import AsyncIterator, Dict, Optional
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from .broadcast import Broadcaster
+from .chat_relay import ChatRelay
+from .chat_routes import create_chat_router
 from .database import ensure_dir, init_db
 from .event_collector import EventCollector
+from .notifier import SlackNotifier
 from .sse import create_sse_router
 from .routes import router
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(db_dir: Path, events_dir: Path = Path("dag-events"), max_sse_connections: int = 50) -> FastAPI:
+def create_app(
+    db_dir: Optional[Path] = None,
+    db_path: Optional[Path] = None,
+    events_dir: Path = Path("dag-events"),
+    pipe_root: Optional[Path] = None,
+    max_sse_connections: int = 50,
+    slack_notifier: Optional[SlackNotifier] = None,
+    dashboard_url: str = "http://127.0.0.1:8100",
+) -> FastAPI:
     """Create and configure FastAPI application."""
 
     # Initialize database first (before creating app)
-    ensure_dir(db_dir)
-    db_path = db_dir / "dashboard.db"
+    if db_path is None:
+        if db_dir is None:
+            raise ValueError("Either db_dir or db_path must be provided")
+        ensure_dir(db_dir)
+        db_path = db_dir / "dashboard.db"
     init_db(db_path)
 
     # Ensure events directory exists
     ensure_dir(events_dir)
 
+    # Set default pipe_root
+    if pipe_root is None:
+        pipe_root = Path.home() / ".dag-dashboard" / "chat"
+
     # Create broadcaster
     broadcaster = Broadcaster()
+
+    # Create chat relay
+    chat_relay = ChatRelay(db_path=db_path, pipe_root=pipe_root)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Initialize event collector on startup."""
-        # Store broadcaster and db_path in app.state for access by endpoints/tests
+        # Store broadcaster, db_path, and chat_relay in app.state for access by endpoints/tests
         app.state.broadcaster = broadcaster
         app.state.db_path = db_path
+        app.state.chat_relay = chat_relay
 
         # Create and start event collector
         loop = asyncio.get_running_loop()
@@ -45,18 +67,22 @@ def create_app(db_dir: Path, events_dir: Path = Path("dag-events"), max_sse_conn
             events_dir=events_dir,
             db_path=db_path,
             broadcaster=broadcaster,
-            loop=loop
+            loop=loop,
+            slack_notifier=slack_notifier,
+            dashboard_url=dashboard_url,
         )
         collector.start()
         app.state.collector = collector
 
         logger.info(f"Event collector started, watching {events_dir}")
+        logger.info(f"Chat relay initialized, pipe_root: {pipe_root}")
 
         yield
 
-        # Shutdown: stop collector
+        # Shutdown: stop collector and chat relay
         collector.stop()
-        logger.info("Event collector stopped")
+        chat_relay.stop()
+        logger.info("Event collector and chat relay stopped")
 
     app = FastAPI(
         title="DAG Dashboard",
@@ -65,11 +91,16 @@ def create_app(db_dir: Path, events_dir: Path = Path("dag-events"), max_sse_conn
         lifespan=lifespan
     )
 
-    # Store db_dir in app state for lifespan and route access
+    # Store db_dir and events_dir in app state for lifespan and route access
     app.state.db_dir = db_dir
+    app.state.events_dir = events_dir
 
     # Register routes
     app.include_router(router)
+
+    # Register chat routes
+    chat_router = create_chat_router(db_path)
+    app.include_router(chat_router)
 
     # Mount static files
     static_dir = Path(__file__).parent / "static"
