@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from pydantic import model_validator
+from pydantic import ConfigDict, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class Settings(BaseSettings):
     """Application settings with secure defaults."""
 
-    model_config = SettingsConfigDict(env_prefix="DAG_DASHBOARD_")
+    model_config = SettingsConfigDict(env_prefix="DAG_DASHBOARD_", extra="allow")
 
     host: str = "127.0.0.1"
     port: int = 8100
