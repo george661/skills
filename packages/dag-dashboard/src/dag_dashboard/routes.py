@@ -126,6 +126,28 @@ async def get_workflow_layout(request: Request, run_id: str) -> Dict[str, Any]:
     return layout_data
 
 
+@router.get("/workflows/{run_id}/channels")
+async def get_workflow_channels(request: Request, run_id: str) -> Dict[str, Any]:
+    """Get channel states for a workflow run.
+
+    Returns:
+        Dictionary with "channels" key containing list of channel states
+    """
+    from .queries import get_channel_states
+
+    db_path = get_db_path(request)
+
+    # Verify workflow exists
+    run = get_run(db_path, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    # Get channel states
+    channels = get_channel_states(db_path, run_id)
+
+    return {"channels": channels}
+
+
 async def event_generator() -> AsyncIterator[str]:
     """Generate SSE events."""
     yield f"data: {json.dumps({'type': 'connected', 'message': 'SSE connection established'})}\n\n"
