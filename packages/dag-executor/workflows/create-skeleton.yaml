@@ -1,0 +1,247 @@
+---
+name: Create Skeleton Command Sub-DAG
+config:
+  checkpoint_prefix: create-skeleton
+  worktree: false
+  labels:
+    on_failure: "outcome:skeleton-creation-failed"
+
+inputs:
+  epic_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+state:
+  epic_context:
+    type: dict
+    reducer: overwrite
+  affected_repos:
+    type: list
+    reducer: append
+    default: []
+  skeleton_path:
+    type: dict
+    reducer: overwrite
+  skeleton_issues:
+    type: list
+    reducer: append
+    default: []
+
+nodes:
+  # ──────────────────────────────────────────────────────────
+  # Phase 0: Load Epic Context
+  # ──────────────────────────────────────────────────────────
+  - id: load_epic_context
+    name: Load Epic Context
+    type: bash
+    writes:
+      - epic_context
+    on_failure: stop
+    script: |
+      # Fetch epic and child issues from Jira
+      epic=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
+        '{"issue_key": "$epic_key", "fields": "summary,description,issuelinks,labels,status"}')
+      
+      children=$(npx tsx ~/.claude/skills/issues/search_issues.ts \
+        '{"jql": "parent = $epic_key", "fields": "key,summary,description,status,labels"}')
+      
+      # Try to recall PRP from AgentDB
+      prp=$(npx tsx ~/.claude/skills/agentdb/recall_query.ts \
+        '{"query": "planned-$epic_key", "k": 1}' 2>/dev/null || echo '{"results":[]}')
+      
+      echo "{\"epic_context\": {\"epic\": $epic, \"children\": $children, \"prp\": $prp}}"
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 1: Identify Affected Repos
+  # ──────────────────────────────────────────────────────────
+  - id: identify_repos
+    name: Identify Affected Repos
+    type: prompt
+    depends_on:
+      - load_epic_context
+    reads:
+      - epic_context
+    writes:
+      - affected_repos
+    model: opus
+    dispatch: inline
+    prompt: |
+      Analyze the epic context and identify all affected repositories.
+      
+      Epic context:
+      {epic_context}
+      
+      Look for:
+      - Repository names (project-*, gw-*, etc.)
+      - repo-* labels
+      - Implementation tasks mentioning specific repos
+      
+      Return a JSON array of repository names:
+      {"affected_repos": ["repo1", "repo2"]}
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 2: Define Skeleton Path
+  # ──────────────────────────────────────────────────────────
+  - id: define_skeleton_path
+    name: Define Skeleton Path
+    type: prompt
+    depends_on:
+      - identify_repos
+    reads:
+      - epic_context
+      - affected_repos
+    writes:
+      - skeleton_path
+    model: opus
+    dispatch: inline
+    prompt: |
+      Define the minimal vertical slice (walking skeleton) for this epic.
+      
+      Epic: {epic_context}
+      Repos: {affected_repos}
+      
+      For each repo, define:
+      - Frontend: Which routes/pages need to exist (minimal)
+      - API: Which endpoints (just stubs that return mock data)
+      - Backend: Which service methods (stubs)
+      - Database: Which tables/schemas (can be empty initially)
+      - Types: Which shared types must exist
+      
+      Return:
+      {"skeleton_path": {"repo1": {...}, "repo2": {...}}}
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3: Define E2E Tests
+  # ──────────────────────────────────────────────────────────
+  - id: define_e2e_tests
+    name: Define E2E Tests
+    type: prompt
+    depends_on:
+      - define_skeleton_path
+    reads:
+      - skeleton_path
+    model: opus
+    dispatch: inline
+    prompt: |
+      Define the E2E test journey for the skeleton.
+      
+      Skeleton path: {skeleton_path}
+      
+      Define:
+      - User journey (step by step)
+      - Page objects needed
+      - Test fixtures/data needed
+      
+      Return:
+      {"e2e_tests": {"journey": [...], "page_objects": [...], "fixtures": [...]}}
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 4: Create Skeleton Jira Issues
+  # ──────────────────────────────────────────────────────────
+  - id: create_skeleton_issues
+    name: Create Skeleton Issues
+    type: bash
+    depends_on:
+      - define_e2e_tests
+    reads:
+      - affected_repos
+      - skeleton_path
+    writes:
+      - skeleton_issues
+    script: |
+      # Create one skeleton issue per affected repo
+      created_issues='[]'
+      
+      for repo in $(echo '$affected_repos' | jq -r '.[]'); do
+        issue=$(npx tsx ~/.claude/skills/issues/create_issue.ts \
+          "{\"project\": \"GW\", \"summary\": \"[Skeleton] $epic_key: $repo\", \
+          \"issue_type\": \"Task\", \"parent_key\": \"$epic_key\", \
+          \"labels\": [\"skeleton\", \"repo-$repo\"]}")
+        
+        created_issues=$(echo "$created_issues" | jq ". + [$issue]")
+      done
+      
+      echo "{\"skeleton_issues\": $created_issues}"
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 5: Create Dependency Links
+  # ──────────────────────────────────────────────────────────
+  - id: create_dependency_links
+    name: Create Dependency Links
+    type: bash
+    depends_on:
+      - create_skeleton_issues
+    reads:
+      - epic_context
+      - skeleton_issues
+    script: |
+      # Link non-skeleton child issues as blocked-by skeleton issues
+      children=$(echo '$epic_context' | jq -r '.children.issues[]?.key')
+      skeleton_keys=$(echo '$skeleton_issues' | jq -r '.[].key')
+      
+      for child in $children; do
+        # Check if child has skeleton label
+        has_skeleton=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
+          "{\"issue_key\": \"$child\", \"fields\": \"labels\"}" | \
+          jq -r '.fields.labels[]? | select(. == "skeleton")')
+        
+        if [ -z "$has_skeleton" ]; then
+          # Link to first skeleton issue
+          first_skeleton=$(echo "$skeleton_keys" | head -1)
+          npx tsx ~/.claude/skills/issues/link_issues.ts \
+            "{\"inward_key\": \"$child\", \"outward_key\": \"$first_skeleton\", \"link_type\": \"Blocks\"}" \
+            2>/dev/null || true
+        fi
+      done
+      
+      echo '{"linked": true}'
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 6: Store Definition
+  # ──────────────────────────────────────────────────────────
+  - id: store_definition
+    name: Store Skeleton Definition
+    type: bash
+    depends_on:
+      - create_dependency_links
+    reads:
+      - skeleton_path
+      - skeleton_issues
+    script: |
+      # Store skeleton definition in AgentDB
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts \
+        "{\"session_id\": \"${TENANT_NAMESPACE}\", \
+        \"task\": \"skeleton-$epic_key\", \
+        \"input\": {\"epic_key\": \"$epic_key\"}, \
+        \"output\": \"Skeleton created\", \
+        \"reward\": 1.0, \
+        \"success\": true}"
+      
+      echo '{"stored": true}'
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 7: Output Summary
+  # ──────────────────────────────────────────────────────────
+  - id: output_summary
+    name: Output Summary
+    type: bash
+    depends_on:
+      - store_definition
+    reads:
+      - skeleton_issues
+      - affected_repos
+    script: |
+      echo "Skeleton creation complete for $epic_key"
+      echo "Affected repos: $(echo '$affected_repos' | jq -r '. | join(", ")')"
+      echo "Created issues: $(echo '$skeleton_issues' | jq -r '.[].key' | tr '\n' ', ')"
+
+outputs:
+  skeleton_issues:
+    node: create_skeleton_issues
+  affected_repos:
+    node: identify_repos

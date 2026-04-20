@@ -1,0 +1,218 @@
+---
+name: Review Skeleton Command Sub-DAG
+config:
+  checkpoint_prefix: review-skeleton
+  worktree: false
+  labels:
+    on_failure: "outcome:skeleton-review-failed"
+
+inputs:
+  epic_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+state:
+  skeleton_data:
+    type: dict
+    reducer: overwrite
+  checks:
+    type: list
+    reducer: append
+    default: []
+  verdict:
+    type: string
+    reducer: overwrite
+
+nodes:
+  # ──────────────────────────────────────────────────────────
+  # Phase 0: Load Skeleton
+  # ──────────────────────────────────────────────────────────
+  - id: load_skeleton
+    name: Load Skeleton Issues
+    type: bash
+    writes:
+      - skeleton_data
+    on_failure: stop
+    script: |
+      # Search for skeleton issues
+      skeleton=$(npx tsx ~/.claude/skills/issues/search_issues.ts \
+        "{\"jql\": \"parent = $epic_key AND labels = skeleton\", \
+        \"fields\": \"key,summary,description,status,labels,issuelinks\"}")
+      
+      count=$(echo "$skeleton" | jq '.issues | length')
+      
+      echo "{\"skeleton_data\": {\"issues\": $skeleton, \"count\": $count}}"
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 1: Gate - Skeleton Must Exist
+  # ──────────────────────────────────────────────────────────
+  - id: validate_skeleton_exists
+    name: Validate Skeleton Exists
+    type: gate
+    depends_on:
+      - load_skeleton
+    reads:
+      - skeleton_data
+    condition: "$skeleton_data.count > 0"
+    on_failure: stop
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 2: Run Checks
+  # ──────────────────────────────────────────────────────────
+  - id: check_full_stack_span
+    name: Check Full Stack Span
+    type: prompt
+    depends_on:
+      - validate_skeleton_exists
+    reads:
+      - skeleton_data
+    writes:
+      - checks
+    model: opus
+    dispatch: inline
+    prompt: |
+      Check if the skeleton spans the full stack (frontend, API, backend, DB).
+      
+      Skeleton data: {skeleton_data}
+      
+      Return:
+      {"checks": [{"name": "full_stack_span", "passed": true/false, "details": "..."}]}
+
+  - id: check_repo_coverage
+    name: Check Repository Coverage
+    type: prompt
+    depends_on:
+      - validate_skeleton_exists
+    reads:
+      - skeleton_data
+    writes:
+      - checks
+    model: opus
+    dispatch: inline
+    prompt: |
+      Check if all necessary repositories are covered by skeleton issues.
+      
+      Skeleton data: {skeleton_data}
+      
+      Return:
+      {"checks": [{"name": "repo_coverage", "passed": true/false, "details": "..."}]}
+
+  - id: check_e2e_definition
+    name: Check E2E Test Definition
+    type: prompt
+    depends_on:
+      - validate_skeleton_exists
+    reads:
+      - skeleton_data
+    writes:
+      - checks
+    model: opus
+    dispatch: inline
+    prompt: |
+      Check if E2E tests are properly defined in skeleton issues.
+      
+      Skeleton data: {skeleton_data}
+      
+      Return:
+      {"checks": [{"name": "e2e_definition", "passed": true/false, "details": "..."}]}
+
+  - id: check_dependency_links
+    name: Check Dependency Links
+    type: prompt
+    depends_on:
+      - validate_skeleton_exists
+    reads:
+      - skeleton_data
+    writes:
+      - checks
+    model: opus
+    dispatch: inline
+    prompt: |
+      Check if non-skeleton issues are properly linked as blocked-by skeleton.
+      
+      Skeleton data: {skeleton_data}
+      
+      Return:
+      {"checks": [{"name": "dependency_links", "passed": true/false, "details": "..."}]}
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3: Produce Verdict
+  # ──────────────────────────────────────────────────────────
+  - id: produce_verdict
+    name: Produce Verdict
+    type: prompt
+    depends_on:
+      - check_full_stack_span
+      - check_repo_coverage
+      - check_e2e_definition
+      - check_dependency_links
+    reads:
+      - checks
+    writes:
+      - verdict
+    model: opus
+    dispatch: inline
+    prompt: |
+      Review all checks and produce a final verdict.
+      
+      Checks: {checks}
+      
+      Verdict options:
+      - APPROVED: All checks passed
+      - NEEDS_FIXES: Some checks failed but fixable
+      - REJECTED: Critical failures
+      
+      Return:
+      {"verdict": "APPROVED|NEEDS_FIXES|REJECTED"}
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 4: Post Results to Jira
+  # ──────────────────────────────────────────────────────────
+  - id: post_jira_verdict
+    name: Post Verdict to Jira
+    type: bash
+    depends_on:
+      - produce_verdict
+    reads:
+      - verdict
+      - checks
+    script: |
+      # Format verdict comment
+      verdict_text=$(echo '$verdict' | jq -r '.')
+      checks_summary=$(echo '$checks' | jq -r '.[] | "- [\(.passed)] \(.name): \(.details)"' | head -10)
+      
+      comment="## Skeleton Review: $verdict_text\n\n### Checks:\n$checks_summary"
+      
+      npx tsx ~/.claude/skills/issues/add_comment.ts \
+        "{\"issue_key\": \"$epic_key\", \"body\": \"$comment\"}"
+      
+      echo '{"posted": true}'
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 5: Store Review Episode
+  # ──────────────────────────────────────────────────────────
+  - id: store_episode
+    name: Store Review Episode
+    type: bash
+    depends_on:
+      - post_jira_verdict
+    reads:
+      - verdict
+    script: |
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts \
+        "{\"session_id\": \"${TENANT_NAMESPACE}\", \
+        \"task\": \"skeleton-review-$epic_key\", \
+        \"input\": {\"epic_key\": \"$epic_key\"}, \
+        \"output\": \"Review complete: $verdict\", \
+        \"reward\": 1.0, \
+        \"success\": true}"
+      
+      echo '{"stored": true}'
+    output_format: json
+
+outputs:
+  verdict:
+    node: produce_verdict
