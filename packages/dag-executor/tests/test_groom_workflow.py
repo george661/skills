@@ -238,3 +238,46 @@ class TestIssuesRouterUsage:
         # Should have issues/ router references
         assert '/.claude/skills/issues/' in content, \
             "No issues/ router references found - required for Jira ops"
+
+
+class TestBashNodeEnvironmentVariables:
+    """Test 7: Bash nodes use DAG_ prefixed env vars for reads (GW-5055 requirement)."""
+
+    def test_bash_nodes_use_dag_prefix_for_reads(self, workflow: WorkflowDef) -> None:
+        """Each bash node's script must reference $DAG_<KEY> for every reads: entry.
+
+        BashRunner injects read variables as DAG_<UPPERCASE> environment variables.
+        Scripts using bare $varname will fail at runtime with "unbound variable" errors.
+        """
+        bash_nodes = [n for n in workflow.nodes if n.type == "bash"]
+        assert len(bash_nodes) > 0, "No bash nodes found in workflow"
+
+        failures = []
+        for node in bash_nodes:
+            if not node.reads:
+                continue  # Skip nodes with no reads
+
+            script = node.script or ""
+            for read_key in node.reads:
+                # Expected environment variable name per BashRunner.run()
+                expected_var = f"$DAG_{read_key.upper()}"
+
+                # Also check for the incorrect bare variable reference
+                incorrect_var = f"${read_key}"
+
+                if expected_var not in script:
+                    failures.append(
+                        f"Node '{node.id}' reads '{read_key}' but script does not contain '{expected_var}'"
+                    )
+
+                # Warn if bare variable is used (common mistake)
+                if incorrect_var in script and expected_var not in script:
+                    failures.append(
+                        f"Node '{node.id}' uses bare '{incorrect_var}' but BashRunner requires '{expected_var}'"
+                    )
+
+        if failures:
+            pytest.fail(
+                "Bash nodes must use DAG_ prefixed env vars for reads:\n  " +
+                "\n  ".join(failures)
+            )
