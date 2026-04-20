@@ -324,7 +324,6 @@ async def get_pending_gates_route(request: Request) -> Dict[str, Any]:
     }
 
 
-<<<<<<< HEAD
 @router.get("/workflows/{run_id}/nodes/{node_name}/interrupt")
 async def get_interrupt_context(
     request: Request,
@@ -372,7 +371,7 @@ async def resume_interrupt(
     body: InterruptResumeRequest,
 ) -> Dict[str, Any]:
     """Resume an interrupted workflow by injecting a resume value."""
-    from dag_executor.checkpoint import CheckpointStore
+    from dag_executor.checkpoint import CheckpointStore  # type: ignore[import-untyped]
     import yaml
 
     db_path = get_db_path(request)
@@ -434,7 +433,7 @@ async def resume_interrupt(
         status="completed",
         finished_at=decided_at,
         outputs={
-            **node.get("outputs", {}),
+            **(node.get("outputs") or {}),
             "resume_value": body.resume_value,
             "node_type": "interrupt"
         }

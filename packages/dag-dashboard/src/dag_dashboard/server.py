@@ -95,9 +95,10 @@ def create_app(
         lifespan=lifespan
     )
 
-    # Store db_dir and events_dir in app state for lifespan and route access
+    # Store db_dir, events_dir, and checkpoint_dir_fallback in app state for lifespan and route access
     app.state.db_dir = db_dir
     app.state.events_dir = events_dir
+    app.state.checkpoint_dir_fallback = checkpoint_dir_fallback
 
     # Register routes
     app.include_router(router)

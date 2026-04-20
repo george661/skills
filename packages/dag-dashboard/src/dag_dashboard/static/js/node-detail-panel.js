@@ -119,6 +119,26 @@ class NodeDetailPanel {
             cancelBtn.addEventListener('click', () => this.hide());
         }
 
+        // Setup timeout countdown updater
+        const timeoutCountdown = this.panel.querySelector('.interrupt-timeout .timeout-countdown');
+        if (timeoutCountdown) {
+            const timeoutDiv = this.panel.querySelector('.interrupt-timeout');
+            const expiresAt = parseInt(timeoutDiv.dataset.expiresAt);
+            this.countdownInterval = setInterval(() => {
+                const remainingMs = expiresAt - Date.now();
+                if (remainingMs <= 0) {
+                    clearInterval(this.countdownInterval);
+                    timeoutDiv.innerHTML = '<span class="timeout-label">Timeout expired</span>';
+                    timeoutDiv.classList.add('expired');
+                } else {
+                    const remainingSeconds = Math.floor(remainingMs / 1000);
+                    const minutes = Math.floor(remainingSeconds / 60);
+                    const seconds = remainingSeconds % 60;
+                    timeoutCountdown.textContent = `${minutes}m ${seconds}s`;
+                }
+            }, 1000);
+        }
+
         // Click outside to close
         this.panel.addEventListener('click', (e) => {
             if (e.target === this.panel) {
@@ -300,6 +320,31 @@ class NodeDetailPanel {
         const message = node.outputs?.message || 'Workflow paused';
         const resumeKey = node.outputs?.resume_key || 'resume_value';
         const channels = node.outputs?.channels || ['terminal'];
+        const timeout = node.outputs?.timeout;
+        const startedAt = node.outputs?.started_at;
+
+        // Calculate timeout countdown if available
+        let timeoutHtml = '';
+        if (timeout && startedAt) {
+            const startTime = new Date(startedAt).getTime();
+            const timeoutMs = timeout * 1000;
+            const expiresAt = startTime + timeoutMs;
+            const remainingMs = expiresAt - Date.now();
+
+            if (remainingMs > 0) {
+                const remainingSeconds = Math.floor(remainingMs / 1000);
+                const minutes = Math.floor(remainingSeconds / 60);
+                const seconds = remainingSeconds % 60;
+                timeoutHtml = `
+                    <div class="interrupt-timeout" data-expires-at="${expiresAt}">
+                        <span class="timeout-label">Timeout:</span>
+                        <span class="timeout-countdown">${minutes}m ${seconds}s</span>
+                    </div>
+                `;
+            } else {
+                timeoutHtml = '<div class="interrupt-timeout expired">Timeout expired</div>';
+            }
+        }
 
         return `
             <div class="interrupt-resume-panel">
@@ -308,6 +353,7 @@ class NodeDetailPanel {
                     <div class="interrupt-info">
                         <h4>${this.escapeHtml(nodeName)}</h4>
                         <p class="interrupt-message">${this.escapeHtml(message)}</p>
+                        ${timeoutHtml}
                     </div>
                 </div>
 
@@ -587,6 +633,11 @@ class NodeDetailPanel {
     hide() {
         if (this.panel) {
             this.panel.classList.remove('visible');
+            // Clear countdown interval if active
+            if (this.countdownInterval) {
+                clearInterval(this.countdownInterval);
+                this.countdownInterval = null;
+            }
             setTimeout(() => {
                 this.panel.remove();
                 this.panel = null;

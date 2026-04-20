@@ -650,7 +650,7 @@ def get_interrupt_checkpoint(
     """
     import os
     import yaml
-    from dag_executor.checkpoint import CheckpointStore
+    from dag_executor.checkpoint import CheckpointStore  # type: ignore[import-untyped]
 
     conn = get_connection(db_path)
     try:
@@ -689,6 +689,8 @@ def get_interrupt_checkpoint(
         # Return as dict for API serialization
         result: Dict[str, Any] = interrupt_checkpoint.model_dump()
         return result
+    finally:
+        conn.close()
 
 
 def get_channel_states(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
