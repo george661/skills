@@ -114,7 +114,7 @@ class EventCollector:
     def _persist_and_broadcast(self, run_id: str, event_data: Dict[str, Any]) -> None:
         """
         Persist event to SQLite and broadcast to subscribers.
-        
+
         Runs in watchdog thread (synchronous).
         """
         # Extract fields from event
@@ -122,7 +122,7 @@ class EventCollector:
         event_type = event_data.get("event_type", "unknown")
 
         # Serialize payload to JSON string if it's a dict
-        raw_payload = event_data.get("payload", "{}")
+        raw_payload = event_data.get("payload", {})
         if isinstance(raw_payload, dict):
             payload = json.dumps(raw_payload)
         elif isinstance(raw_payload, str):
@@ -131,22 +131,59 @@ class EventCollector:
             payload = json.dumps({"value": raw_payload})
 
         created_at = event_data.get("created_at", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
-        
+
         # Persist to SQLite
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
-            
-            # Ensure workflow_runs row exists (INSERT OR IGNORE)
-            cursor.execute(
-                """
-                INSERT OR IGNORE INTO workflow_runs (id, workflow_name, status, started_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (run_id, workflow_name, "running", created_at)
-            )
-            
+
+            # Handle workflow_started event: store workflow definition and create node stubs
+            if event_type == "workflow_started":
+                workflow_definition = raw_payload.get("workflow_definition") if isinstance(raw_payload, dict) else None
+
+                # Insert workflow_runs row with workflow_definition
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO workflow_runs (id, workflow_name, status, started_at, workflow_definition)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (run_id, workflow_name, "running", created_at, workflow_definition)
+                )
+
+                # Parse workflow definition to extract nodes and their dependencies
+                if workflow_definition:
+                    try:
+                        import yaml
+                        workflow_dict = yaml.safe_load(workflow_definition)
+                        nodes = workflow_dict.get("nodes", [])
+
+                        # Create node_executions entries for each node with depends_on
+                        for node in nodes:
+                            node_name = node.get("name")
+                            depends_on = node.get("depends_on", [])
+                            node_id = f"{run_id}:{node_name}"
+
+                            cursor.execute(
+                                """
+                                INSERT OR IGNORE INTO node_executions
+                                (id, run_id, node_name, status, started_at, depends_on)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                                """,
+                                (node_id, run_id, node_name, "pending", created_at, json.dumps(depends_on))
+                            )
+                    except Exception as e:
+                        logger.warning(f"Failed to parse workflow definition for {run_id}: {e}")
+            else:
+                # Ensure workflow_runs row exists (INSERT OR IGNORE)
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO workflow_runs (id, workflow_name, status, started_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (run_id, workflow_name, "running", created_at)
+                )
+
             # Insert event
             cursor.execute(
                 """
@@ -155,18 +192,18 @@ class EventCollector:
                 """,
                 (run_id, event_type, payload, created_at)
             )
-            
+
             conn.commit()
         finally:
             conn.close()
-        
+
         # Broadcast to subscribers (async bridge from sync thread)
         broadcast_event = {
             "event_type": event_type,
             "payload": payload,
             "created_at": created_at
         }
-        
+
         asyncio.run_coroutine_threadsafe(
             self.broadcaster.publish(run_id, broadcast_event),
             self.loop
