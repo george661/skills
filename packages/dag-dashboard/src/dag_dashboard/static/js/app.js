@@ -456,6 +456,10 @@ async function renderWorkflowDetail(runId) {
             <div id="totals-container"></div>
             <div id="dag-container"></div>
             <div id="channel-state-container" style="margin-top: 1rem;"></div>
+            <div style="margin-top: 1.5rem; padding: 1rem; background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border);">
+                <h3 style="margin-bottom: 1rem;">State Changes Timeline</h3>
+                <div id="state-diff-timeline-container"></div>
+            </div>
             <div style="margin-top: 1rem; padding: 1rem; background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border);">
                 <h3 style="margin-bottom: 0.5rem;">Run ID:</h3>
                 <code style="color: var(--text-secondary);">${escapeHtml(runId)}</code>
@@ -485,6 +489,12 @@ async function renderWorkflowDetail(runId) {
         // Render DAG
         const dagRenderer = new window.DAGRenderer('dag-container');
         dagRenderer.render(layoutData);
+
+        // Render state diff timeline
+        const timelineContainer = document.getElementById('state-diff-timeline-container');
+        if (timelineContainer && window.renderStateDiffTimeline) {
+            window.renderStateDiffTimeline(timelineContainer, runId);
+        }
 
         // Setup currently executing banner
         setupExecutingBanner(layoutData.nodes);
@@ -565,6 +575,12 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel) {
 
             // Update executing banner
             setupExecutingBanner(layoutData.nodes);
+
+            // Refresh state diff timeline
+            const timelineContainer = document.getElementById('state-diff-timeline-container');
+            if (timelineContainer && window.renderStateDiffTimeline) {
+                window.renderStateDiffTimeline(timelineContainer, runId);
+            }
 
             // Update channel state panel
             if (channelsResp.ok) {

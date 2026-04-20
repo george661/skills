@@ -2,7 +2,6 @@
 import asyncio
 import json
 import sqlite3
-import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -86,24 +85,29 @@ async def test_collector_persists_event(test_db: Path, events_dir: Path, broadca
         run_id = "test_run_123"
         ndjson_file = events_dir / f"{run_id}.ndjson"
         
+        # WorkflowEvent shape: no "payload" field, use metadata instead
         event = {
             "workflow_name": "test_workflow",
             "event_type": "node.started",
-            "payload": json.dumps({"node": "step1"}),
+            "node_id": "step1",
+            "metadata": {"custom_field": "test_value"},
             "created_at": "2026-04-17T12:00:00Z"
         }
-        
+
         with open(ndjson_file, "w") as f:
             f.write(json.dumps(event) + "\n")
-        
+
         # Give watchdog time to process
         await asyncio.sleep(0.3)
-        
+
         # Verify event was persisted
         persisted = get_persisted_events(test_db, run_id)
         assert len(persisted) == 1
         assert persisted[0]["event_type"] == "node.started"
-        assert json.loads(persisted[0]["payload"])["node"] == "step1"
+        # Payload now stores full event_data
+        payload_data = json.loads(persisted[0]["payload"])
+        assert payload_data["node_id"] == "step1"
+        assert payload_data["metadata"]["custom_field"] == "test_value"
         
     finally:
         collector.stop()
