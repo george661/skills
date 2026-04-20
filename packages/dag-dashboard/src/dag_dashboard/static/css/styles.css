@@ -1657,6 +1657,25 @@ body {
     }
 }
 
+/* Trigger source badge */
+.trigger-source-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.85rem;
+    background: #e3f2fd;
+    color: #1976d2;
+    font-weight: 500;
+}
+
+/* Mobile responsive - hide Source column on small screens */
+@media (max-width: 767px) {
+    .history-header:nth-child(5),
+    .history-cell:nth-child(5) {
+        display: none;
+    }
+}
+
 /* Checkpoint tab styles */
 .checkpoint-container {
     display: flex;

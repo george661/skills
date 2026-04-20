@@ -291,12 +291,14 @@ async function renderHistory() {
             const duration = wf.finished_at && wf.started_at
                 ? Math.round((new Date(wf.finished_at) - new Date(wf.started_at)) / 1000) + 's'
                 : 'N/A';
+            const source = wf.trigger_source || 'manual';
             return `
                 <tr class="history-row" data-run-id="${escapeHtml(wf.id)}">
                     <td class="history-cell">${escapeHtml(wf.workflow_name)}</td>
                     <td class="history-cell"><span class="workflow-status ${escapeHtml(wf.status)}">${escapeHtml(wf.status)}</span></td>
                     <td class="history-cell">${startTime}</td>
                     <td class="history-cell">${duration}</td>
+                    <td class="history-cell"><span class="trigger-source-badge">${escapeHtml(source)}</span></td>
                 </tr>
             `;
         }).join('');
@@ -309,6 +311,7 @@ async function renderHistory() {
                         <th class="history-header">Status</th>
                         <th class="history-header">Started At</th>
                         <th class="history-header">Duration</th>
+                        <th class="history-header">Source</th>
                     </tr>
                 </thead>
                 <tbody>
