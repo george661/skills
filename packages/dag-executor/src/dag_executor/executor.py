@@ -196,8 +196,26 @@ class WorkflowExecutor:
             semaphore=asyncio.Semaphore(concurrency_limit),
         )
 
+        # Create channel event emitter callback that wraps EventEmitter
+        # The callback signature expected by Channel.write is: (event_type: str, payload: Dict)
+        # Channel events are emitted as WorkflowEvent with payload in metadata field
+        channel_emitter = None
+        if event_emitter:
+            def emit_channel_event(event_type: str, payload: Dict[str, Any]) -> None:
+                """Emit channel event via EventEmitter."""
+                from datetime import datetime, timezone
+                # Emit as a standard WorkflowEvent with the channel payload in metadata
+                # The event_collector will read from the NDJSON and extract event.metadata as the payload
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType(event_type.lower()),
+                    workflow_id=workflow_def.name,
+                    metadata=payload,  # Channel payload goes in metadata
+                    timestamp=datetime.now(timezone.utc)
+                ))
+            channel_emitter = emit_channel_event
+
         # Always initialize ChannelStore (empty for workflows without state declarations)
-        ctx.channel_store = ChannelStore.from_workflow_def(workflow_def)
+        ctx.channel_store = ChannelStore.from_workflow_def(workflow_def, emitter=channel_emitter)
 
         # Initialize all nodes to PENDING status
         for node in workflow_def.nodes:

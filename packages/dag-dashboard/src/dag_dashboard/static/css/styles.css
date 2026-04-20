@@ -1056,6 +1056,96 @@ body {
     }
 }
 
+/* Channel State Panel */
+.channel-state-panel {
+    padding: 1rem;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+}
+
+.channel-state-panel h3 {
+    margin-top: 0;
+    margin-bottom: 1rem;
+    color: var(--text-primary);
+}
+
+.channel-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.channel-table thead {
+    background: var(--bg-secondary);
+}
+
+.channel-table th {
+    padding: 0.75rem;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-primary);
+    border-bottom: 2px solid var(--border);
+}
+
+.channel-table td {
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+
+.channel-table tr.channel-conflict {
+    background: #fee;
+}
+
+.channel-value {
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+    margin: 0;
+    max-height: 100px;
+    overflow: auto;
+}
+
+.reducer-badge {
+    display: inline-block;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.75rem;
+    background: var(--success);
+    color: white;
+    border-radius: 4px;
+    margin-left: 0.5rem;
+}
+
+.conflict-message {
+    margin-top: 0.5rem;
+    padding: 0.5rem;
+    background: var(--error);
+    color: white;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
+.empty-state {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+/* Mobile responsive */
+@media (max-width: 640px) {
+    .channel-table {
+        font-size: 0.85rem;
+    }
+    
+    .channel-table th,
+    .channel-table td {
+        padding: 0.5rem;
+    }
+    
+    .channel-value {
+        font-size: 0.75rem;
+        max-height: 60px;
+    }
+}
+
 /* State Diff Timeline Styles */
 .state-diff-timeline {
     margin-top: 1rem;

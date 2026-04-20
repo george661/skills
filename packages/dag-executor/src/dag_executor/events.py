@@ -26,6 +26,8 @@ class EventType(str, Enum):
     NODE_INTERRUPTED = "node_interrupted"
     NODE_STREAM_TOKEN = "node_stream_token"
     NODE_PROGRESS = "node_progress"
+    CHANNEL_UPDATED = "channel_updated"
+    CHANNEL_CONFLICT = "channel_conflict"
 
 
 class StreamMode(str, Enum):
