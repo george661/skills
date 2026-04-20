@@ -29,6 +29,7 @@ def create_app(
     max_sse_connections: int = 50,
     slack_notifier: Optional[SlackNotifier] = None,
     dashboard_url: str = "http://127.0.0.1:8100",
+    checkpoint_dir_fallback: Optional[str] = None,
 ) -> FastAPI:
     """Create and configure FastAPI application."""
 
@@ -56,10 +57,13 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Initialize event collector on startup."""
-        # Store broadcaster, db_path, and chat_relay in app.state for access by endpoints/tests
+        # Store broadcaster, db_path, chat_relay, and checkpoint_dir_fallback in app.state for access by endpoints/tests
         app.state.broadcaster = broadcaster
         app.state.db_path = db_path
+        app.state.db_dir = db_dir if db_dir else db_path.parent
+        app.state.events_dir = events_dir
         app.state.chat_relay = chat_relay
+        app.state.checkpoint_dir_fallback = checkpoint_dir_fallback
 
         # Create and start event collector
         loop = asyncio.get_running_loop()
