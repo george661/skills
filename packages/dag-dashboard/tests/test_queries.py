@@ -585,3 +585,78 @@ def test_count_pending_gates_multiple(db_path: Path):
 
     count = count_pending_gates(db_path)
     assert count == 2
+
+
+def test_get_interrupt_checkpoint_success(db_path: Path, tmp_path: Path):
+    """Test get_interrupt_checkpoint returns checkpoint data."""
+    from dag_dashboard.queries import get_interrupt_checkpoint, insert_run
+    from dag_executor.checkpoint import CheckpointStore, InterruptCheckpoint
+    
+    # Create checkpoint
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    store = CheckpointStore(str(checkpoint_dir))
+    interrupt_checkpoint = InterruptCheckpoint(
+        node_id="run-1:node-1",
+        message="Please provide input",
+        resume_key="user_input",
+        timeout=300,
+        channels=["terminal"]
+    )
+    store.save_interrupt("test-workflow", "run-1", interrupt_checkpoint)
+    
+    # Insert run with checkpoint_prefix
+    workflow_def = f"""
+config:
+  checkpoint_prefix: {checkpoint_dir}
+nodes:
+  - name: node-1
+    type: interrupt
+"""
+    insert_run(db_path, "run-1", "test-workflow", "running", "2026-04-17T12:00:00Z", workflow_definition=workflow_def)
+    
+    result = get_interrupt_checkpoint(db_path, "test-workflow", "run-1", "node-1", None)
+    assert result is not None
+    assert result["resume_key"] == "user_input"
+    assert result["message"] == "Please provide input"
+    assert result["timeout"] == 300
+
+
+def test_get_interrupt_checkpoint_with_fallback(db_path: Path, tmp_path: Path):
+    """Test get_interrupt_checkpoint uses fallback when checkpoint_prefix not in YAML."""
+    from dag_dashboard.queries import get_interrupt_checkpoint, insert_run
+    from dag_executor.checkpoint import CheckpointStore, InterruptCheckpoint
+    
+    # Create checkpoint in fallback location
+    fallback_dir = tmp_path / "fallback"
+    fallback_dir.mkdir(exist_ok=True)
+    store = CheckpointStore(str(fallback_dir))
+    interrupt_checkpoint = InterruptCheckpoint(
+        node_id="run-1:node-1",
+        message="Fallback test",
+        resume_key="input",
+        timeout=60,
+        channels=["terminal"]
+    )
+    store.save_interrupt("test-workflow", "run-1", interrupt_checkpoint)
+    
+    # Insert run without checkpoint_prefix
+    workflow_def = """
+nodes:
+  - name: node-1
+    type: interrupt
+"""
+    insert_run(db_path, "run-1", "test-workflow", "running", "2026-04-17T12:00:00Z", workflow_definition=workflow_def)
+    
+    result = get_interrupt_checkpoint(db_path, "test-workflow", "run-1", "node-1", str(fallback_dir))
+    assert result is not None
+    assert result["resume_key"] == "input"
+    assert result["message"] == "Fallback test"
+
+
+def test_get_interrupt_checkpoint_not_found(db_path: Path):
+    """Test get_interrupt_checkpoint returns None when run not found."""
+    from dag_dashboard.queries import get_interrupt_checkpoint
+    
+    result = get_interrupt_checkpoint(db_path, "test-workflow", "nonexistent", "node-1", None)
+    assert result is None
