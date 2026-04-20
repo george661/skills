@@ -395,6 +395,47 @@ async function renderHistory() {
     });
 }
 
+function renderTotals(totals) {
+    const container = document.getElementById('totals-container');
+    if (!container) return;
+
+    const {
+        cost = 0,
+        tokens_input = 0,
+        tokens_output = 0,
+        tokens_cache = 0,
+        total_tokens = 0,
+        failed_nodes = 0,
+        skipped_nodes = 0
+    } = totals;
+
+    container.innerHTML = `
+        <div class="workflow-totals">
+            <div class="totals-item">
+                <div class="totals-label">Total Cost</div>
+                <div class="totals-value">$${cost.toFixed(4)}</div>
+            </div>
+            <div class="totals-item">
+                <div class="totals-label">Total Tokens</div>
+                <div class="totals-value">${total_tokens.toLocaleString()}</div>
+                <div class="totals-breakdown">
+                    ${tokens_input.toLocaleString()} in /
+                    ${tokens_output.toLocaleString()} out /
+                    ${tokens_cache.toLocaleString()} cache
+                </div>
+            </div>
+            <div class="totals-item">
+                <div class="totals-label">Failed Nodes</div>
+                <div class="totals-value">${failed_nodes}</div>
+            </div>
+            <div class="totals-item">
+                <div class="totals-label">Skipped Nodes</div>
+                <div class="totals-value">${skipped_nodes}</div>
+            </div>
+        </div>
+    `;
+}
+
 async function renderWorkflowDetail(runId) {
     const container = document.getElementById('route-container');
 
@@ -412,6 +453,7 @@ async function renderWorkflowDetail(runId) {
                     <span id="executing-timer" class="executing-timer">0s</span>
                 </div>
             </div>
+            <div id="totals-container"></div>
             <div id="dag-container"></div>
             <div style="margin-top: 1rem; padding: 1rem; background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border);">
                 <h3 style="margin-bottom: 0.5rem;">Run ID:</h3>
@@ -420,13 +462,24 @@ async function renderWorkflowDetail(runId) {
         </div>
     `;
 
-    // Fetch layout data
+    // Fetch workflow data (includes totals) and layout data
     try {
-        const response = await fetch(`/api/workflows/${runId}/layout`);
-        if (!response.ok) {
-            throw new Error('Failed to fetch workflow layout');
+        const [workflowResp, layoutResp] = await Promise.all([
+            fetch(`/api/workflows/${runId}`),
+            fetch(`/api/workflows/${runId}/layout`)
+        ]);
+
+        if (!workflowResp.ok || !layoutResp.ok) {
+            throw new Error('Failed to fetch workflow data');
         }
-        const layoutData = await response.json();
+
+        const workflowData = await workflowResp.json();
+        const layoutData = await layoutResp.json();
+
+        // Render totals strip
+        if (workflowData.totals) {
+            renderTotals(workflowData.totals);
+        }
 
         // Render DAG
         const dagRenderer = new window.DAGRenderer('dag-container');

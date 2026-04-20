@@ -81,7 +81,9 @@ class DAGRenderer {
         rect.setAttribute('width', '200');
         rect.setAttribute('height', '80');
         rect.setAttribute('rx', '8');
-        rect.setAttribute('class', `node-status-${node.status.replace(/[^a-z-]/g, '')}`);
+        const statusClass = `node-status-${node.status.replace(/[^a-z-]/g, '')}`;
+        const failureClass = node.failure_path ? ' node-status-failure-path' : '';
+        rect.setAttribute('class', statusClass + failureClass);
         nodeGroup.appendChild(rect);
 
         // Node name
@@ -104,16 +106,31 @@ class DAGRenderer {
         statusText.textContent = node.status;
         nodeGroup.appendChild(statusText);
 
-        // Cost display (if available)
+        // Cost and token display (if available)
+        let yOffset = 25;
         if (node.cost) {
             const costText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
             costText.setAttribute('x', node.x);
-            costText.setAttribute('y', node.y + 25);
+            costText.setAttribute('y', node.y + yOffset);
             costText.setAttribute('text-anchor', 'middle');
             costText.setAttribute('font-size', '11');
             costText.setAttribute('fill', 'var(--text-secondary)');
             costText.textContent = `$${node.cost.toFixed(4)}`;
             nodeGroup.appendChild(costText);
+            yOffset += 12;
+        }
+
+        // Token badge (if token breakdown available)
+        const totalTokens = (node.tokens_input || 0) + (node.tokens_output || 0) + (node.tokens_cache || 0);
+        if (totalTokens > 0) {
+            const tokenText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            tokenText.setAttribute('x', node.x);
+            tokenText.setAttribute('y', node.y + yOffset);
+            tokenText.setAttribute('text-anchor', 'middle');
+            tokenText.setAttribute('font-size', '10');
+            tokenText.setAttribute('fill', 'var(--text-secondary)');
+            tokenText.textContent = `${totalTokens.toLocaleString()} tokens`;
+            nodeGroup.appendChild(tokenText);
         }
 
         // Click handler

@@ -112,7 +112,24 @@ class NodeDetailPanel {
                         <span class="config-value">${this.escapeHtml(node.model)}</span>
                     </div>
                 ` : ''}
-                ${node.tokens ? `
+                ${(node.tokens_input != null || node.tokens_output != null || node.tokens_cache != null) ? `
+                    <div class="config-item">
+                        <span class="config-label">Tokens (Input):</span>
+                        <span class="config-value">${(node.tokens_input || 0).toLocaleString()}</span>
+                    </div>
+                    <div class="config-item">
+                        <span class="config-label">Tokens (Output):</span>
+                        <span class="config-value">${(node.tokens_output || 0).toLocaleString()}</span>
+                    </div>
+                    <div class="config-item">
+                        <span class="config-label">Tokens (Cache):</span>
+                        <span class="config-value">${(node.tokens_cache || 0).toLocaleString()}</span>
+                    </div>
+                    <div class="config-item">
+                        <span class="config-label">Total Tokens:</span>
+                        <span class="config-value">${((node.tokens_input || 0) + (node.tokens_output || 0) + (node.tokens_cache || 0)).toLocaleString()}</span>
+                    </div>
+                ` : node.tokens ? `
                     <div class="config-item">
                         <span class="config-label">Tokens:</span>
                         <span class="config-value">${node.tokens.toLocaleString()}</span>
@@ -170,7 +187,12 @@ class NodeDetailPanel {
             <div class="artifacts-list">
                 ${node.artifacts.map(artifact => `
                     <div class="artifact-item">
-                        <div class="artifact-name">${this.escapeHtml(artifact.name)}</div>
+                        <div class="artifact-name">
+                            ${artifact.url ?
+                                `<a href="${this.escapeHtml(artifact.url)}" target="_blank" rel="noopener noreferrer">${this.escapeHtml(artifact.name)}</a>` :
+                                this.escapeHtml(artifact.name)
+                            }
+                        </div>
                         <div class="artifact-type">${this.escapeHtml(artifact.artifact_type)}</div>
                         ${artifact.path ? `<div class="artifact-path">${this.escapeHtml(artifact.path)}</div>` : ''}
                     </div>
@@ -180,9 +202,18 @@ class NodeDetailPanel {
     }
 
     renderError(node) {
+        const logTail = node.chat_messages && node.chat_messages.length > 0 ?
+            node.chat_messages.slice(-20).map(msg => `[${msg.role}] ${msg.content}`).join('\n') :
+            'No log messages available';
+
         return `
             <div class="error-container">
-                <pre class="error-text">${this.escapeHtml(node.error)}</pre>
+                <details>
+                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 0.5rem;">Error — click to expand</summary>
+                    <pre class="error-text">${this.escapeHtml(node.error)}</pre>
+                    <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Last 20 log lines:</h4>
+                    <pre class="error-text">${this.escapeHtml(logTail)}</pre>
+                </details>
             </div>
         `;
     }
