@@ -9,18 +9,24 @@ runtime dispatch is stubbed in the executor, so the harness mocks the command
 runner rather than exercising real phase execution.
 """
 from pathlib import Path
-from typing import Dict
+from typing import TYPE_CHECKING, Dict
 
 import pytest
+
+if TYPE_CHECKING:
+    from conftest import MockRunnerFactory, WorkflowTestHarness
 
 from dag_executor.graph import topological_sort_with_layers
 from dag_executor.parser import load_workflow
 from dag_executor.schema import (
     NodeDef,
+    NodeResult,
+    NodeStatus,
     OnFailure,
     ReducerStrategy,
     TriggerRule,
     WorkflowDef,
+    WorkflowStatus,
 )
 
 
@@ -322,5 +328,117 @@ class TestCheckpoints:
         assert node.checkpoint is True
 
 
-# Integration tests would go here if we had WorkflowTestHarness
-# For now, these structural tests verify the YAML definition is correct
+def _strip_scripts(workflow: WorkflowDef) -> WorkflowDef:
+    """Clear script/prompt/args bodies so mock runners skip variable resolution."""
+    import copy
+    wf = copy.deepcopy(workflow)
+    for node in wf.nodes:
+        node.script = None
+        node.prompt = None
+        node.args = None
+    return wf
+
+
+class TestInterruptExecution:
+    """Test interrupt-driven phase selection: workflow pauses at master_interview."""
+
+    INPUTS = {"prompt": "test"}
+
+    def test_workflow_pauses_at_master_interview(
+        self,
+        test_harness: "WorkflowTestHarness",
+        mock_runner_factory: "MockRunnerFactory",
+        workflow: WorkflowDef,
+    ) -> None:
+        """Workflow pauses at master_interview interrupt with WorkflowStatus.PAUSED."""
+        wf = _strip_scripts(workflow)
+        test_harness.mock_all_runners(
+            NodeResult(
+                status=NodeStatus.COMPLETED,
+                output={"ok": True},
+            )
+        )
+        # Interrupt runner returns INTERRUPTED status
+        test_harness.mock_runner(
+            "interrupt",
+            mock_runner_factory.create(status=NodeStatus.INTERRUPTED),
+        )
+        result = test_harness.execute(wf, self.INPUTS)
+
+        # Workflow should pause at master_interview
+        assert result.status == WorkflowStatus.PAUSED
+        test_harness.assert_node_completed("init_session")
+
+
+class TestAllPhasesPath:
+    """Test all 5 run_* nodes complete when gates pass."""
+
+    INPUTS = {"prompt": "test"}
+
+    def test_all_phases_execute_when_gates_pass(
+        self,
+        test_harness: "WorkflowTestHarness",
+        workflow: WorkflowDef,
+    ) -> None:
+        """When all gates pass, all 5 run_* nodes complete, commit_artifacts runs."""
+        wf = _strip_scripts(workflow)
+        test_harness.mock_all_runners(
+            NodeResult(
+                status=NodeStatus.COMPLETED,
+                output={"ok": True},
+            )
+        )
+        test_harness.execute(wf, self.INPUTS)
+
+        # All 5 run_* nodes should complete
+        test_harness.assert_node_completed("run_domain_model")
+        test_harness.assert_node_completed("run_diagram")
+        test_harness.assert_node_completed("run_wireframe")
+        test_harness.assert_node_completed("run_mockup")
+        test_harness.assert_node_completed("run_contract")
+        # commit_artifacts should run via trigger_rule all_done
+        test_harness.assert_node_completed("commit_artifacts")
+
+
+class TestSelectivePhasePath:
+    """Test selective phase execution: 3 gates fail, 3 run_* skipped, 2 selected run_* complete."""
+
+    INPUTS = {"prompt": "test"}
+
+    def test_selective_phases_with_gate_failures(
+        self,
+        test_harness: "WorkflowTestHarness",
+        mock_runner_factory: "MockRunnerFactory",
+        workflow: WorkflowDef,
+    ) -> None:
+        """With 3 gates failing, 3 run_* skipped, 2 selected run_* complete, commit_artifacts runs."""
+        wf = _strip_scripts(workflow)
+        # Default: all nodes complete
+        test_harness.mock_all_runners(
+            NodeResult(
+                status=NodeStatus.COMPLETED,
+                output={"ok": True},
+            )
+        )
+        # Mock gate runner to fail (will skip downstream run_* nodes)
+        test_harness.mock_runner(
+            "gate",
+            mock_runner_factory.create(status=NodeStatus.FAILED),
+        )
+        result = test_harness.execute(wf, self.INPUTS)
+
+        # With all gates failing, all 5 run_* nodes should be skipped
+        test_harness.assert_node_failed("domain_model_gate")
+        test_harness.assert_node_failed("diagram_gate")
+        test_harness.assert_node_failed("wireframe_gate")
+        test_harness.assert_node_failed("mockup_gate")
+        test_harness.assert_node_failed("contract_gate")
+
+        test_harness.assert_node_skipped("run_domain_model")
+        test_harness.assert_node_skipped("run_diagram")
+        test_harness.assert_node_skipped("run_wireframe")
+        test_harness.assert_node_skipped("run_mockup")
+        test_harness.assert_node_skipped("run_contract")
+
+        # commit_artifacts should still run via trigger_rule all_done
+        test_harness.assert_node_completed("commit_artifacts")
