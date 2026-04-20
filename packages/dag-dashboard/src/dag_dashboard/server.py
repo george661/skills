@@ -3,7 +3,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Dict
+from typing import AsyncIterator, Dict, Optional
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 
 
 def create_app(
-    db_dir: Path = None,
-    db_path: Path = None,
+    db_dir: Optional[Path] = None,
+    db_path: Optional[Path] = None,
     events_dir: Path = Path("dag-events"),
-    pipe_root: Path = None,
+    pipe_root: Optional[Path] = None,
     max_sse_connections: int = 50
 ) -> FastAPI:
     """Create and configure FastAPI application."""

@@ -79,7 +79,7 @@ class ChatRelay:
         stop_flag = threading.Event()
         self._stop_flags[reader_key] = stop_flag
         
-        def read_loop():
+        def read_loop() -> None:
             out_pipe = self.pipe_root / run_id / f"{node_id}.out"
             
             while not stop_flag.is_set():
