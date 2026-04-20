@@ -547,3 +547,78 @@ async def test_collector_persists_condition_evaluated_event(test_db: Path, event
 
     finally:
         collector.stop()
+
+
+@pytest.mark.asyncio
+async def test_collector_persists_checkpoint_data(test_db: Path, events_dir: Path, broadcaster: Broadcaster) -> None:
+    """Test that node_completed event with checkpoint metadata updates node_executions."""
+    loop = asyncio.get_event_loop()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop
+    )
+
+    collector.start()
+
+    try:
+        run_id = "checkpoint_test_run"
+        ndjson_file = events_dir / f"{run_id}.ndjson"
+
+        # First create a workflow_started event to initialize node_executions row
+        workflow_started = {
+            "workflow_name": "test_workflow",
+            "event_type": "workflow_started",
+            "metadata": {
+                "workflow_definition": """
+nodes:
+  - name: process_data
+    depends_on: []
+"""
+            },
+            "created_at": "2026-04-20T12:00:00Z"
+        }
+
+        with open(ndjson_file, "w") as f:
+            f.write(json.dumps(workflow_started) + "\n")
+
+        await asyncio.sleep(0.3)
+
+        # Now emit node_completed with checkpoint data
+        # Note: node_id in events is run_id:node_name format
+        node_completed = {
+            "workflow_name": "test_workflow",
+            "event_type": "node_completed",
+            "node_id": f"{run_id}:process_data",
+            "status": "completed",
+            "metadata": {
+                "state_diff": {"key": "value"},
+                "content_hash": "a" * 64,
+                "input_versions": {"channel_1": 1, "channel_2": 3}
+            },
+            "created_at": "2026-04-20T12:01:00Z"
+        }
+
+        with open(ndjson_file, "a") as f:
+            f.write(json.dumps(node_completed) + "\n")
+
+        await asyncio.sleep(0.3)
+
+        # Verify checkpoint data was persisted to node_executions
+        conn = sqlite3.connect(test_db)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT content_hash, input_versions FROM node_executions WHERE node_name = ?",
+            ("process_data",)
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        assert row is not None
+        content_hash, input_versions = row
+        assert content_hash == "a" * 64
+        assert json.loads(input_versions) == {"channel_1": 1, "channel_2": 3}
+
+    finally:
+        collector.stop()

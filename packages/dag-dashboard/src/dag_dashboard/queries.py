@@ -321,6 +321,77 @@ def list_nodes(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
         conn.close()
 
 
+def get_checkpoint_comparison(db_path: Path, run_id: str, node_id: str) -> Optional[Dict[str, Any]]:
+    """Get checkpoint version comparison for a node.
+
+    Returns:
+        Dict with:
+        - content_hash: str
+        - input_versions: Dict[str, int] (checkpoint versions)
+        - current_versions: Dict[str, int] (current channel versions)
+        - mismatches: List[Dict] with channel_key, checkpoint_version, current_version
+        Returns None if node has no checkpoint data.
+    """
+    conn = get_connection(db_path)
+    try:
+        # Get node checkpoint data
+        cursor = conn.execute(
+            "SELECT content_hash, input_versions FROM node_executions WHERE id = ?",
+            (node_id,)
+        )
+        row = cursor.fetchone()
+        if not row or not row[0]:  # No checkpoint data
+            return None
+
+        content_hash, input_versions_json = row
+        input_versions = json.loads(input_versions_json) if input_versions_json else {}
+
+        # Get current channel versions for this run
+        cursor = conn.execute(
+            "SELECT channel_key, version FROM channel_states WHERE run_id = ?",
+            (run_id,)
+        )
+        current_versions = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # Find mismatches
+        mismatches = []
+        for channel_key, checkpoint_ver in input_versions.items():
+            current_ver = current_versions.get(channel_key)
+            if current_ver is None:
+                mismatches.append({
+                    "channel_key": channel_key,
+                    "checkpoint_version": checkpoint_ver,
+                    "current_version": None,
+                    "status": "missing"
+                })
+            elif current_ver != checkpoint_ver:
+                mismatches.append({
+                    "channel_key": channel_key,
+                    "checkpoint_version": checkpoint_ver,
+                    "current_version": current_ver,
+                    "status": "mismatch"
+                })
+
+        # Check for extra channels in current state
+        for channel_key, current_ver in current_versions.items():
+            if channel_key not in input_versions:
+                mismatches.append({
+                    "channel_key": channel_key,
+                    "checkpoint_version": None,
+                    "current_version": current_ver,
+                    "status": "extra"
+                })
+
+        return {
+            "content_hash": content_hash,
+            "input_versions": input_versions,
+            "current_versions": current_versions,
+            "mismatches": mismatches
+        }
+    finally:
+        conn.close()
+
+
 def insert_chat_message(
     db_path: Path,
     execution_id: Optional[str] = None,
@@ -626,6 +697,70 @@ def count_pending_gates(db_path: Path) -> int:
         )
         result = cursor.fetchone()
         return int(result[0]) if result else 0
+    finally:
+        conn.close()
+
+
+def get_interrupt_checkpoint(
+    db_path: Path,
+    workflow_name: str,
+    run_id: str,
+    node_name: str,
+    checkpoint_dir_fallback: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Get interrupt checkpoint for a specific node.
+
+    Args:
+        db_path: Path to dashboard database
+        workflow_name: Name of the workflow
+        run_id: Run identifier
+        node_name: Node name
+        checkpoint_dir_fallback: Fallback checkpoint directory (from DAG_CHECKPOINT_DIR env)
+
+    Returns:
+        Dict with interrupt checkpoint fields, or None if not found
+    """
+    import os
+    import yaml
+    from dag_executor.checkpoint import CheckpointStore  # type: ignore[import-untyped]
+
+    conn = get_connection(db_path)
+    try:
+        # Query workflow_runs for workflow_definition YAML
+        cursor = conn.execute(
+            """
+            SELECT workflow_definition
+            FROM workflow_runs
+            WHERE id = ?
+            """,
+            (run_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        workflow_def_yaml = row["workflow_definition"]
+
+        # Parse checkpoint_prefix from YAML
+        workflow_def = yaml.safe_load(workflow_def_yaml)
+        checkpoint_prefix = workflow_def.get("config", {}).get("checkpoint_prefix")
+
+        # Use fallback if not specified in YAML
+        if not checkpoint_prefix:
+            checkpoint_prefix = checkpoint_dir_fallback or os.path.expanduser(
+                "~/.dag-executor/checkpoints"
+            )
+
+        # Load interrupt checkpoint via CheckpointStore
+        store = CheckpointStore(checkpoint_prefix)
+        interrupt_checkpoint = store.load_interrupt(workflow_name, run_id)
+
+        if not interrupt_checkpoint:
+            return None
+
+        # Return as dict for API serialization
+        result: Dict[str, Any] = interrupt_checkpoint.model_dump()
+        return result
     finally:
         conn.close()
 

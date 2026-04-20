@@ -23,6 +23,7 @@ from dag_dashboard.queries import (
     get_artifacts,
     get_pending_gates,
     count_pending_gates,
+    get_checkpoint_comparison,
 )
 from dag_dashboard.models import SortBy, RunStatus
 
@@ -585,3 +586,216 @@ def test_count_pending_gates_multiple(db_path: Path):
 
     count = count_pending_gates(db_path)
     assert count == 2
+
+
+def test_get_interrupt_checkpoint_success(db_path: Path, tmp_path: Path):
+    """Test get_interrupt_checkpoint returns checkpoint data."""
+    from dag_dashboard.queries import get_interrupt_checkpoint, insert_run
+    from dag_executor.checkpoint import CheckpointStore, InterruptCheckpoint
+    
+    # Create checkpoint
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    store = CheckpointStore(str(checkpoint_dir))
+    interrupt_checkpoint = InterruptCheckpoint(
+        node_id="run-1:node-1",
+        message="Please provide input",
+        resume_key="user_input",
+        timeout=300,
+        channels=["terminal"]
+    )
+    store.save_interrupt("test-workflow", "run-1", interrupt_checkpoint)
+    
+    # Insert run with checkpoint_prefix
+    workflow_def = f"""
+config:
+  checkpoint_prefix: {checkpoint_dir}
+nodes:
+  - name: node-1
+    type: interrupt
+"""
+    insert_run(db_path, "run-1", "test-workflow", "running", "2026-04-17T12:00:00Z", workflow_definition=workflow_def)
+    
+    result = get_interrupt_checkpoint(db_path, "test-workflow", "run-1", "node-1", None)
+    assert result is not None
+    assert result["resume_key"] == "user_input"
+    assert result["message"] == "Please provide input"
+    assert result["timeout"] == 300
+
+
+def test_get_interrupt_checkpoint_with_fallback(db_path: Path, tmp_path: Path):
+    """Test get_interrupt_checkpoint uses fallback when checkpoint_prefix not in YAML."""
+    from dag_dashboard.queries import get_interrupt_checkpoint, insert_run
+    from dag_executor.checkpoint import CheckpointStore, InterruptCheckpoint
+    
+    # Create checkpoint in fallback location
+    fallback_dir = tmp_path / "fallback"
+    fallback_dir.mkdir(exist_ok=True)
+    store = CheckpointStore(str(fallback_dir))
+    interrupt_checkpoint = InterruptCheckpoint(
+        node_id="run-1:node-1",
+        message="Fallback test",
+        resume_key="input",
+        timeout=60,
+        channels=["terminal"]
+    )
+    store.save_interrupt("test-workflow", "run-1", interrupt_checkpoint)
+    
+    # Insert run without checkpoint_prefix
+    workflow_def = """
+nodes:
+  - name: node-1
+    type: interrupt
+"""
+    insert_run(db_path, "run-1", "test-workflow", "running", "2026-04-17T12:00:00Z", workflow_definition=workflow_def)
+    
+    result = get_interrupt_checkpoint(db_path, "test-workflow", "run-1", "node-1", str(fallback_dir))
+    assert result is not None
+    assert result["resume_key"] == "input"
+    assert result["message"] == "Fallback test"
+
+
+def test_get_interrupt_checkpoint_not_found(db_path: Path):
+    """Test get_interrupt_checkpoint returns None when run not found."""
+    from dag_dashboard.queries import get_interrupt_checkpoint
+
+    result = get_interrupt_checkpoint(db_path, "test-workflow", "nonexistent", "node-1", None)
+    assert result is None
+
+
+def test_get_checkpoint_comparison_exact_match(db_path: Path):
+    """Test get_checkpoint_comparison returns empty mismatches when versions match."""
+    import json
+
+    # Create run and node with checkpoint data
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+
+    # Insert node with checkpoint data
+    conn = get_connection(db_path)
+    input_versions = {"channel-a": 5, "channel-b": 10}
+    conn.execute(
+        "INSERT INTO node_executions (id, run_id, node_name, status, started_at, content_hash, input_versions) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("node-1", "run-1", "step-1", "completed", "2026-04-17T12:00:00Z", "abc123", json.dumps(input_versions))
+    )
+
+    # Insert matching channel states
+    conn.execute("INSERT INTO channel_states (run_id, channel_key, channel_type, version, updated_at) VALUES (?, ?, ?, ?, ?)",
+                 ("run-1", "channel-a", "value", 5, "2026-04-17T12:00:00Z"))
+    conn.execute("INSERT INTO channel_states (run_id, channel_key, channel_type, version, updated_at) VALUES (?, ?, ?, ?, ?)",
+                 ("run-1", "channel-b", "value", 10, "2026-04-17T12:00:00Z"))
+    conn.commit()
+    conn.close()
+
+    result = get_checkpoint_comparison(db_path, "run-1", "node-1")
+
+    assert result is not None
+    assert result["content_hash"] == "abc123"
+    assert result["input_versions"] == {"channel-a": 5, "channel-b": 10}
+    assert result["current_versions"] == {"channel-a": 5, "channel-b": 10}
+    assert result["mismatches"] == []
+
+
+def test_get_checkpoint_comparison_version_mismatch(db_path: Path):
+    """Test get_checkpoint_comparison returns status=mismatch when versions differ."""
+    import json
+
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+
+    # Insert node with checkpoint version 5
+    conn = get_connection(db_path)
+    input_versions = {"channel-a": 5}
+    conn.execute(
+        "INSERT INTO node_executions (id, run_id, node_name, status, started_at, content_hash, input_versions) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("node-1", "run-1", "step-1", "completed", "2026-04-17T12:00:00Z", "abc123", json.dumps(input_versions))
+    )
+
+    # Insert current channel state with version 7 (mismatch)
+    conn.execute("INSERT INTO channel_states (run_id, channel_key, channel_type, version, updated_at) VALUES (?, ?, ?, ?, ?)",
+                 ("run-1", "channel-a", "value", 7, "2026-04-17T12:00:00Z"))
+    conn.commit()
+    conn.close()
+
+    result = get_checkpoint_comparison(db_path, "run-1", "node-1")
+
+    assert result is not None
+    assert len(result["mismatches"]) == 1
+    assert result["mismatches"][0] == {
+        "channel_key": "channel-a",
+        "checkpoint_version": 5,
+        "current_version": 7,
+        "status": "mismatch"
+    }
+
+
+def test_get_checkpoint_comparison_channel_missing(db_path: Path):
+    """Test get_checkpoint_comparison returns status=missing when channel in checkpoint but not current."""
+    import json
+
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+
+    # Insert node with checkpoint data for channel-a
+    conn = get_connection(db_path)
+    input_versions = {"channel-a": 5}
+    conn.execute(
+        "INSERT INTO node_executions (id, run_id, node_name, status, started_at, content_hash, input_versions) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("node-1", "run-1", "step-1", "completed", "2026-04-17T12:00:00Z", "abc123", json.dumps(input_versions))
+    )
+
+    # No channel_states inserted - channel is missing
+    conn.commit()
+    conn.close()
+
+    result = get_checkpoint_comparison(db_path, "run-1", "node-1")
+
+    assert result is not None
+    assert len(result["mismatches"]) == 1
+    assert result["mismatches"][0] == {
+        "channel_key": "channel-a",
+        "checkpoint_version": 5,
+        "current_version": None,
+        "status": "missing"
+    }
+
+
+def test_get_checkpoint_comparison_extra_channel(db_path: Path):
+    """Test get_checkpoint_comparison returns status=extra when channel in current but not checkpoint."""
+    import json
+
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+
+    # Insert node with empty checkpoint data
+    conn = get_connection(db_path)
+    input_versions = {}
+    conn.execute(
+        "INSERT INTO node_executions (id, run_id, node_name, status, started_at, content_hash, input_versions) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("node-1", "run-1", "step-1", "completed", "2026-04-17T12:00:00Z", "abc123", json.dumps(input_versions))
+    )
+
+    # Insert channel state that wasn't in checkpoint
+    conn.execute("INSERT INTO channel_states (run_id, channel_key, channel_type, version, updated_at) VALUES (?, ?, ?, ?, ?)",
+                 ("run-1", "channel-b", "value", 10, "2026-04-17T12:00:00Z"))
+    conn.commit()
+    conn.close()
+
+    result = get_checkpoint_comparison(db_path, "run-1", "node-1")
+
+    assert result is not None
+    assert len(result["mismatches"]) == 1
+    assert result["mismatches"][0] == {
+        "channel_key": "channel-b",
+        "checkpoint_version": None,
+        "current_version": 10,
+        "status": "extra"
+    }
+
+
+def test_get_checkpoint_comparison_no_checkpoint_data(db_path: Path):
+    """Test get_checkpoint_comparison returns None when node has no checkpoint data."""
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+
+    # Insert node without checkpoint data (content_hash is NULL)
+    insert_node(db_path, "node-1", "run-1", "step-1", "completed", "2026-04-17T12:00:00Z")
+
+    result = get_checkpoint_comparison(db_path, "run-1", "node-1")
+
+    assert result is None

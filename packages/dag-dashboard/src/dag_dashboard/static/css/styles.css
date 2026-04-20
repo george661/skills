@@ -1074,13 +1074,198 @@ body {
     display: none;
 }
 
+/* Interrupt Resume Panel */
+.interrupt-resume-panel {
+    padding: 1rem;
+}
+
+.interrupt-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.interrupt-icon {
+    font-size: 2rem;
+    line-height: 1;
+}
+
+.interrupt-info h4 {
+    margin: 0 0 0.5rem 0;
+    font-size: 1.125rem;
+    font-weight: 600;
+}
+
+.interrupt-message {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.938rem;
+}
+
+.interrupt-channels {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.channel-badge {
+    padding: 4px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    font-size: 0.813rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.interrupt-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.interrupt-username,
+.interrupt-resume-value,
+.interrupt-comment {
+    padding: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 1rem;
+    font-family: inherit;
+    width: 100%;
+}
+
+.interrupt-username:focus,
+.interrupt-resume-value:focus,
+.interrupt-comment:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.interrupt-resume-value {
+    font-family: 'Monaco', 'Courier New', monospace;
+    font-size: 0.875rem;
+}
+
+.field-hint {
+    font-weight: normal;
+    color: var(--text-secondary);
+    font-size: 0.813rem;
+}
+
+.interrupt-state-section {
+    border-top: 1px solid var(--border);
+    padding-top: 1rem;
+}
+
+.state-summary {
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    user-select: none;
+}
+
+.state-summary:hover {
+    color: var(--primary);
+}
+
+.state-viewer {
+    margin-top: 1rem;
+}
+
+.state-json {
+    background: var(--bg-secondary);
+    padding: 1rem;
+    border-radius: var(--radius);
+    font-size: 0.813rem;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+}
+
+.interrupt-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 1rem;
+}
+
+.interrupt-btn {
+    flex: 1;
+    min-height: 44px;
+    min-width: 44px;
+    padding: 12px 24px;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-family: inherit;
+}
+
+.interrupt-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.interrupt-btn-resume {
+    background: #10b981;
+    color: white;
+}
+
+.interrupt-btn-resume:hover:not(:disabled) {
+    background: #059669;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.interrupt-btn-cancel {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+}
+
+.interrupt-btn-cancel:hover:not(:disabled) {
+    background: var(--bg-hover);
+}
+
+.interrupt-feedback {
+    padding: 1rem;
+    border-radius: var(--radius);
+    font-size: 0.875rem;
+    margin-top: 1rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+}
+
+.interrupt-feedback.success {
+    background: #ecfdf5;
+    border-color: #10b981;
+    color: #065f46;
+}
+
+.interrupt-feedback.error {
+    background: #fef2f2;
+    border-color: #ef4444;
+    color: #991b1b;
+}
+
+.interrupt-feedback.hidden {
+    display: none;
+}
+
 /* Mobile responsive - stack buttons vertically on small screens */
 @media (max-width: 480px) {
-    .gate-actions {
+    .gate-actions,
+    .interrupt-actions {
         flex-direction: column;
     }
 
-    .gate-btn {
+    .gate-btn,
+    .interrupt-btn {
         width: 100%;
     }
 }
@@ -1488,5 +1673,168 @@ body {
     .history-header:nth-child(5),
     .history-cell:nth-child(5) {
         display: none;
+    }
+}
+
+/* Checkpoint tab styles */
+.checkpoint-container {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.checkpoint-hash {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.checkpoint-hash label {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.content-hash-display {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: monospace;
+    font-size: 13px;
+    padding: 8px 12px;
+    background: var(--bg-darker);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+}
+
+.copy-hash-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 4px;
+    opacity: 0.7;
+    transition: opacity 0.2s;
+}
+
+.copy-hash-btn:hover {
+    opacity: 1;
+}
+
+.checkpoint-versions h4 {
+    margin: 0 0 12px 0;
+    color: var(--text);
+    font-size: 16px;
+}
+
+.checkpoint-warning {
+    padding: 8px 12px;
+    background: rgba(255, 193, 7, 0.1);
+    border-left: 3px solid var(--warning);
+    color: var(--warning);
+    font-size: 14px;
+    margin-bottom: 12px;
+}
+
+.checkpoint-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.checkpoint-table thead {
+    background: var(--bg-darker);
+}
+
+.checkpoint-table th {
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text);
+    border-bottom: 2px solid var(--border);
+}
+
+.checkpoint-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+
+.checkpoint-table tr.version-match {
+    background: rgba(76, 175, 80, 0.05);
+}
+
+.checkpoint-table tr.version-mismatch {
+    background: rgba(244, 67, 54, 0.05);
+}
+
+.checkpoint-table tr.version-missing {
+    background: rgba(255, 193, 7, 0.05);
+}
+
+.checkpoint-table tr.version-extra {
+    background: rgba(33, 150, 243, 0.05);
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.status-badge.status-match {
+    background: rgba(76, 175, 80, 0.2);
+    color: #4caf50;
+}
+
+.status-badge.status-mismatch {
+    background: rgba(244, 67, 54, 0.2);
+    color: #f44336;
+}
+
+.status-badge.status-missing {
+    background: rgba(255, 193, 7, 0.2);
+    color: #ffc107;
+}
+
+.status-badge.status-extra {
+    background: rgba(33, 150, 243, 0.2);
+    color: #2196f3;
+}
+
+/* Mobile responsive for checkpoint tab */
+@media (max-width: 640px) {
+    .checkpoint-table {
+        display: block;
+        overflow-x: auto;
+    }
+
+    .checkpoint-table thead {
+        display: none;
+    }
+
+    .checkpoint-table tbody {
+        display: block;
+    }
+
+    .checkpoint-table tr {
+        display: block;
+        margin-bottom: 16px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+    }
+
+    .checkpoint-table td {
+        display: block;
+        padding: 6px 0;
+        border: none;
+    }
+
+    .content-hash-display {
+        font-size: 11px;
     }
 }

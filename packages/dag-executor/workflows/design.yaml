@@ -1,0 +1,269 @@
+---
+name: Design Command Workflow
+config:
+  checkpoint_prefix: design
+  worktree: false
+  labels:
+    on_failure: "outcome:design-failed"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command design"
+      run_on: [completed, failed]
+
+inputs:
+  prompt:
+    type: string
+    required: true
+  session_id:
+    type: string
+    required: false
+    default: ""
+
+state:
+  session_state:
+    type: dict
+    reducer: overwrite
+  active_phases:
+    type: list
+    reducer: overwrite
+    default: []
+  phase_outputs:
+    type: dict
+    reducer: merge_dict
+    default: {}
+  confidence_scores:
+    type: dict
+    reducer: merge_dict
+    default: {}
+
+nodes:
+  # ──────────────────────────────────────────────────────────
+  # Phase 0: Initialize Session
+  # ──────────────────────────────────────────────────────────
+  - id: init_session
+    name: Initialize Design Session
+    type: bash
+    label: "step:design"
+    checkpoint: true
+    writes:
+      - session_state
+    script: |
+      # Initialize session state
+      echo "Design session initialized for prompt: $prompt"
+      if [ -n "$session_id" ]; then
+        echo "Resuming session: $session_id"
+      else
+        session_id=$(date +%s)
+        echo "New session: $session_id"
+      fi
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 1: Master Interview (Interrupt)
+  # Pause workflow for user to select which design phases to run
+  # ──────────────────────────────────────────────────────────
+  - id: master_interview
+    name: Master Interview - Phase Selection
+    type: interrupt
+    depends_on:
+      - init_session
+    message: "Design session ready. Select phases to execute: domain-model, diagram, wireframe, mockup, contract"
+    resume_key: design_selections
+    channels:
+      - terminal
+    checkpoint: true
+    reads:
+      - session_state
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 2: Determine Active Phases
+  # Parse the design_selections input and populate active_phases
+  # ──────────────────────────────────────────────────────────
+  - id: determine_phases
+    name: Determine Active Phases
+    type: bash
+    depends_on:
+      - master_interview
+    writes:
+      - active_phases
+    script: |
+      # Parse design_selections from inputs and write to active_phases channel
+      # Expected format: comma-separated list like "domain-model,wireframe,mockup"
+      if [ -n "$design_selections" ]; then
+        echo "Active phases: $design_selections"
+        # Write to channel (actual implementation handled by executor)
+      else
+        echo "No phases selected, will run all phases"
+      fi
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3: Domain Model Gate + Execution
+  # ──────────────────────────────────────────────────────────
+  - id: domain_model_gate
+    name: Domain Model Gate
+    type: gate
+    depends_on:
+      - determine_phases
+    condition: "'domain-model' in active_phases"
+    on_failure: continue
+    reads:
+      - active_phases
+
+  - id: run_domain_model
+    name: Run Domain Model Phase
+    type: command
+    command: design:domain-model
+    depends_on:
+      - domain_model_gate
+    checkpoint: true
+    args:
+      - "--prompt"
+      - "$prompt"
+      - "--session"
+      - "$session_id"
+    writes:
+      - phase_outputs
+      - confidence_scores
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 4: Diagram Gate + Execution
+  # ──────────────────────────────────────────────────────────
+  - id: diagram_gate
+    name: Diagram Gate
+    type: gate
+    depends_on:
+      - run_domain_model
+    trigger_rule: all_done
+    condition: "'diagram' in active_phases"
+    on_failure: continue
+    reads:
+      - active_phases
+
+  - id: run_diagram
+    name: Run Diagram Phase
+    type: command
+    command: design:diagram
+    depends_on:
+      - diagram_gate
+    checkpoint: true
+    args:
+      - "--prompt"
+      - "$prompt"
+      - "--session"
+      - "$session_id"
+    writes:
+      - phase_outputs
+      - confidence_scores
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 5: Wireframe Gate + Execution
+  # ──────────────────────────────────────────────────────────
+  - id: wireframe_gate
+    name: Wireframe Gate
+    type: gate
+    depends_on:
+      - run_diagram
+    trigger_rule: all_done
+    condition: "'wireframe' in active_phases"
+    on_failure: continue
+    reads:
+      - active_phases
+
+  - id: run_wireframe
+    name: Run Wireframe Phase
+    type: command
+    command: design:wireframe
+    depends_on:
+      - wireframe_gate
+    checkpoint: true
+    args:
+      - "--prompt"
+      - "$prompt"
+      - "--session"
+      - "$session_id"
+    writes:
+      - phase_outputs
+      - confidence_scores
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 6: Mockup Gate + Execution
+  # ──────────────────────────────────────────────────────────
+  - id: mockup_gate
+    name: Mockup Gate
+    type: gate
+    depends_on:
+      - run_wireframe
+    trigger_rule: all_done
+    condition: "'mockup' in active_phases"
+    on_failure: continue
+    reads:
+      - active_phases
+
+  - id: run_mockup
+    name: Run Mockup Phase
+    type: command
+    command: design:mockup
+    depends_on:
+      - mockup_gate
+    checkpoint: true
+    args:
+      - "--prompt"
+      - "$prompt"
+      - "--session"
+      - "$session_id"
+    writes:
+      - phase_outputs
+      - confidence_scores
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 7: Contract Gate + Execution
+  # ──────────────────────────────────────────────────────────
+  - id: contract_gate
+    name: Contract Gate
+    type: gate
+    depends_on:
+      - run_mockup
+    trigger_rule: all_done
+    condition: "'contract' in active_phases"
+    on_failure: continue
+    reads:
+      - active_phases
+
+  - id: run_contract
+    name: Run Contract Phase
+    type: command
+    command: design:contract
+    depends_on:
+      - contract_gate
+    checkpoint: true
+    args:
+      - "--prompt"
+      - "$prompt"
+      - "--session"
+      - "$session_id"
+    writes:
+      - phase_outputs
+      - confidence_scores
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 8: Commit Artifacts
+  # Collect all phase outputs and commit to session directory
+  # ──────────────────────────────────────────────────────────
+  - id: commit_artifacts
+    name: Commit Design Artifacts
+    type: bash
+    depends_on:
+      - run_domain_model
+      - run_diagram
+      - run_wireframe
+      - run_mockup
+      - run_contract
+    trigger_rule: all_done
+    checkpoint: true
+    reads:
+      - phase_outputs
+      - confidence_scores
+    script: |
+      # Commit all phase outputs to session directory
+      echo "Committing design artifacts for session: $session_id"
+      # Actual file operations handled by design command infrastructure
