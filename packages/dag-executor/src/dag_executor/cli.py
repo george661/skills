@@ -21,6 +21,7 @@ from dag_executor import (
     EventEmitter,
     StreamMode,
 )
+from dag_executor.replay import execute_replay
 from dag_executor.validator import WorkflowValidator
 
 SUBCOMMANDS = {"replay", "history", "inspect"}
@@ -512,63 +513,49 @@ def run_replay(argv: List[str]) -> None:
     checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
     store = CheckpointStore(checkpoint_dir)
 
-    # 1. Load existing metadata
-    meta = store.load_metadata(workflow_def.name, args.run_id)
-    if not meta:
-        print(json.dumps({"error": f"No metadata found for run '{args.run_id}'"}), file=sys.stderr)
-        sys.exit(1)
-
-    # 2. Compute topological node order
-    node_order = _flat_node_order(workflow_def.nodes)
-
-    # 3. Generate new run_id
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    new_run_id = f"{args.run_id}-replay-{ts}"
-
-    # 4. Copy the run checkpoint directory to the new run_id directory
-    original_dir = store._get_run_dir(workflow_def.name, args.run_id)
-    new_dir = store._get_run_dir(workflow_def.name, new_run_id)
-    shutil.copytree(str(original_dir), str(new_dir))
-
-    # 5. Clear nodes after --from-node
-    cleared = store.clear_nodes_after(workflow_def.name, new_run_id, args.from_node, node_order)
-
-    # 6. Update metadata with new run_id and status
-    new_meta = CheckpointMetadata(
-        workflow_name=meta.workflow_name,
-        run_id=new_run_id,
-        started_at=meta.started_at,
-        inputs=meta.inputs.copy(),
-        status="running",
-    )
-
-    # 7. Apply overrides
+    # Parse overrides from CLI arguments
+    overrides: Dict[str, Any] = {}
     for override in args.with_override:
         if "=" in override:
             key, value = override.split("=", 1)
             try:
-                new_meta.inputs[key] = json.loads(value)
+                overrides[key] = json.loads(value)
             except json.JSONDecodeError:
-                new_meta.inputs[key] = value
+                overrides[key] = value
 
-    # 8. Save updated metadata
-    store.save_metadata(workflow_def.name, new_run_id, new_meta)
+    # Execute replay preparation
+    try:
+        replay_summary = execute_replay(
+            workflow_def=workflow_def,
+            store=store,
+            run_id=args.run_id,
+            from_node=args.from_node,
+            overrides=overrides,
+        )
+    except ValueError as e:
+        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        sys.exit(1)
 
-    # 9. Execute via resume_workflow
+    new_run_id = replay_summary["new_run_id"]
+
+    # Load the updated metadata to get inputs with overrides
+    meta = store.load_metadata(workflow_def.name, new_run_id)
+    if not meta:
+        print(json.dumps({"error": "Failed to load replay metadata"}), file=sys.stderr)
+        sys.exit(1)
+
+    # Execute the workflow from the replay checkpoint
     result = resume_workflow(
         workflow_name=workflow_def.name,
         run_id=new_run_id,
         checkpoint_store=store,
         workflow_def=workflow_def,
-        inputs=new_meta.inputs,
+        inputs=meta.inputs,
     )
 
-    # 10. Print summary
+    # Print summary
     summary = {
-        "new_run_id": new_run_id,
-        "parent_run_id": args.run_id,
-        "replayed_from": args.from_node,
-        "nodes_cleared": cleared,
+        **replay_summary,
         "status": result.status.value,
         "nodes_executed": len(result.node_results),
     }

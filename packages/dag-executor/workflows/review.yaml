@@ -281,6 +281,8 @@ nodes:
   - id: verdict_approved_pass
     name: Verdict Approved Pass
     type: bash
+    depends_on:
+      - code_quality
     script: 'echo "{\"pass\": true}"'
     output_format: json
 
@@ -295,6 +297,7 @@ nodes:
     type: prompt
     depends_on:
       - find_jira_issue
+      - code_quality
     trigger_rule: all_done
     reads:
       - verdict
@@ -336,6 +339,8 @@ nodes:
   - id: test_adequacy
     name: Check Test Adequacy
     type: prompt
+    depends_on:
+      - code_quality
     reads:
       - verdict
       - findings

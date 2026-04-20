@@ -22,11 +22,13 @@ Usage:
         print(f"  {issue.code}: {issue.message}")
 """
 import json
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from dag_executor.checkpoint import CheckpointMetadata, CheckpointStore
 from dag_executor.schema import WorkflowDef
 
 
@@ -278,3 +280,86 @@ class TraceReplayer:
         # For now, flag this as a future enhancement via the trace metadata.
 
         return issues
+
+
+def execute_replay(
+    workflow_def: WorkflowDef,
+    store: CheckpointStore,
+    run_id: str,
+    from_node: str,
+    overrides: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Execute a replay from a checkpoint, creating a new run.
+
+    This function:
+    1. Loads existing metadata from the source run
+    2. Copies the run directory to a new run_id
+    3. Clears node checkpoints after from_node
+    4. Applies input overrides
+    5. Returns a summary (does NOT execute the workflow)
+
+    Args:
+        workflow_def: Workflow definition
+        store: Checkpoint store instance
+        run_id: Source run ID to replay from
+        from_node: Node ID to replay from (this node and all after it will be re-executed)
+        overrides: Input overrides to apply (merged into inputs)
+
+    Returns:
+        Dictionary with:
+            - new_run_id: ID of the new replay run
+            - parent_run_id: Original run_id
+            - replayed_from: Node ID replayed from
+            - nodes_cleared: List of node IDs cleared
+
+    Raises:
+        ValueError: If run_id doesn't exist or from_node is not in workflow
+    """
+    # 1. Load existing metadata
+    meta = store.load_metadata(workflow_def.name, run_id)
+    if not meta:
+        raise ValueError(f"No metadata found for run '{run_id}'")
+
+    # 2. Validate from_node exists in workflow
+    node_ids = [node.id for node in workflow_def.nodes]
+    if from_node not in node_ids:
+        raise ValueError(f"Node '{from_node}' not found in workflow")
+
+    # 3. Compute topological node order
+    from dag_executor.graph import topological_sort_with_layers
+    layers = topological_sort_with_layers(workflow_def.nodes)
+    node_order: List[str] = []
+    for layer in layers:
+        node_order.extend(layer)
+
+    # 4. Generate new run_id
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    new_run_id = f"{run_id}-replay-{ts}"
+
+    # 5. Copy the run checkpoint directory to the new run_id directory
+    original_dir = store._get_run_dir(workflow_def.name, run_id)
+    new_dir = store._get_run_dir(workflow_def.name, new_run_id)
+    shutil.copytree(str(original_dir), str(new_dir))
+
+    # 6. Clear nodes after --from-node
+    cleared = store.clear_nodes_after(workflow_def.name, new_run_id, from_node, node_order)
+
+    # 7. Update metadata with new run_id and apply overrides
+    new_meta = CheckpointMetadata(
+        workflow_name=meta.workflow_name,
+        run_id=new_run_id,
+        started_at=meta.started_at,
+        inputs={**meta.inputs, **overrides},  # Merge overrides
+        status="pending",
+    )
+
+    # 8. Save updated metadata
+    store.save_metadata(workflow_def.name, new_run_id, new_meta)
+
+    # 9. Return summary
+    return {
+        "new_run_id": new_run_id,
+        "parent_run_id": run_id,
+        "replayed_from": from_node,
+        "nodes_cleared": cleared,
+    }

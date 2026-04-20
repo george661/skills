@@ -489,6 +489,29 @@ def test_old_checkpoint_without_input_versions_loads(
     assert checkpoint.input_versions == {}  # default value
 
 
+def test_list_workflows(tmp_path):
+    """Test list_workflows returns unique workflow names."""
+    store = CheckpointStore(str(tmp_path))
+
+    # Create checkpoint directories for multiple workflows and runs
+    (tmp_path / "workflow_a-run1").mkdir()
+    (tmp_path / "workflow_a-run2").mkdir()
+    (tmp_path / "workflow_b-run1").mkdir()
+    (tmp_path / "workflow_c-run1").mkdir()
+    # Create a non-matching directory
+    (tmp_path / "not_a_workflow").mkdir()
+
+    workflows = store.list_workflows()
+    assert workflows == ["workflow_a", "workflow_b", "workflow_c"]
+
+
+def test_list_workflows_empty(tmp_path):
+    """Test list_workflows returns empty list when no checkpoints exist."""
+    store = CheckpointStore(str(tmp_path))
+    workflows = store.list_workflows()
+    assert workflows == []
+
+
 def test_save_load_resume_values(
     checkpoint_store: CheckpointStore,
     tmp_path: Path

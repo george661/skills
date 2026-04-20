@@ -49,6 +49,10 @@ All settings are configured via environment variables with the `DAG_DASHBOARD_` 
 | `DAG_DASHBOARD_EVENTS_DIR` | `dag-events` | Directory to watch for JSONL event files |
 | `DAG_DASHBOARD_MAX_SSE_CONNECTIONS` | `50` | Maximum concurrent SSE subscribers |
 | `DAG_DASHBOARD_DASHBOARD_URL` | `http://127.0.0.1:8100` | Base URL used in Slack card action buttons |
+| `DAG_DASHBOARD_TRIGGER_ENABLED` | `false` | Enable webhook trigger endpoint (POST /api/trigger) |
+| `DAG_DASHBOARD_TRIGGER_SECRET` | — | Optional HMAC secret for webhook signature verification |
+| `DAG_DASHBOARD_TRIGGER_RATE_LIMIT_PER_MIN` | `10` | Rate limit per source (requests/minute) |
+| `DAG_DASHBOARD_WORKFLOWS_DIR` | `workflows` | Directory containing workflow YAML files |
 | `DAG_DASHBOARD_SLACK_ENABLED` | `false` | Turn Slack notifications on |
 | `DAG_DASHBOARD_SLACK_WEBHOOK_URL` | — | Slack incoming webhook (mutually exclusive with bot token) |
 | `DAG_DASHBOARD_SLACK_BOT_TOKEN` | — | Slack bot token `xoxb-...` (enables threaded replies) |
@@ -90,6 +94,62 @@ Cards are emitted for `workflow_started`, `workflow_completed`, `workflow_failed
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/api/workflows/{run_id}/nodes/{node_id}` | Get node execution details |
+
+### Webhook Trigger (Optional)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/api/trigger` | Trigger workflow execution via webhook |
+
+**Enable webhook triggers:**
+```bash
+DAG_DASHBOARD_TRIGGER_ENABLED=true DAG_DASHBOARD_WORKFLOWS_DIR=./workflows dag-dashboard
+```
+
+**Request body:**
+```json
+{
+  "workflow": "work",
+  "inputs": {
+    "issue_key": "GW-5139"
+  },
+  "source": "github-webhook"
+}
+```
+
+**Response:**
+```json
+{
+  "run_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Behavior:**
+- Validates workflow file exists (`{workflows_dir}/{workflow}.yaml`)
+- Validates inputs match workflow's declared input schema (type, required fields)
+- Spawns `dag-exec` subprocess asynchronously (non-blocking response)
+- Persists `trigger_source` in workflow_runs table for audit
+- Triggered runs appear in dashboard with source indicator
+
+**Optional HMAC verification (GitHub webhook pattern):**
+```bash
+DAG_DASHBOARD_TRIGGER_SECRET="your-secret-key"
+```
+
+When a secret is configured, all POST /api/trigger requests must include an `X-Hub-Signature-256` header with HMAC-SHA256 signature:
+```
+X-Hub-Signature-256: sha256=<hex-digest>
+```
+
+**Rate limiting:**
+- Default: 10 requests/minute per source
+- Configure: `DAG_DASHBOARD_TRIGGER_RATE_LIMIT_PER_MIN=20`
+- Exceeding limit returns 429
+
+**Security:**
+- Workflow names must be alphanumeric + hyphens only (no path traversal)
+- Resolved paths must be under `workflows_dir`
+- Spawned subprocesses are detached (survive dashboard restart)
 
 ### Real-time Events
 

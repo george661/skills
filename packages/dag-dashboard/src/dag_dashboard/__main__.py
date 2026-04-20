@@ -30,6 +30,8 @@ def main() -> None:
         max_sse_connections=settings.max_sse_connections,
         slack_notifier=slack_notifier,
         dashboard_url=settings.dashboard_url,
+        checkpoint_prefix=settings.checkpoint_prefix,
+        settings=settings,
         checkpoint_dir_fallback=settings.checkpoint_dir,
     )
 
@@ -37,6 +39,10 @@ def main() -> None:
     logger.info(f"Database directory: {settings.db_dir}")
     logger.info(f"Events directory: {settings.events_dir}")
     logger.info(f"Max SSE connections per run: {settings.max_sse_connections}")
+    if settings.checkpoint_prefix:
+        logger.info(f"Checkpoint prefix: {settings.checkpoint_prefix}")
+    else:
+        logger.info("Checkpoint browsing disabled (checkpoint_prefix not set)")
 
     uvicorn.run(
         app,

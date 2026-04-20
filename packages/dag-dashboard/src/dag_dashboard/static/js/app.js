@@ -70,7 +70,7 @@ class Router {
         const hash = window.location.hash.slice(1) || '/';
         const [path, ...params] = hash.split('/').filter(Boolean);
         const route = '/' + path;
-        
+
         // Update active nav link
         document.querySelectorAll('.nav-link, .mobile-nav-link').forEach(link => {
             const linkRoute = link.dataset.route;
@@ -80,7 +80,7 @@ class Router {
                 link.classList.remove('active');
             }
         });
-        
+
         // Handle parameterized routes
         if (hash.startsWith('/workflow/')) {
             const runId = hash.split('/')[2];
@@ -90,7 +90,40 @@ class Router {
             }
             return;
         }
-        
+
+        // Handle checkpoint routes
+        if (hash.startsWith('/checkpoints/compare/')) {
+            const parts = hash.split('/').filter(Boolean);
+            if (parts.length >= 5) {
+                const workflow = parts[2];
+                const runIdA = parts[3];
+                const runIdB = parts[4];
+                this.currentRoute = '/checkpoints/compare/:wf/:runIdA/:runIdB';
+                if (this.routes['/checkpoints/compare/:wf/:runIdA/:runIdB']) {
+                    this.routes['/checkpoints/compare/:wf/:runIdA/:runIdB'](workflow, runIdA, runIdB);
+                }
+                return;
+            }
+        } else if (hash.startsWith('/checkpoints/')) {
+            const parts = hash.split('?')[0].split('/').filter(Boolean);
+            if (parts.length === 3) {
+                const workflow = parts[1];
+                const runId = parts[2];
+                this.currentRoute = '/checkpoints/:wf/:runId';
+                if (this.routes['/checkpoints/:wf/:runId']) {
+                    this.routes['/checkpoints/:wf/:runId'](workflow, runId);
+                }
+                return;
+            } else if (parts.length === 2) {
+                const workflow = parts[1];
+                this.currentRoute = '/checkpoints/:wf';
+                if (this.routes['/checkpoints/:wf']) {
+                    this.routes['/checkpoints/:wf'](workflow);
+                }
+                return;
+            }
+        }
+
         // Handle static routes
         const handler = this.routes[route] || this.routes['/'];
         if (handler) {
@@ -291,12 +324,14 @@ async function renderHistory() {
             const duration = wf.finished_at && wf.started_at
                 ? Math.round((new Date(wf.finished_at) - new Date(wf.started_at)) / 1000) + 's'
                 : 'N/A';
+            const source = wf.trigger_source || 'manual';
             return `
                 <tr class="history-row" data-run-id="${escapeHtml(wf.id)}">
                     <td class="history-cell">${escapeHtml(wf.workflow_name)}</td>
                     <td class="history-cell"><span class="workflow-status ${escapeHtml(wf.status)}">${escapeHtml(wf.status)}</span></td>
                     <td class="history-cell">${startTime}</td>
                     <td class="history-cell">${duration}</td>
+                    <td class="history-cell"><span class="trigger-source-badge">${escapeHtml(source)}</span></td>
                 </tr>
             `;
         }).join('');
@@ -309,6 +344,7 @@ async function renderHistory() {
                         <th class="history-header">Status</th>
                         <th class="history-header">Started At</th>
                         <th class="history-header">Duration</th>
+                        <th class="history-header">Source</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -721,6 +757,10 @@ const router = new Router();
 router.register('/', renderDashboard);
 router.register('/history', renderHistory);
 router.register('/workflow/:runId', renderWorkflowDetail);
+router.register('/checkpoints', renderCheckpointWorkflows);
+router.register('/checkpoints/:wf', renderCheckpointRuns);
+router.register('/checkpoints/:wf/:runId', renderCheckpointRunDetail);
+router.register('/checkpoints/compare/:wf/:runIdA/:runIdB', renderCheckpointCompare);
 
 // Mobile menu toggle
 document.getElementById('mobile-menu-toggle')?.addEventListener('click', () => {

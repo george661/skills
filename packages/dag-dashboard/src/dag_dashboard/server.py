@@ -12,11 +12,14 @@ from fastapi.responses import FileResponse
 from .broadcast import Broadcaster
 from .chat_relay import ChatRelay
 from .chat_routes import create_chat_router
+from .checkpoint_routes import router as checkpoint_router
+from .config import Settings
 from .database import ensure_dir, init_db
 from .event_collector import EventCollector
 from .notifier import SlackNotifier
 from .sse import create_sse_router
 from .routes import router
+from .trigger import create_trigger_router
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,8 @@ def create_app(
     max_sse_connections: int = 50,
     slack_notifier: Optional[SlackNotifier] = None,
     dashboard_url: str = "http://127.0.0.1:8100",
+    checkpoint_prefix: Optional[Path] = None,
+    settings: Optional[Settings] = None,
     checkpoint_dir_fallback: Optional[str] = None,
 ) -> FastAPI:
     """Create and configure FastAPI application."""
@@ -95,13 +100,18 @@ def create_app(
         lifespan=lifespan
     )
 
-    # Store db_dir, events_dir, and checkpoint_dir_fallback in app state for lifespan and route access
+    # Store db_dir, events_dir, and checkpoint state in app state for lifespan and route access
     app.state.db_dir = db_dir
     app.state.events_dir = events_dir
+    app.state.checkpoint_prefix = checkpoint_prefix
     app.state.checkpoint_dir_fallback = checkpoint_dir_fallback
 
     # Register routes
     app.include_router(router)
+
+    # Register checkpoint routes if checkpoint_prefix is set
+    if checkpoint_prefix is not None:
+        app.include_router(checkpoint_router)
 
     # Register chat routes
     chat_router = create_chat_router(db_path)
@@ -135,5 +145,11 @@ def create_app(
         max_connections=max_sse_connections
     )
     app.include_router(sse_router)
+
+    # Mount trigger router if enabled
+    if settings and settings.trigger_enabled:
+        trigger_router = create_trigger_router(settings, db_path)
+        app.include_router(trigger_router)
+        logger.info("Trigger endpoint enabled")
 
     return app
