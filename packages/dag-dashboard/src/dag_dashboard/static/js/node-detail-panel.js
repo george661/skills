@@ -333,7 +333,7 @@ class NodeDetailPanel {
                                 <tr class="${statusClass}">
                                     <td>${this.escapeHtml(key)}</td>
                                     <td>${checkpointVer}</td>
-                                    <td>${currentVer !== undefined ? currentVer : '<em>missing</em>'}</td>
+                                    <td>${currentVer != null ? currentVer : '<em>missing</em>'}</td>
                                     <td><span class="status-badge status-${status}">${status}</span></td>
                                 </tr>
                             `;
