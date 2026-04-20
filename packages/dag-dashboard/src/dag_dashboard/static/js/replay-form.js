@@ -49,7 +49,12 @@ window.showReplayModal = async function(workflow, runId) {
                             ${nodeOptions}
                         </select>
                     </div>
-                    
+
+                    <div class="form-group">
+                        <label for="replay-workflow-path">Workflow Path: <span style="color: red;">*</span></label>
+                        <input type="text" id="replay-workflow-path" class="form-control" placeholder="/absolute/path/to/workflow.yaml" required>
+                    </div>
+
                     <div class="form-group">
                         <label>State Overrides:</label>
                         <div id="override-rows">
@@ -105,17 +110,24 @@ window.showReplayModal = async function(workflow, runId) {
     // Form submission
     document.getElementById('replay-form').addEventListener('submit', async (e) => {
         e.preventDefault();
-        
+
         const fromNode = document.getElementById('replay-from-node').value;
+        const workflowPath = document.getElementById('replay-workflow-path').value.trim();
         const errorDiv = document.getElementById('replay-error');
-        
+
         // Client-side validation
         if (!fromNode) {
             errorDiv.textContent = 'Please select a node to replay from.';
             errorDiv.style.display = 'block';
             return;
         }
-        
+
+        if (!workflowPath) {
+            errorDiv.textContent = 'Please provide a workflow path.';
+            errorDiv.style.display = 'block';
+            return;
+        }
+
         // Collect overrides
         const overrides = {};
         document.querySelectorAll('.override-row').forEach(row => {
@@ -125,13 +137,14 @@ window.showReplayModal = async function(workflow, runId) {
                 overrides[key] = value;
             }
         });
-        
+
         // Build request payload
         const payload = {
-            from_node: fromNode
+            from_node: fromNode,
+            workflow_path: workflowPath
         };
         if (Object.keys(overrides).length > 0) {
-            payload.state_overrides = overrides;
+            payload.overrides = overrides;
         }
         
         // Submit replay request
@@ -160,11 +173,11 @@ window.showReplayModal = async function(workflow, runId) {
             
             // Show success toast
             showToast('Replay started successfully!', 'success');
-            
-            // Navigate to the new run if we have a run_id
-            if (result.run_id) {
+
+            // Navigate to the new run if we have a new_run_id
+            if (result.new_run_id) {
                 setTimeout(() => {
-                    window.location.hash = `/workflow/${result.run_id}`;
+                    window.location.hash = `/checkpoints/workflow/${result.new_run_id}`;
                 }, 1000);
             }
             

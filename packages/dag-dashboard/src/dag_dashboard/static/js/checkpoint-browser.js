@@ -40,7 +40,7 @@ async function renderCheckpointWorkflows() {
         }
         
         const data = await response.json();
-        const workflows = data.workflows || [];
+        const workflows = Array.isArray(data) ? data : [];
         
         if (workflows.length === 0) {
             content.innerHTML = `
@@ -164,7 +164,7 @@ async function renderCheckpointRuns(workflow) {
         }
         
         const data = await response.json();
-        const runs = data.runs || [];
+        const runs = Array.isArray(data) ? data : [];
         
         if (runs.length === 0) {
             content.innerHTML = `
@@ -310,7 +310,7 @@ async function renderCheckpointRunDetail(workflow, runId) {
                 <tr class="history-row node-row" data-node-id="${escapeHtml(node.node_id)}" style="cursor: pointer;">
                     <td class="history-cell">${escapeHtml(node.node_id)}</td>
                     <td class="history-cell"><span class="workflow-status ${escapeHtml(node.status || 'unknown')}">${escapeHtml(node.status || 'unknown')}</span></td>
-                    <td class="history-cell">${escapeHtml(node.timestamp || 'N/A')}</td>
+                    <td class="history-cell">${escapeHtml(node.started_at || 'N/A')}</td>
                 </tr>
                 <tr class="node-detail-row" id="node-detail-${escapeHtml(node.node_id)}" style="display: none;">
                     <td colspan="3" class="node-detail-cell">
