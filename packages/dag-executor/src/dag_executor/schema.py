@@ -268,12 +268,19 @@ class EdgeDef(BaseModel):
     Supports both single-target and multi-target (fan-out) edges:
     - Single: EdgeDef(target="b", condition=...)
     - Multi: EdgeDef(targets=["b", "c"], condition=...)
+
+    NOTE: simpleeval condition expressions use Python syntax, not JSON.
+    - Python: True, False, None
+    - JSON: true, false, null
+    When comparing boolean outputs from JSON-producing nodes, use Python booleans:
+      ✓ Correct: "node.field == True"
+      ✗ Wrong:   "node.field == true"  (NameError: name 'true' is not defined)
     """
     model_config = {"extra": "forbid"}
 
     target: Optional[str] = Field(default=None, description="Target node ID (single-target)")
     targets: Optional[List[str]] = Field(default=None, description="Target node IDs (multi-target fan-out)")
-    condition: Optional[str] = Field(default=None, description="simpleeval condition expression")
+    condition: Optional[str] = Field(default=None, description="simpleeval condition expression (Python syntax, not JSON)")
     default: bool = Field(default=False, description="Default fallback edge")
 
     def model_post_init(self, __context: Any) -> None:

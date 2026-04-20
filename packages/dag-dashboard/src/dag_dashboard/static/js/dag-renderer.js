@@ -152,19 +152,67 @@ class DAGRenderer {
 
         if (!sourceNode || !targetNode) return;
 
+        // Create edge group to hold path + label
+        const edgeGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        edgeGroup.setAttribute('class', 'dag-edge-group');
+        edgeGroup.setAttribute('data-edge-id', edge.edge_id || `${edge.source}-${edge.target}`);
+
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         const d = `M ${edge.points[0].x} ${edge.points[0].y} L ${edge.points[1].x} ${edge.points[1].y}`;
         path.setAttribute('d', d);
         path.setAttribute('class', 'dag-edge');
         path.setAttribute('marker-end', 'url(#arrowhead)');
         path.setAttribute('data-source', edge.source);
+        path.setAttribute('data-target', edge.target);
+        path.setAttribute('data-edge-id', edge.edge_id || `${edge.source}-${edge.target}`);
+
+        // Add tooltip with condition info
+        if (edge.condition || edge.default) {
+            const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+            const tooltipText = edge.default
+                ? 'Default edge (fallback)'
+                : `Condition: ${edge.condition}`;
+            title.textContent = tooltipText;
+            path.appendChild(title);
+        }
 
         // Animate edge if source node is running
         if (sourceNode.status === 'running') {
             path.classList.add('edge-animated');
         }
 
-        this.g.appendChild(path);
+        edgeGroup.appendChild(path);
+
+        // Add condition label for conditional edges
+        if (edge.condition && !edge.default) {
+            const midX = (edge.points[0].x + edge.points[1].x) / 2;
+            const midY = (edge.points[0].y + edge.points[1].y) / 2;
+
+            const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            label.setAttribute('x', midX);
+            label.setAttribute('y', midY - 5);
+            label.setAttribute('text-anchor', 'middle');
+            label.setAttribute('font-size', '11');
+            label.setAttribute('class', 'edge-condition-label');
+            label.textContent = edge.condition.length > 30
+                ? edge.condition.substring(0, 27) + '...'
+                : edge.condition;
+
+            // Add background rect for readability
+            const bbox = label.getBBox ? label.getBBox() : { x: midX - 40, y: midY - 15, width: 80, height: 14 };
+            const labelBg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            labelBg.setAttribute('x', bbox.x - 4);
+            labelBg.setAttribute('y', bbox.y - 2);
+            labelBg.setAttribute('width', bbox.width + 8);
+            labelBg.setAttribute('height', bbox.height + 4);
+            labelBg.setAttribute('rx', '3');
+            labelBg.setAttribute('class', 'edge-condition-label-bg');
+
+            edgeGroup.appendChild(labelBg);
+            edgeGroup.appendChild(label);
+        }
+
+        this.g.appendChild(edgeGroup);
     }
 
     centerView(nodes) {
@@ -352,6 +400,36 @@ class DAGRenderer {
             }
             overlay.remove();
         }
+    }
+
+    updateEdgeHighlights(edgeStates) {
+        /**
+         * Update edge highlighting based on traversal state.
+         * Called from SSE handler when EDGE_TRAVERSED events arrive.
+         *
+         * Per approved plan v2: Since executor only emits CONDITION_EVALUATED for the
+         * winning edge (first-match-wins break), renderer must infer skipped siblings
+         * from branch_set_id when EDGE_TRAVERSED fires.
+         */
+        if (!this.g) return;
+
+        Object.entries(edgeStates).forEach(([edgeId, edgeState]) => {
+            const edgeGroup = this.g.querySelector(`[data-edge-id="${edgeId}"]`);
+            if (!edgeGroup) return;
+
+            const path = edgeGroup.querySelector('.dag-edge');
+            if (!path) return;
+
+            // Remove existing state classes
+            path.classList.remove('edge-taken', 'edge-skipped');
+
+            // Apply new state class
+            if (edgeState.taken) {
+                path.classList.add('edge-taken');
+            } else if (edgeState.skipped) {
+                path.classList.add('edge-skipped');
+            }
+        });
     }
 }
 
