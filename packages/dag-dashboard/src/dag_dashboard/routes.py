@@ -409,11 +409,11 @@ async def resume_interrupt(
         node_id,
         status="completed",
         finished_at=decided_at,
-        outputs=json.dumps({
+        outputs={
             **node.get("outputs", {}),
             "resume_value": body.resume_value,
             "node_type": "interrupt"
-        })
+        }
     )
 
     return {

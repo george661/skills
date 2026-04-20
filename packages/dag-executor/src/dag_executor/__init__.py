@@ -236,9 +236,6 @@ def resume_workflow(
         for key, value in checkpoint_resume_values.items():
             inputs[key] = value
 
-    # Load interrupt checkpoint if present
-    interrupt_checkpoint = checkpoint_store.load_interrupt(workflow_name, run_id)
-
     # Explicit resume_values argument takes precedence over checkpoint values
     if resume_values:
         for resume_key, resume_value in resume_values.items():

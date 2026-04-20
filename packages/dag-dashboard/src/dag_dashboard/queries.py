@@ -687,7 +687,8 @@ def get_interrupt_checkpoint(
             return None
 
         # Return as dict for API serialization
-        return interrupt_checkpoint.model_dump()
+        result: Dict[str, Any] = interrupt_checkpoint.model_dump()
+        return result
 
     finally:
         conn.close()
