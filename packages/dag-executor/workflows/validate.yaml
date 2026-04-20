@@ -404,43 +404,15 @@ nodes:
 
   - id: evaluate_results
     name: Evaluate Results
-    type: prompt
+    type: command
+    command: validate-evaluate
     depends_on:
       - smoke_regression
       - file_verification
       - pipeline_verification
     trigger_rule: one_success
-    prompt: |
-      Evaluate validation results for $issue_key and produce a verdict.
-
-      1. Read test results from /tmp/validate-$issue_key-test-results.txt
-      2. Read evidence from /tmp/validate-$issue_key-evidence.txt
-      3. Fetch acceptance criteria from Jira.
-      4. For each criterion, match to test results and evidence.
-
-      Contradiction detection (MANDATORY):
-        - If Phase 2 tests show PASS but Phase 3 evidence shows 404/login/error
-          screenshot for the same criterion → re-take fresh authenticated screenshot
-          with correct nested auth schema before concluding.
-        - If still unresolvable → verdict NEEDS_HUMAN.
-
-      Playwright hard gate:
-        - If code_repo is e2e-tests AND any Playwright test FAILED → TRANSITION_TODO.
-        - If AC require "tests run without errors" AND tests have errors → TRANSITION_TODO.
-
-      Verdict rules:
-        - All criteria PASS (contradictions resolved) → TRANSITION_DONE
-        - Any criteria FAIL (confirmed regression) → TRANSITION_TODO
-        - Ambiguous or pre-existing → NEEDS_HUMAN
-        - Deploy not ready → NEEDS_DEPLOY
-
-      Write full validation report to /tmp/validate-$issue_key-report.md.
-
-      Output JSON: {"verdict": "<TRANSITION_DONE|TRANSITION_TODO|NEEDS_DEPLOY|NEEDS_HUMAN>",
-                     "passed": <N>, "failed": <M>, "contradiction_detected": <bool>}
-    model: opus
-    dispatch: inline
-    output_format: json
+    args:
+      - "$issue_key"
     checkpoint: true
     reads:
       - test_results
@@ -455,41 +427,13 @@ nodes:
 
   - id: transition_jira
     name: Transition Jira
-    type: prompt
+    type: command
+    command: validate-transition
     depends_on:
       - evaluate_results
-    prompt: |
-      Transition Jira issue $issue_key based on the verdict from evaluation.
-
-      If TRANSITION_DONE:
-        1. Post validation report as Jira comment
-        2. Verify report was posted (evidence gate)
-        3. Transition to Done
-        4. Update labels: remove step:validating, add outcome:validated
-        5. Update smoke baseline in AgentDB
-
-      If TRANSITION_TODO:
-        1. Post validation report as Jira comment
-        2. Transition back to To Do
-        3. Update labels: remove step:validating, add outcome:validation-failed
-
-      If NEEDS_HUMAN:
-        1. Post validation report as Jira comment
-        2. Do NOT transition
-        3. Update labels: add outcome:needs-human
-        4. Report to user that manual review is needed
-
-      If NEEDS_DEPLOY:
-        1. Post validation report as Jira comment
-        2. Transition back to To Do
-        3. Update labels: add outcome:needs-deploy
-
-      Verify status actually changed after transition; retry once if not.
-
-      Output JSON: {"transitioned": <bool>, "new_status": "<status>"}
-    model: opus
-    dispatch: inline
-    output_format: json
+    args:
+      - "$issue_key"
+      - "$verdict"
     reads:
       - verdict
     writes:
