@@ -455,6 +455,7 @@ async function renderWorkflowDetail(runId) {
             </div>
             <div id="totals-container"></div>
             <div id="dag-container"></div>
+            <div id="channel-state-container" style="margin-top: 1rem;"></div>
             <div style="margin-top: 1rem; padding: 1rem; background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border);">
                 <h3 style="margin-bottom: 0.5rem;">Run ID:</h3>
                 <code style="color: var(--text-secondary);">${escapeHtml(runId)}</code>
@@ -488,8 +489,11 @@ async function renderWorkflowDetail(runId) {
         // Setup currently executing banner
         setupExecutingBanner(layoutData.nodes);
 
+        // Initialize channel state panel
+        const channelPanel = new window.ChannelStatePanel('channel-state-container');
+
         // Connect to SSE for live updates
-        setupLiveUpdates(runId, dagRenderer, layoutData.nodes);
+        setupLiveUpdates(runId, dagRenderer, layoutData.nodes, channelPanel);
 
     } catch (error) {
         console.error('Error loading workflow detail:', error);
@@ -536,19 +540,23 @@ function setupExecutingBanner(nodes) {
     }
 }
 
-function setupLiveUpdates(runId, dagRenderer, nodes) {
-    // Connect to per-run SSE endpoint (if available)
-    // For now, we'll poll periodically for updates
-    // In production, you'd use the SSE endpoint from sse.js
+function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel) {
+    // Poll periodically for updates (layout and channel states)
 
     const pollInterval = setInterval(async () => {
         try {
-            const response = await fetch(`/api/workflows/${runId}/layout`);
-            if (!response.ok) {
+            // Fetch both layout and channel states in parallel
+            const [layoutResp, channelsResp] = await Promise.all([
+                fetch(`/api/workflows/${runId}/layout`),
+                fetch(`/api/workflows/${runId}/channels`)
+            ]);
+
+            if (!layoutResp.ok) {
                 clearInterval(pollInterval);
                 return;
             }
-            const layoutData = await response.json();
+
+            const layoutData = await layoutResp.json();
 
             // Update node statuses in the DAG
             layoutData.nodes.forEach(node => {
@@ -557,6 +565,14 @@ function setupLiveUpdates(runId, dagRenderer, nodes) {
 
             // Update executing banner
             setupExecutingBanner(layoutData.nodes);
+
+            // Update channel state panel
+            if (channelsResp.ok) {
+                const channelsData = await channelsResp.json();
+                if (channelPanel && channelsData.channels) {
+                    channelPanel.update(channelsData.channels);
+                }
+            }
 
         } catch (error) {
             console.error('Error polling for updates:', error);

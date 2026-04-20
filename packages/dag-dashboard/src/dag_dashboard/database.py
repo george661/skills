@@ -90,6 +90,20 @@ CREATE TABLE IF NOT EXISTS slack_threads (
     thread_ts TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+-- 8. channel_states: Channel state snapshots per workflow execution
+CREATE TABLE IF NOT EXISTS channel_states (
+    run_id TEXT NOT NULL REFERENCES workflow_runs(id),
+    channel_key TEXT NOT NULL,
+    channel_type TEXT NOT NULL,
+    reducer_strategy TEXT,
+    value_json TEXT,
+    version INTEGER NOT NULL DEFAULT 0,
+    writers_json TEXT,
+    conflict_json TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, channel_key)
+);
 """
 
 
