@@ -1,0 +1,291 @@
+---
+name: Discover Command Workflow
+config:
+  checkpoint_prefix: discover
+  worktree: false
+  labels:
+    on_failure: "outcome:discover-failed"
+
+state:
+  interview_answers:
+    type: dict
+    reducer: overwrite
+  overlaps:
+    type: list
+    reducer: append
+    default: []
+  brief_output:
+    type: dict
+    reducer: overwrite
+  epic_result:
+    type: dict
+    reducer: overwrite
+
+nodes:
+  # ──────────────────────────────────────────────────────────
+  # Phase 0: Load Platform Context
+  # Load tenant domain config and docs repo snapshot for orientation
+  # ──────────────────────────────────────────────────────────
+  - id: load_platform_context
+    name: Load Platform Context
+    type: bash
+    on_failure: stop
+    script: |
+      # Load tenant domain path and docs repo context
+      if [ -z "$TENANT_DOMAIN_PATH" ]; then
+        echo "WARNING: TENANT_DOMAIN_PATH not set, using default"
+        TENANT_DOMAIN_PATH="${PROJECT_ROOT}/.claude/config/domains"
+      fi
+      
+      # Get docs repo path from config
+      docs_repo=$(jq -r '.docs_repo // "docs"' "${PROJECT_ROOT}/.claude/config/tenant.json" 2>/dev/null || echo "docs")
+      
+      # Load recent features/roadmap for context
+      features_list=$(find "${PROJECT_ROOT}/${docs_repo}/features" -name "*-brief.md" 2>/dev/null | tail -10 | xargs -I {} basename {} || echo "[]")
+      
+      echo "{\"context\": {\"docs_repo\": \"$docs_repo\", \"recent_features\": \"$features_list\"}}"
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 1: Guided Interview (Interrupt)
+  # 8-question interview to capture idea details
+  # ──────────────────────────────────────────────────────────
+  - id: idea_interview
+    name: Guided Idea Interview
+    type: interrupt
+    depends_on:
+      - load_platform_context
+    message: |
+      ## Discover New Initiative - Guided Interview
+      
+      Please answer the following questions to capture your idea:
+      
+      1. What problem does this solve? (1-2 sentences)
+      2. Who are the primary users/stakeholders?
+      3. What are the key user journeys or workflows?
+      4. What are the success metrics or acceptance criteria?
+      5. Are there any technical constraints or dependencies?
+      6. What is the estimated scope? (small/medium/large)
+      7. What is the priority? (critical/high/medium/low)
+      8. Any additional context or references?
+      
+      Resume with: dag-exec resume discover --resume-key interview_answers --data '{"answers": {...}}'
+    resume_key: interview_answers
+    channels:
+      - terminal
+    writes:
+      - interview_answers
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 2: Duplicate Check
+  # Search Jira epics, roadmap, and PRPs for overlaps
+  # ──────────────────────────────────────────────────────────
+  - id: duplicate_check
+    name: Check for Duplicates
+    type: prompt
+    depends_on:
+      - idea_interview
+    reads:
+      - interview_answers
+    writes:
+      - overlaps
+    model: opus
+    dispatch: inline
+    prompt: |
+      Search for potential duplicates or overlaps with existing work.
+      
+      Idea: {interview_answers}
+      
+      Search in:
+      1. Jira epics (status: Open, In Progress, Backlog)
+      2. Roadmap initiatives (check roadmap.json)
+      3. Recent PRPs (check agentdb for planned-* episodes)
+      
+      Return:
+      {"overlaps": [
+        {"type": "epic|roadmap|prp", "key": "...", "summary": "...", "overlap_score": 0.0-1.0}
+      ]}
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3: Write Feature Brief
+  # Create feature brief markdown file in docs repo
+  # ──────────────────────────────────────────────────────────
+  - id: brief_writer
+    name: Write Feature Brief
+    type: prompt
+    depends_on:
+      - duplicate_check
+    reads:
+      - interview_answers
+      - overlaps
+    writes:
+      - brief_output
+    model: opus
+    dispatch: local
+    prompt: |
+      Write a feature brief based on the interview and duplicate check.
+      
+      Interview: {interview_answers}
+      Overlaps: {overlaps}
+      
+      Include:
+      - Problem statement
+      - User stories
+      - Success criteria
+      - Technical approach (high-level)
+      - Dependencies and risks
+      - Estimated scope and priority
+      
+      Format: Markdown with YAML frontmatter
+      
+      Save to: ${DOCS_REPO}/features/YYYY-MM-DD-{slug}-brief.md
+      
+      Return:
+      {"brief_output": {"path": "...", "slug": "..."}}
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 4: Update Roadmap
+  # Append initiative to roadmap JSON with status: Proposed
+  # ──────────────────────────────────────────────────────────
+  - id: roadmap_update
+    name: Update Roadmap
+    type: bash
+    depends_on:
+      - brief_writer
+    reads:
+      - brief_output
+    on_failure: stop
+    script: |
+      # Get docs repo path
+      docs_repo=$(jq -r '.docs_repo // "docs"' "${PROJECT_ROOT}/.claude/config/tenant.json" 2>/dev/null || echo "docs")
+      roadmap_file="${PROJECT_ROOT}/${docs_repo}/roadmap/roadmap.json"
+      
+      # Load brief output
+      slug=$(echo "$brief_output" | jq -r '.slug')
+      path=$(echo "$brief_output" | jq -r '.path')
+      
+      # Append to roadmap with status: Proposed
+      timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+      # Append to roadmap JSON
+      if [ -f "$roadmap_file" ]; then
+        jq --arg slug "$slug" --arg path "$path" --arg ts "$timestamp" \
+          '. += [{"slug": $slug, "status": "Proposed", "brief_path": $path, "created_at": $ts}]' \
+          "$roadmap_file" > "${roadmap_file}.tmp"
+        mv "${roadmap_file}.tmp" "$roadmap_file"
+      else
+        jq -n --arg slug "$slug" --arg path "$path" --arg ts "$timestamp" \
+          '[{"slug": $slug, "status": "Proposed", "brief_path": $path, "created_at": $ts}]' \
+          > "$roadmap_file"
+      fi
+      
+      echo "{\"roadmap_updated\": true, \"slug\": \"$slug\"}"
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 4.5: Epic Decision (Prompt for User Input)
+  # Ask user whether to create an epic now
+  # ──────────────────────────────────────────────────────────
+  - id: epic_decision
+    name: Epic Creation Decision
+    type: prompt
+    depends_on:
+      - roadmap_update
+    reads:
+      - interview_answers
+      - brief_output
+    model: opus
+    dispatch: inline
+    prompt: |
+      Should we create a Jira epic for this initiative now?
+
+      Initiative: {brief_output}
+
+      Consider:
+      - Is the scope well-defined?
+      - Is it approved for immediate work?
+      - Or should it stay as "Proposed" in roadmap for now?
+
+      Return:
+      {"create_epic": True}  # or False
+
+      Output the decision as JSON with create_epic boolean (True/False).
+    edges:
+      - target: create_epic
+        condition: epic_decision.create_epic == True
+      - target: finalize
+        default: true
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 5: Create Epic (Conditional)
+  # Create Jira epic using issues router
+  # Reached via conditional edge from epic_decision
+  # ──────────────────────────────────────────────────────────
+  - id: create_epic
+    name: Create Jira Epic
+    type: bash
+    reads:
+      - interview_answers
+      - brief_output
+    writes:
+      - epic_result
+    on_failure: continue
+    script: |
+      # Extract data from interview and brief
+      slug=$(echo "$brief_output" | jq -r '.slug')
+      summary=$(echo "$interview_answers" | jq -r '.answers.problem // "New Initiative"')
+      
+      # Create epic using issues router
+      result=$(npx tsx ~/.claude/skills/issues/create_issue.ts '{
+        "project": "${TENANT_PROJECT}",
+        "issue_type": "Epic",
+        "summary": "'"$summary"'",
+        "description": "See feature brief: '"$slug"'",
+        "labels": ["tier:1-epic", "status:proposed"]
+      }')
+      
+      epic_key=$(echo "$result" | jq -r '.key')
+      
+      echo "{\"epic_result\": {\"key\": \"$epic_key\", \"status\": \"created\"}}"
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 6: Finalize
+  # Emit summary with brief path, epic key (if created), and roadmap slug
+  # Uses one_success trigger for fan-in from conditional paths
+  # Reached either directly from epic_decision (default edge) or from create_epic
+  # ──────────────────────────────────────────────────────────
+  - id: finalize
+    name: Finalize Discovery
+    type: bash
+    depends_on:
+      - create_epic
+    trigger_rule: one_success
+    reads:
+      - brief_output
+      - epic_result
+    on_failure: stop
+    script: |
+      # Gather results
+      brief_path=$(echo "$brief_output" | jq -r '.path // "N/A"')
+      slug=$(echo "$brief_output" | jq -r '.slug // "N/A"')
+      epic_key=$(echo "$epic_result" | jq -r '.key // "N/A"' 2>/dev/null || echo "N/A")
+
+      echo ""
+      echo "═══════════════════════════════════════════════════════════"
+      echo "Discovery Complete"
+      echo "═══════════════════════════════════════════════════════════"
+      echo ""
+      echo "Brief: $brief_path"
+      echo "Roadmap slug: $slug"
+      echo "Epic: $epic_key"
+      echo ""
+      echo "Next steps:"
+      echo "- Review feature brief in docs repo"
+      echo "- If epic created: run /plan $epic_key to create PRP"
+      echo "- If not: iterate on brief and run /discover again when ready"
+      echo ""
+      echo "═══════════════════════════════════════════════════════════"
+
+      echo "{\"discovery_complete\": true, \"brief_path\": \"$brief_path\", \"epic_key\": \"$epic_key\", \"slug\": \"$slug\"}"
+    output_format: json
