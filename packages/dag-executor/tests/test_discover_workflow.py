@@ -12,10 +12,18 @@ import pytest
 from dag_executor.graph import topological_sort_with_layers
 from dag_executor.parser import load_workflow
 from dag_executor.schema import (
+    ChannelFieldDef,
     NodeDef,
     TriggerRule,
     WorkflowDef,
 )
+
+
+def _channel(workflow: WorkflowDef, key: str) -> ChannelFieldDef:
+    """Fetch a ChannelFieldDef from workflow.state (narrows the union for type checkers)."""
+    field = workflow.state[key]
+    assert isinstance(field, ChannelFieldDef), f"{key} must be a ChannelFieldDef"
+    return field
 
 
 WORKFLOW_PATH = str(
@@ -131,7 +139,7 @@ class TestConditionalEdge:
             "Must have conditional edge from epic_decision to create_epic"
 
         # Verify condition uses Python-style boolean literals
-        condition = conditional_edge.condition
+        condition: str = conditional_edge.condition or ""
         assert "create_epic" in condition, \
             "Condition must reference create_epic field"
         # Check for Python-style True/False (not true/false or 1/0)
@@ -164,29 +172,87 @@ class TestIssuesRouter:
             "create_epic must NOT call skills/jira/ directly (use issues router)"
 
 
+class TestExecutionWiring:
+    """Test the runtime wiring of the conditional branch (execution-path correctness)."""
+
+    def test_create_epic_has_explicit_dependency(self, nodes_by_id: Dict[str, NodeDef]) -> None:
+        """create_epic must have depends_on so it is not a dangling root node.
+
+        Regression: edges on the source node do not establish topological
+        dependencies — depends_on is still required on the edge target.
+        """
+        create_epic = nodes_by_id["create_epic"]
+        assert create_epic.depends_on, (
+            "create_epic must declare depends_on; edges from epic_decision do "
+            "not create topological dependencies by themselves"
+        )
+        assert "epic_decision" in create_epic.depends_on, (
+            "create_epic must depend on epic_decision (its edge source)"
+        )
+
+    def test_finalize_dependencies_survive_default_branch(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """finalize must run on BOTH branches from epic_decision.
+
+        Regression: if finalize depends only on create_epic with trigger_rule=one_success,
+        the default branch (epic NOT created) skips create_epic and finalize runs never.
+        finalize must depend on at least one node that is COMPLETED on the default branch.
+        """
+        finalize = nodes_by_id["finalize"]
+        assert finalize.depends_on, "finalize must declare depends_on"
+        assert "epic_decision" in finalize.depends_on, (
+            "finalize must depend on epic_decision so it runs when the default "
+            "edge (skip epic) is taken — otherwise one_success never fires"
+        )
+
+    def test_create_epic_script_uses_safe_json_construction(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """create_epic script must build JSON with jq, not via shell-quoted string concat.
+
+        Regression: '{"project": "${TENANT_PROJECT}", "summary": "'"$x"'"}' is
+        broken on two fronts: single quotes prevent env-var expansion, and
+        string concat breaks on any special character in user input.
+        """
+        script: str = nodes_by_id["create_epic"].script or ""
+        # Must invoke jq to build the request payload
+        assert "jq -n" in script or "jq --arg" in script, (
+            "create_epic must build request JSON with jq to safely escape user input"
+        )
+        # Must not embed ${TENANT_PROJECT} inside single-quoted JSON (single quotes
+        # suppress shell variable expansion — the literal "${TENANT_PROJECT}" ends up
+        # in the request payload).
+        if "'{" in script and "}'" in script:
+            single_quoted = script.split("'{", 1)[1].split("}'", 1)[0]
+            assert "${TENANT_PROJECT}" not in single_quoted, (
+                "TENANT_PROJECT must not be embedded inside single-quoted JSON "
+                "(shell will not expand it)"
+            )
+
+
 class TestStateChannels:
     """Test 8: State channels have correct reducers."""
 
     def test_channels_have_correct_reducers(self, workflow: WorkflowDef) -> None:
         """State channels use correct reducer types per plan."""
-        channels = workflow.state
+        assert "interview_answers" in workflow.state
+        assert "brief_output" in workflow.state
+        assert "overlaps" in workflow.state
 
-        # interview_answers: overwrite
-        assert "interview_answers" in channels, \
-            "Must have interview_answers state channel"
-        assert channels["interview_answers"].reducer.strategy.value == "overwrite", \
+        interview_answers = _channel(workflow, "interview_answers")
+        assert interview_answers.reducer is not None
+        assert interview_answers.reducer.strategy.value == "overwrite", \
             "interview_answers must use overwrite reducer"
 
-        # brief_output: overwrite
-        assert "brief_output" in channels, \
-            "Must have brief_output state channel"
-        assert channels["brief_output"].reducer.strategy.value == "overwrite", \
+        brief_output = _channel(workflow, "brief_output")
+        assert brief_output.reducer is not None
+        assert brief_output.reducer.strategy.value == "overwrite", \
             "brief_output must use overwrite reducer"
 
-        # overlaps: append
-        assert "overlaps" in channels, \
-            "Must have overlaps state channel"
-        assert channels["overlaps"].reducer.strategy.value == "append", \
+        overlaps = _channel(workflow, "overlaps")
+        assert overlaps.reducer is not None
+        assert overlaps.reducer.strategy.value == "append", \
             "overlaps must use append reducer"
-        assert channels["overlaps"].default == [], \
+        assert overlaps.default == [], \
             "overlaps must have default empty list"

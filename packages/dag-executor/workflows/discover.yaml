@@ -33,17 +33,24 @@ nodes:
     script: |
       # Load tenant domain path and docs repo context
       if [ -z "$TENANT_DOMAIN_PATH" ]; then
-        echo "WARNING: TENANT_DOMAIN_PATH not set, using default"
         TENANT_DOMAIN_PATH="${PROJECT_ROOT}/.claude/config/domains"
       fi
-      
+
       # Get docs repo path from config
       docs_repo=$(jq -r '.docs_repo // "docs"' "${PROJECT_ROOT}/.claude/config/tenant.json" 2>/dev/null || echo "docs")
-      
-      # Load recent features/roadmap for context
-      features_list=$(find "${PROJECT_ROOT}/${docs_repo}/features" -name "*-brief.md" 2>/dev/null | tail -10 | xargs -I {} basename {} || echo "[]")
-      
-      echo "{\"context\": {\"docs_repo\": \"$docs_repo\", \"recent_features\": \"$features_list\"}}"
+
+      # Load recent feature brief filenames as a JSON array
+      recent_features=$(find "${PROJECT_ROOT}/${docs_repo}/features" -name "*-brief.md" 2>/dev/null \
+        | tail -10 \
+        | xargs -I {} basename {} 2>/dev/null \
+        | jq -R . | jq -s .)
+      recent_features=${recent_features:-[]}
+
+      # Emit structured JSON (jq handles escaping correctly)
+      jq -n \
+        --arg docs_repo "$docs_repo" \
+        --argjson recent_features "$recent_features" \
+        '{context: {docs_repo: $docs_repo, recent_features: $recent_features}}'
     output_format: json
 
   # ──────────────────────────────────────────────────────────
@@ -92,19 +99,30 @@ nodes:
     model: opus
     dispatch: inline
     prompt: |
-      Search for potential duplicates or overlaps with existing work.
-      
-      Idea: {interview_answers}
-      
-      Search in:
-      1. Jira epics (status: Open, In Progress, Backlog)
-      2. Roadmap initiatives (check roadmap.json)
-      3. Recent PRPs (check agentdb for planned-* episodes)
-      
-      Return:
+      Search for potential duplicates or overlaps with the new idea.
+
+      Idea context (from interrupt resume): {interview_answers}
+
+      Run these searches and aggregate results:
+
+      1. Jira epics — derive 2-3 keywords from the idea, then:
+         cd $PROJECT_ROOT && npx tsx ~/.claude/skills/issues/search_issues.ts \
+           '{"jql": "project = ${TENANT_PROJECT} AND issuetype = Epic AND status != Done AND text ~ \"<keyword>\"", "fields": ["key","summary","status"]}'
+
+      2. Roadmap initiatives — read the roadmap file and grep for the keywords:
+         docs_repo=$(jq -r '.docs_repo // "docs"' $PROJECT_ROOT/.claude/config/tenant.json)
+         rg -i "<keyword>" "$PROJECT_ROOT/$docs_repo/roadmap/roadmap.json"
+
+      3. Recent PRPs — query agentdb for prior planning episodes:
+         npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts \
+           '{"task": "plan <keyword>", "k": 5}'
+
+      Emit ONLY this JSON (no prose):
       {"overlaps": [
         {"type": "epic|roadmap|prp", "key": "...", "summary": "...", "overlap_score": 0.0-1.0}
       ]}
+
+      Empty array if no overlaps found.
 
   # ──────────────────────────────────────────────────────────
   # Phase 3: Write Feature Brief
@@ -224,6 +242,8 @@ nodes:
   - id: create_epic
     name: Create Jira Epic
     type: bash
+    depends_on:
+      - epic_decision
     reads:
       - interview_answers
       - brief_output
@@ -232,21 +252,22 @@ nodes:
     on_failure: continue
     script: |
       # Extract data from interview and brief
-      slug=$(echo "$brief_output" | jq -r '.slug')
+      slug=$(echo "$brief_output" | jq -r '.slug // "new-initiative"')
       summary=$(echo "$interview_answers" | jq -r '.answers.problem // "New Initiative"')
-      
+
+      # Build request JSON with jq to safely escape user input
+      request=$(jq -n \
+        --arg project "$TENANT_PROJECT" \
+        --arg summary "$summary" \
+        --arg description "See feature brief: $slug" \
+        '{project: $project, issue_type: "Epic", summary: $summary, description: $description, labels: ["tier:1-epic", "status:proposed"]}')
+
       # Create epic using issues router
-      result=$(npx tsx ~/.claude/skills/issues/create_issue.ts '{
-        "project": "${TENANT_PROJECT}",
-        "issue_type": "Epic",
-        "summary": "'"$summary"'",
-        "description": "See feature brief: '"$slug"'",
-        "labels": ["tier:1-epic", "status:proposed"]
-      }')
-      
+      result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "$request")
+
       epic_key=$(echo "$result" | jq -r '.key')
-      
-      echo "{\"epic_result\": {\"key\": \"$epic_key\", \"status\": \"created\"}}"
+
+      jq -n --arg key "$epic_key" '{epic_result: {key: $key, status: "created"}}'
     output_format: json
 
   # ──────────────────────────────────────────────────────────
@@ -255,10 +276,15 @@ nodes:
   # Uses one_success trigger for fan-in from conditional paths
   # Reached either directly from epic_decision (default edge) or from create_epic
   # ──────────────────────────────────────────────────────────
+  # finalize depends on BOTH branches from epic_decision:
+  # - When default edge fires, create_epic is SKIPPED but epic_decision is COMPLETED
+  # - When conditional edge fires, both create_epic and epic_decision are COMPLETED
+  # trigger_rule: one_success ensures finalize runs as long as at least one dep succeeded
   - id: finalize
     name: Finalize Discovery
     type: bash
     depends_on:
+      - epic_decision
       - create_epic
     trigger_rule: one_success
     reads:
