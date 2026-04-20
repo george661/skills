@@ -3,6 +3,7 @@
 Validates parsing, node ordering, retry config, channels, and integration tests with mock execution.
 """
 import asyncio
+import os
 import tempfile
 from pathlib import Path
 from typing import Dict
@@ -57,14 +58,21 @@ class TestFixImplementationPlanParsing:
         assert workflow.inputs["issue_key"].pattern in ["^[A-Z]+-[0-9]+$", "^[A-Z]+-\\d+$"]
     
     def test_state_declarations(self, workflow: WorkflowDef) -> None:
-        """Workflow declares review_findings and fix_result channels."""
+        """Workflow declares verdict, review_findings and fix_result channels."""
+        # verdict channel
+        assert "verdict" in workflow.state
+        verdict_ch = workflow.state["verdict"]
+        assert verdict_ch.type == "string"
+        assert verdict_ch.reducer is not None
+        assert verdict_ch.reducer.strategy == ReducerStrategy.OVERWRITE
+
         # review_findings channel
         assert "review_findings" in workflow.state
         review_ch = workflow.state["review_findings"]
         assert review_ch.type == "dict"
         assert review_ch.reducer is not None
         assert review_ch.reducer.strategy == ReducerStrategy.OVERWRITE
-        
+
         # fix_result channel
         assert "fix_result" in workflow.state
         fix_ch = workflow.state["fix_result"]
@@ -144,10 +152,10 @@ class TestFixChannels:
         assert "review_findings" in node.writes
     
     def test_validate_needs_fixes_reads_review_findings(self, nodes_by_id: Dict[str, NodeDef]) -> None:
-        """validate_needs_fixes gate reads review_findings."""
+        """validate_needs_fixes gate reads verdict."""
         node = nodes_by_id["validate_needs_fixes"]
         assert node.reads is not None
-        assert "review_findings" in node.reads
+        assert "verdict" in node.reads
     
     def test_fix_critical_reads_review_writes_fix(self, nodes_by_id: Dict[str, NodeDef]) -> None:
         """fix_critical reads review_findings, writes fix_result."""
@@ -238,9 +246,8 @@ class TestFixIntegrationWithMockExecution:
             # Fix nodes should be skipped
             assert result.node_results["fix_critical"].status == NodeStatus.SKIPPED
             assert result.node_results["fix_warnings"].status == NodeStatus.SKIPPED
-            
+
         finally:
-            import os
             os.unlink(tmp_path)
     
     def test_fix_workflow_fixes_applied(self) -> None:
@@ -291,7 +298,6 @@ class TestFixIntegrationWithMockExecution:
             assert result.node_results["fix_warnings"].status == NodeStatus.COMPLETED
             assert result.node_results["post_revised_plan"].status == NodeStatus.COMPLETED
             assert result.node_results["store_episode"].status == NodeStatus.COMPLETED
-            
+
         finally:
-            import os
             os.unlink(tmp_path)

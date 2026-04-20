@@ -8,6 +8,13 @@ name: Fix Implementation Plan
 config:
   checkpoint_prefix: fix-plan
   worktree: false
+  labels:
+    on_failure: "outcome:plan-fix-failed"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command fix-implementation-plan"
+      run_on: [completed, failed]
 
 inputs:
   issue_key:
@@ -16,6 +23,9 @@ inputs:
     pattern: "^[A-Z]+-\\d+$"
 
 state:
+  verdict:
+    type: string
+    reducer: overwrite
   review_findings:
     type: dict
     reducer: overwrite
@@ -29,24 +39,25 @@ nodes:
     name: Load Review Findings
     type: bash
     writes:
+      - verdict
       - review_findings
     script: |
       # Fetch Jira issue comments
       issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
         "{\"issue_key\": \"$issue_key\", \"fields\": \"comment\"}")
-      
+
       # Find most recent review verdict comment
-      verdict=$(echo "$issue" | jq -r '.fields.comment.comments[] | 
-        select(.body.content[]?.content[]?.text? | contains("Implementation Plan Review")) | 
+      verdict=$(echo "$issue" | jq -r '.fields.comment.comments[] |
+        select(.body.content[]?.content[]?.text? | contains("Implementation Plan Review")) |
         .body.content[]?.content[]?.text' | grep -A5 "Verdict:" | head -1 | awk '{print $NF}')
-      
+
       # Extract findings
-      findings=$(echo "$issue" | jq -r '.fields.comment.comments[] | 
-        select(.body.content[]?.content[]?.text? | contains("Implementation Plan Review")) | 
+      findings=$(echo "$issue" | jq -r '.fields.comment.comments[] |
+        select(.body.content[]?.content[]?.text? | contains("Implementation Plan Review")) |
         .body.content[]?.content[]?.text' | grep -A20 "Findings")
-      
-      # Output as JSON
-      echo "{\"verdict\": \"$verdict\", \"findings\": \"$findings\", \"issue_key\": \"$issue_key\"}"
+
+      # Output verdict and findings separately
+      echo "{\"verdict\": \"$verdict\", \"review_findings\": {\"verdict\": \"$verdict\", \"findings\": \"$findings\", \"issue_key\": \"$issue_key\"}}"
 
   # Phase 2: Validate needs fixes
   - id: validate_needs_fixes
@@ -55,8 +66,8 @@ nodes:
     depends_on:
       - load_review_findings
     reads:
-      - review_findings
-    condition: "$review_findings_verdict == \"NEEDS_FIXES\""
+      - verdict
+    condition: "$verdict == \"NEEDS_FIXES\""
     on_failure: stop
 
   # Phase 3: Fix critical issues

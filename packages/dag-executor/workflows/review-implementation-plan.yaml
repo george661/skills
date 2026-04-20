@@ -9,6 +9,13 @@ name: Review Implementation Plan
 config:
   checkpoint_prefix: review-plan
   worktree: false
+  labels:
+    on_failure: "outcome:plan-review-failed"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command review-implementation-plan"
+      run_on: [completed, failed]
 
 inputs:
   issue_key:
@@ -17,6 +24,9 @@ inputs:
     pattern: "^[A-Z]+-\\d+$"
 
 state:
+  plan_found:
+    type: bool
+    reducer: overwrite
   verdict:
     type: string
     reducer: overwrite
@@ -30,18 +40,24 @@ nodes:
   - id: load_context
     name: Load Context
     type: bash
+    writes:
+      - plan_found
     script: |
       # Fetch Jira issue with comments
       issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
         "{\"issue_key\": \"$issue_key\", \"fields\": \"summary,description,comment\"}")
-      
+
       # Find implementation plan in comments
-      plan=$(echo "$issue" | jq -r '.fields.comment.comments[] | 
-        select(.body.content[]?.content[]?.text? | contains("IMPLEMENTATION PLAN")) | 
+      plan=$(echo "$issue" | jq -r '.fields.comment.comments[] |
+        select(.body.content[]?.content[]?.text? | contains("IMPLEMENTATION PLAN")) |
         .body.content[]?.content[]?.text' | head -1)
-      
-      # Output plan context
-      echo "{\"issue_key\": \"$issue_key\", \"plan\": \"$plan\"}"
+
+      # Check if plan was found and output boolean
+      if [ -n "$plan" ]; then
+        echo "{\"plan_found\": true}"
+      else
+        echo "{\"plan_found\": false}"
+      fi
 
   # Phase 2: Validate plan exists
   - id: validate_plan_exists
@@ -49,7 +65,9 @@ nodes:
     type: gate
     depends_on:
       - load_context
-    condition: "$plan != \"\""
+    reads:
+      - plan_found
+    condition: "$plan_found == true"
     on_failure: stop
 
   # Phase 3: Validate scope alignment

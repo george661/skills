@@ -4,6 +4,7 @@ Validates that the YAML-based review-implementation-plan workflow parses correct
 has proper node ordering, state channels, dispatch config, and integration tests with mock execution.
 """
 import asyncio
+import os
 import tempfile
 from pathlib import Path
 from typing import Dict
@@ -61,7 +62,14 @@ class TestReviewImplementationPlanParsing:
         assert "[0-9]" in issue_key_input.pattern or "\\d" in issue_key_input.pattern
 
     def test_state_declarations(self, workflow: WorkflowDef) -> None:
-        """Verdict and findings state fields are declared with correct types."""
+        """plan_found, verdict and findings state fields are declared with correct types."""
+        assert "plan_found" in workflow.state
+        plan_found_ch = workflow.state["plan_found"]
+        assert isinstance(plan_found_ch, ChannelFieldDef)
+        assert plan_found_ch.type == "bool"
+        assert plan_found_ch.reducer is not None
+        assert plan_found_ch.reducer.strategy == ReducerStrategy.OVERWRITE
+
         assert "verdict" in workflow.state
         verdict_ch = workflow.state["verdict"]
         assert isinstance(verdict_ch, ChannelFieldDef)
@@ -240,9 +248,8 @@ class TestReviewIntegrationWithMockExecution:
             # Key nodes should complete
             assert result.node_results["load_context"].status == NodeStatus.COMPLETED
             assert result.node_results["produce_verdict"].status == NodeStatus.COMPLETED
-            
+
         finally:
-            import os
             os.unlink(tmp_path)
 
     def test_review_workflow_needs_fixes_verdict(self) -> None:
@@ -290,10 +297,10 @@ class TestReviewIntegrationWithMockExecution:
             
             # Should complete (may be completed or failed depending on node behavior)
             assert result.status in [WorkflowStatus.COMPLETED, WorkflowStatus.FAILED]
-            
+
+
             # Key nodes should complete
             assert result.node_results["produce_verdict"].status == NodeStatus.COMPLETED
-            
+
         finally:
-            import os
             os.unlink(tmp_path)
