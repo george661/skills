@@ -81,7 +81,8 @@ class DAGRenderer {
         rect.setAttribute('width', '200');
         rect.setAttribute('height', '80');
         rect.setAttribute('rx', '8');
-        const statusClass = `node-status-${node.status.replace(/[^a-z-]/g, '')}`;
+        const isResumed = node.cache_hit === 1 && node.status === 'completed';
+        const statusClass = isResumed ? 'node-status-resumed' : `node-status-${node.status.replace(/[^a-z-]/g, '')}`;
         const failureClass = node.failure_path ? ' node-status-failure-path' : '';
         rect.setAttribute('class', statusClass + failureClass);
         nodeGroup.appendChild(rect);
@@ -103,7 +104,7 @@ class DAGRenderer {
         statusText.setAttribute('text-anchor', 'middle');
         statusText.setAttribute('font-size', '12');
         statusText.setAttribute('fill', 'var(--text-secondary)');
-        statusText.textContent = node.status;
+        statusText.textContent = isResumed ? '↻ resumed' : node.status;
         nodeGroup.appendChild(statusText);
 
         // Cost and token display (if available)

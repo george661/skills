@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS node_executions (
     tokens_output INTEGER,
     tokens_cache INTEGER,
     content_hash TEXT,
-    input_versions TEXT
+    input_versions TEXT,
+    cache_hit INTEGER DEFAULT 0
 );
 
 -- 3. chat_messages: LLM chat messages per node execution or workflow
@@ -206,6 +207,11 @@ def init_db(db_path: Path) -> None:
 
         try:
             cursor.execute("ALTER TABLE node_executions ADD COLUMN input_versions TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN cache_hit INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
 

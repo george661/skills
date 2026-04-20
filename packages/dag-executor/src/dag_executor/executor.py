@@ -496,6 +496,24 @@ class WorkflowExecutor:
                 ctx.node_statuses[node_id] = result.status
                 if result.output:
                     ctx.node_outputs[node_id] = result.output
+
+                # Emit NODE_COMPLETED event with cache_hit flag
+                if event_emitter:
+                    event_metadata: Dict[str, Any] = {"cache_hit": True}
+                    if cached.content_hash:
+                        event_metadata["content_hash"] = cached.content_hash
+                    if cached.input_versions:
+                        event_metadata["input_versions"] = cached.input_versions
+
+                    event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.NODE_COMPLETED,
+                        workflow_id=workflow_def.name,
+                        node_id=node_id,
+                        status=NodeStatus.COMPLETED,
+                        metadata=event_metadata,
+                        timestamp=result.completed_at or datetime.now(timezone.utc)
+                    ))
+
                 return
 
         # Check if already skipped

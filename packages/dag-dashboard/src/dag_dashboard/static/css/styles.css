@@ -519,6 +519,13 @@ body {
     stroke-width: 2;
 }
 
+.node-status-resumed {
+    fill: #10b981;
+    stroke: #059669;
+    stroke-width: 2;
+    stroke-dasharray: 5, 5;
+}
+
 .node-status-running {
     fill: #3b82f6;
     stroke: #2563eb;
@@ -1817,5 +1824,47 @@ body {
 
     .content-hash-display {
         font-size: 11px;
+    }
+}
+
+/* Mobile (320px minimum) - iPhone SE and smaller */
+@media (max-width: 375px) {
+    .gate-approval-form {
+        padding: 12px;
+        min-width: 280px;
+    }
+
+    .gate-approval-form button {
+        min-height: 44px;
+        padding: 12px 16px;
+        font-size: 14px;
+    }
+
+    .chat-input {
+        min-height: 44px;
+        padding: 10px 12px;
+        font-size: 14px;
+    }
+
+    .history-filter {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .history-filter input,
+    .history-filter select,
+    .history-filter button {
+        min-height: 44px;
+        font-size: 14px;
+    }
+
+    .dag-toolbar button {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 8px;
+    }
+
+    .node-detail-drawer {
+        max-width: 100%;
     }
 }

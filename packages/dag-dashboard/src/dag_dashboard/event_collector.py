@@ -290,20 +290,21 @@ class EventCollector:
                     metadata = event_data.get("metadata", {})
                     content_hash = metadata.get("content_hash")
                     input_versions = metadata.get("input_versions")
+                    cache_hit = metadata.get("cache_hit", False)
                     completed_node_id = event_data.get("node_id")
 
-                    if completed_node_id and (content_hash or input_versions):
+                    if completed_node_id and (content_hash or input_versions or cache_hit):
                         # Serialize input_versions to JSON if present
                         input_versions_json = json.dumps(input_versions) if input_versions else None
 
-                        # Update the node_executions row with checkpoint data
+                        # Update the node_executions row with checkpoint data and cache_hit
                         cursor.execute(
                             """
                             UPDATE node_executions
-                            SET content_hash = ?, input_versions = ?
+                            SET content_hash = ?, input_versions = ?, cache_hit = ?
                             WHERE id = ?
                             """,
-                            (content_hash, input_versions_json, completed_node_id)
+                            (content_hash, input_versions_json, 1 if cache_hit else 0, completed_node_id)
                         )
                 except Exception as e:
                     logger.warning(f"Failed to persist checkpoint data for node {completed_node_id}: {e}")

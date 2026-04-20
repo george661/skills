@@ -67,6 +67,7 @@ class NodeExecutionResponse(BaseModel):
     tokens_input: Optional[int] = None
     tokens_output: Optional[int] = None
     tokens_cache: Optional[int] = None
+    cache_hit: Optional[int] = 0
 
 
 class WorkflowTotalsResponse(BaseModel):

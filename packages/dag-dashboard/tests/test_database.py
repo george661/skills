@@ -188,3 +188,44 @@ def test_migration_adds_checkpoint_columns(tmp_path: Path) -> None:
     assert 'content_hash' in columns
     assert 'input_versions' in columns
     conn.close()
+
+
+def test_init_db_is_idempotent_and_adds_cache_hit_column_to_legacy_db(tmp_path: Path) -> None:
+    """init_db should add cache_hit column to legacy DBs and be idempotent."""
+    db_path = tmp_path / "legacy.db"
+
+    # Create a legacy DB without cache_hit column
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE node_executions (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            node_name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    # Run init_db (should add cache_hit column)
+    init_db(db_path)
+
+    # Verify cache_hit column exists
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(node_executions)")
+    columns = {row[1] for row in cursor.fetchall()}
+    assert 'cache_hit' in columns
+    conn.close()
+
+    # Run init_db again (should not error — idempotent)
+    init_db(db_path)
+
+    # Verify cache_hit column still exists
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(node_executions)")
+    columns = {row[1] for row in cursor.fetchall()}
+    assert 'cache_hit' in columns
+    conn.close()

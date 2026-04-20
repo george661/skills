@@ -13,6 +13,30 @@ dag-dashboard
 
 The dashboard watches an events directory for JSONL files produced by `dag-executor`'s `EventEmitter` and populates a local SQLite database. Open a browser to see workflow runs, node execution timelines, and streaming status updates.
 
+## Features
+
+### Checkpoint Resume Indicator
+
+Nodes that were restored from a checkpoint (cache hit) are displayed with a dashed outline and a "↻ resumed" badge. This visual indicator helps distinguish between freshly executed nodes and those skipped due to content-hash matching.
+
+### Mobile Support
+
+The dashboard is fully responsive down to 320px viewport width (iPhone SE). Touch targets meet iOS HIG guidelines (≥44px). Pinch-to-zoom is enabled on the DAG canvas for touch devices.
+
+### Production Build Verification
+
+To verify that the package includes all static assets and the server starts correctly:
+
+```bash
+./packages/dag-dashboard/scripts/verify_production_build.sh
+```
+
+This script:
+- Installs the package into a clean environment
+- Verifies the `dag-dashboard` CLI command works
+- Checks that static assets (HTML/CSS/JS) are packaged correctly
+- Starts the server and tests HTTP endpoints (`/health`, `/`, `/css/styles.css`, `/js/app.js`)
+
 ## Configuration
 
 All settings are configured via environment variables with the `DAG_DASHBOARD_` prefix:
