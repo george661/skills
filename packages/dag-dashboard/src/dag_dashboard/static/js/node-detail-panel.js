@@ -110,6 +110,45 @@ class NodeDetailPanel {
             rejectBtn.addEventListener('click', () => this.handleGateDecision('reject', node));
         }
 
+        // Setup interrupt resume button listeners
+        const resumeBtn = this.panel.querySelector('.interrupt-btn-resume');
+        const cancelBtn = this.panel.querySelector('.interrupt-btn-cancel');
+        if (resumeBtn) {
+            resumeBtn.addEventListener('click', () => this.handleInterruptResume(node));
+            // Load workflow state on details open
+            const stateDetails = this.panel.querySelector('.interrupt-state-section details');
+            if (stateDetails) {
+                stateDetails.addEventListener('toggle', (e) => {
+                    if (e.target.open) {
+                        this.loadWorkflowState(node);
+                    }
+                });
+            }
+        }
+        if (cancelBtn) {
+            cancelBtn.addEventListener('click', () => this.hide());
+        }
+
+        // Setup timeout countdown updater
+        const timeoutCountdown = this.panel.querySelector('.interrupt-timeout .timeout-countdown');
+        if (timeoutCountdown) {
+            const timeoutDiv = this.panel.querySelector('.interrupt-timeout');
+            const expiresAt = parseInt(timeoutDiv.dataset.expiresAt);
+            this.countdownInterval = setInterval(() => {
+                const remainingMs = expiresAt - Date.now();
+                if (remainingMs <= 0) {
+                    clearInterval(this.countdownInterval);
+                    timeoutDiv.innerHTML = '<span class="timeout-label">Timeout expired</span>';
+                    timeoutDiv.classList.add('expired');
+                } else {
+                    const remainingSeconds = Math.floor(remainingMs / 1000);
+                    const minutes = Math.floor(remainingSeconds / 60);
+                    const seconds = remainingSeconds % 60;
+                    timeoutCountdown.textContent = `${minutes}m ${seconds}s`;
+                }
+            }, 1000);
+        }
+
         // Click outside to close
         this.panel.addEventListener('click', (e) => {
             if (e.target === this.panel) {
@@ -229,6 +268,13 @@ class NodeDetailPanel {
     }
 
     renderApproval(node) {
+        // Check if this is an interrupt node (vs gate node)
+        const nodeType = node.outputs?.node_type;
+        if (nodeType === 'interrupt') {
+            return this.renderInterruptResume(node);
+        }
+
+        // Existing gate approval logic
         const username = localStorage.getItem('dag_username') || '';
         const runId = node.run_id;
         const nodeName = node.node_name;
@@ -272,6 +318,114 @@ class NodeDetailPanel {
                     </div>
 
                     <div class="gate-feedback hidden"></div>
+                </div>
+            </div>
+        `;
+    }
+
+    renderInterruptResume(node) {
+        const username = localStorage.getItem('dag_username') || '';
+        const runId = node.run_id;
+        const nodeName = node.node_name;
+        const message = node.outputs?.message || 'Workflow paused';
+        const resumeKey = node.outputs?.resume_key || 'resume_value';
+        const channels = node.outputs?.channels || ['terminal'];
+        const timeout = node.outputs?.timeout;
+        const startedAt = node.outputs?.started_at;
+
+        // Calculate timeout countdown if available
+        let timeoutHtml = '';
+        if (timeout && startedAt) {
+            const startTime = new Date(startedAt).getTime();
+            const timeoutMs = timeout * 1000;
+            const expiresAt = startTime + timeoutMs;
+            const remainingMs = expiresAt - Date.now();
+
+            if (remainingMs > 0) {
+                const remainingSeconds = Math.floor(remainingMs / 1000);
+                const minutes = Math.floor(remainingSeconds / 60);
+                const seconds = remainingSeconds % 60;
+                timeoutHtml = `
+                    <div class="interrupt-timeout" data-expires-at="${expiresAt}">
+                        <span class="timeout-label">Timeout:</span>
+                        <span class="timeout-countdown">${minutes}m ${seconds}s</span>
+                    </div>
+                `;
+            } else {
+                timeoutHtml = '<div class="interrupt-timeout expired">Timeout expired</div>';
+            }
+        }
+
+        return `
+            <div class="interrupt-resume-panel">
+                <div class="interrupt-header">
+                    <div class="interrupt-icon">⏸</div>
+                    <div class="interrupt-info">
+                        <h4>${this.escapeHtml(nodeName)}</h4>
+                        <p class="interrupt-message">${this.escapeHtml(message)}</p>
+                        ${timeoutHtml}
+                    </div>
+                </div>
+
+                <div class="interrupt-channels">
+                    ${channels.map(ch => `<span class="channel-badge">${this.escapeHtml(ch)}</span>`).join('')}
+                </div>
+
+                <div class="interrupt-form" data-run-id="${runId}" data-node-name="${nodeName}" data-resume-key="${this.escapeHtml(resumeKey)}">
+                    <div class="form-group">
+                        <label for="interrupt-username">Your Name</label>
+                        <input
+                            type="text"
+                            id="interrupt-username"
+                            class="interrupt-username"
+                            value="${this.escapeHtml(username)}"
+                            placeholder="Your name"
+                        />
+                    </div>
+
+                    <div class="form-group">
+                        <label for="interrupt-resume-value">
+                            Resume Value (${this.escapeHtml(resumeKey)})
+                            <span class="field-hint">Supports JSON, string, or number</span>
+                        </label>
+                        <textarea
+                            id="interrupt-resume-value"
+                            class="interrupt-resume-value"
+                            placeholder='{"approved": true}'
+                            rows="3"
+                        ></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="interrupt-comment">Comment (optional)</label>
+                        <textarea
+                            id="interrupt-comment"
+                            class="interrupt-comment"
+                            placeholder="Add a comment..."
+                            maxlength="1000"
+                            rows="2"
+                        ></textarea>
+                    </div>
+
+                    <div class="interrupt-state-section">
+                        <details>
+                            <summary class="state-summary">View Workflow State Snapshot</summary>
+                            <div class="state-viewer" id="interrupt-state-viewer">
+                                <div class="loading">Loading state...</div>
+                            </div>
+                        </details>
+                    </div>
+
+                    <div class="interrupt-actions">
+                        <button class="interrupt-btn interrupt-btn-resume" data-action="resume">
+                            ▶ Resume
+                        </button>
+                        <button class="interrupt-btn interrupt-btn-cancel">
+                            Cancel
+                        </button>
+                    </div>
+
+                    <div class="interrupt-feedback hidden"></div>
                 </div>
             </div>
         `;
@@ -358,6 +512,114 @@ class NodeDetailPanel {
         }
     }
 
+    async handleInterruptResume(node) {
+        const usernameInput = this.panel.querySelector('.interrupt-username');
+        const valueInput = this.panel.querySelector('.interrupt-resume-value');
+        const commentInput = this.panel.querySelector('.interrupt-comment');
+        const feedback = this.panel.querySelector('.interrupt-feedback');
+        const resumeBtn = this.panel.querySelector('.interrupt-btn-resume');
+        const cancelBtn = this.panel.querySelector('.interrupt-btn-cancel');
+        const form = this.panel.querySelector('.interrupt-form');
+        const resumeKey = form.dataset.resumeKey;
+
+        const username = usernameInput.value.trim();
+        const valueStr = valueInput.value.trim();
+        const comment = commentInput.value.trim();
+
+        // Parse resume value (JSON, number, or string)
+        let resumeValue;
+        try {
+            // Try parsing as JSON first
+            resumeValue = JSON.parse(valueStr);
+        } catch {
+            // If not JSON, check if it's a number
+            if (!isNaN(valueStr) && valueStr !== '') {
+                resumeValue = Number(valueStr);
+            } else {
+                // Otherwise treat as string
+                resumeValue = valueStr;
+            }
+        }
+
+        // Save username to localStorage
+        if (username) {
+            localStorage.setItem('dag_username', username);
+        }
+
+        // Show loading state
+        resumeBtn.disabled = true;
+        cancelBtn.disabled = true;
+        feedback.textContent = 'Resuming workflow...';
+        feedback.className = 'interrupt-feedback';
+        feedback.classList.remove('hidden');
+
+        try {
+            const runId = node.run_id;
+            const nodeName = node.node_name;
+            const response = await fetch(`/api/workflows/${runId}/interrupts/${nodeName}/resume`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    resume_value: resumeValue,
+                    decided_by: username || null,
+                    comment: comment || null,
+                }),
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || 'Failed to resume workflow');
+            }
+
+            const result = await response.json();
+
+            // Show success feedback
+            feedback.textContent = `Workflow resumed successfully by ${result.decided_by}`;
+            feedback.classList.add('success');
+
+            // Refresh the workflow view after 1 second
+            setTimeout(() => {
+                this.hide();
+                // Trigger workflow refresh if available
+                if (window.app && window.app.refreshCurrentView) {
+                    window.app.refreshCurrentView();
+                }
+            }, 1000);
+
+        } catch (error) {
+            // Show error feedback
+            feedback.textContent = `Error: ${error.message}`;
+            feedback.classList.add('error');
+            resumeBtn.disabled = false;
+            cancelBtn.disabled = false;
+        }
+    }
+
+    async loadWorkflowState(node) {
+        const stateViewer = this.panel.querySelector('#interrupt-state-viewer');
+        if (!stateViewer) return;
+
+        try {
+            const runId = node.run_id;
+            const nodeName = node.node_name;
+            const response = await fetch(`/api/workflows/${runId}/nodes/${nodeName}/interrupt`);
+
+            if (!response.ok) {
+                throw new Error('Failed to load workflow state');
+            }
+
+            const data = await response.json();
+            const workflowState = data.workflow_state || {};
+
+            // Render workflow state as formatted JSON
+            stateViewer.innerHTML = `<pre class="state-json">${JSON.stringify(workflowState, null, 2)}</pre>`;
+        } catch (error) {
+            stateViewer.innerHTML = `<div class="error">Error loading state: ${error.message}</div>`;
+        }
+    }
+
     switchTab(tabName) {
         // Update tab buttons
         this.panel.querySelectorAll('.tab-btn').forEach(btn => {
@@ -381,6 +643,11 @@ class NodeDetailPanel {
     hide() {
         if (this.panel) {
             this.panel.classList.remove('visible');
+            // Clear countdown interval if active
+            if (this.countdownInterval) {
+                clearInterval(this.countdownInterval);
+                this.countdownInterval = null;
+            }
             setTimeout(() => {
                 this.panel.remove();
                 this.panel = null;

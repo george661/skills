@@ -31,6 +31,7 @@ def main() -> None:
         slack_notifier=slack_notifier,
         dashboard_url=settings.dashboard_url,
         checkpoint_prefix=settings.checkpoint_prefix,
+        checkpoint_dir_fallback=settings.checkpoint_dir,
     )
 
     logger.info(f"Starting DAG Dashboard on {settings.host}:{settings.port}")
