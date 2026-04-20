@@ -355,7 +355,8 @@ async def test_collector_persists_edge_traversed_event(test_db: Path, events_dir
         edge_events = [e for e in events if e["event_type"] == "edge_traversed"]
 
         assert len(edge_events) == 1
-        payload = json.loads(edge_events[0]["payload"])
+        event_data = json.loads(edge_events[0]["payload"])
+        payload = event_data["payload"]
         assert payload["edge_id"] == "review-merge-0"
         assert payload["taken"] is True
 
@@ -480,7 +481,8 @@ async def test_collector_persists_condition_evaluated_event(test_db: Path, event
         condition_events = [e for e in events if e["event_type"] == "condition_evaluated"]
 
         assert len(condition_events) == 1
-        payload = json.loads(condition_events[0]["payload"])
+        event_data = json.loads(condition_events[0]["payload"])
+        payload = event_data["payload"]
         assert payload["condition"] == "review.verdict == 'approve'"
         assert payload["evaluated_value"] is True
 
