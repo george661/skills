@@ -1,0 +1,252 @@
+---
+name: Loop Issue Workflow
+config:
+  checkpoint_prefix: loop-issue
+  labels:
+    on_failure: outcome:loop-issue-failed
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command loop-issue"
+      run_on: [completed, failed]
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+state:
+  current_status:
+    type: string
+    reducer: overwrite
+  current_labels:
+    type: list
+    reducer: overwrite
+  action:
+    type: string
+    reducer: overwrite
+  pr_info:
+    type: dict
+    reducer: overwrite
+  ci_status:
+    type: string
+    reducer: overwrite
+
+nodes:
+  # Phase 0: Load Context
+  - id: load_context
+    name: Load Context
+    type: bash
+    writes:
+      - current_status
+      - current_labels
+    script: |
+      issue=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/get_issue.ts \
+        "{\"issue_key\": \"$issue_key\", \"fields\": \"summary,status,labels,comment\"}")
+      status=$(echo "$issue" | jq -r '.fields.status.name')
+      labels=$(echo "$issue" | jq -r '.fields.labels | @json')
+      echo "{\"current_status\": \"$status\", \"current_labels\": $labels}"
+    output_format: json
+
+  # Phase 1: Detect PR
+  - id: detect_pr
+    name: Detect PR
+    type: bash
+    depends_on:
+      - load_context
+    writes:
+      - pr_info
+    script: |
+      # Extract repo from labels (pr:repo/number) or fetch open PRs
+      repo=$(echo "$current_labels" | jq -r '.[] | select(startswith("pr:")) | split(":")[1] | split("/")[0]' | head -1)
+      if [ -z "$repo" ]; then
+        echo "{\"pr_info\": {}}"
+      else
+        pr_number=$(echo "$current_labels" | jq -r '.[] | select(startswith("pr:")) | split("/")[1]' | head -1)
+        branch="$issue_key"
+        echo "{\"pr_info\": {\"repo\": \"$repo\", \"pr_number\": $pr_number, \"branch\": \"$branch\"}}"
+      fi
+    output_format: json
+
+  # Phase 2: Determine Action
+  - id: determine_action
+    name: Determine Action
+    type: prompt
+    depends_on:
+      - load_context
+      - detect_pr
+    reads:
+      - current_status
+      - current_labels
+      - pr_info
+    writes:
+      - action
+    prompt: |
+      Determine the next action for issue $issue_key based on:
+      - Current Status: $current_status
+      - Labels: $current_labels
+      - PR Info: $pr_info
+
+      Map to one of:
+      - work: Status is Backlog/To Do, no PR exists
+      - validate: Status is Validation
+      - review: Status is In Review
+      - fix-pr: PR exists with outcome:needs-changes or CI failed
+      - resolve-pr: PR exists, CI passed, ready to merge
+      - ci-wait: PR exists, CI running (step:awaiting-ci)
+      - done: Status is Done
+      - blocked: Has needs-human label
+
+      Output JSON: {"action": "<action>"}
+    model: opus
+    dispatch: inline
+    output_format: json
+    edges:
+      - target: dispatch_work
+        condition: "$action == 'work'"
+      - target: dispatch_validate
+        condition: "$action == 'validate'"
+      - target: dispatch_review
+        condition: "$action == 'review'"
+      - target: dispatch_fix_pr
+        condition: "$action == 'fix-pr'"
+      - target: dispatch_resolve_pr
+        condition: "$action == 'resolve-pr'"
+      - target: ci_wait_gate
+        condition: "$action == 'ci-wait'"
+      - target: store_episode
+        default: true
+
+  # Dispatch Nodes
+  - id: dispatch_work
+    name: Dispatch Work
+    type: command
+    depends_on:
+      - determine_action
+    command: work
+    args:
+      - $issue_key
+    dispatch: local
+    trigger_rule: all_done
+
+  - id: dispatch_validate
+    name: Dispatch Validate
+    type: command
+    depends_on:
+      - determine_action
+    command: validate
+    args:
+      - $issue_key
+    dispatch: local
+    trigger_rule: all_done
+
+  - id: dispatch_review
+    name: Dispatch Review
+    type: prompt
+    depends_on:
+      - determine_action
+    prompt: |
+      Execute /review for issue $issue_key inline.
+      Call the review command and handle the review flow.
+    model: opus
+    dispatch: inline
+    trigger_rule: all_done
+
+  - id: dispatch_fix_pr
+    name: Dispatch Fix PR
+    type: command
+    depends_on:
+      - determine_action
+    command: fix-pr
+    args:
+      - $issue_key
+    dispatch: local
+    trigger_rule: all_done
+
+  - id: dispatch_resolve_pr
+    name: Dispatch Resolve PR
+    type: prompt
+    depends_on:
+      - determine_action
+    prompt: |
+      Execute /resolve-pr for issue $issue_key inline.
+      Merge the PR and transition the issue.
+    model: opus
+    dispatch: inline
+    trigger_rule: all_done
+
+  # CI Wait Path with Interrupt
+  - id: ci_wait_gate
+    name: CI Wait Gate
+    type: gate
+    depends_on:
+      - determine_action
+    condition: "$action == 'ci-wait'"
+    on_failure: continue
+    trigger_rule: all_done
+
+  - id: label_waiting_pipeline
+    name: Label Waiting Pipeline
+    type: bash
+    depends_on:
+      - ci_wait_gate
+    trigger_rule: all_done
+    script: |
+      # Add loop-waiting-pipeline label
+      issue=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/get_issue.ts \
+        "{\"issue_key\": \"$issue_key\", \"fields\": \"labels\"}")
+      labels=$(echo "$issue" | jq -r '.fields.labels + ["loop-waiting-pipeline"] | unique | @json')
+      npx tsx ~/.claude/skills/jira/update_issue.ts \
+        "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
+
+      # Add comment with resume context
+      npx tsx ~/.claude/skills/jira/add_comment.ts \
+        "{\"issue_key\": \"$issue_key\", \"body\": \"Pipeline running for $issue_key. Loop paused. Resume when CI completes.\"}"
+
+  - id: pipeline_interrupt
+    name: Pipeline Interrupt
+    type: interrupt
+    depends_on:
+      - label_waiting_pipeline
+    message: "Pipeline running for $issue_key. Resume when CI completes."
+    resume_key: pipeline_resume
+    channels:
+      - terminal
+
+  # Store Episode
+  - id: store_episode
+    name: Store Episode
+    type: bash
+    depends_on:
+      - dispatch_work
+      - dispatch_validate
+      - dispatch_review
+      - dispatch_fix_pr
+      - dispatch_resolve_pr
+      - pipeline_interrupt
+    trigger_rule: all_done
+    script: |
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
+        \"session_id\": \"$TENANT_NAMESPACE\",
+        \"task\": \"loop-issue-$issue_key\",
+        \"input\": {\"issue_key\": \"$issue_key\", \"action\": \"$action\"},
+        \"output\": \"Action completed\",
+        \"reward\": 0.5,
+        \"success\": true,
+        \"critique\": \"Loop iteration complete for $issue_key\"
+      }"
+
+  # Print Summary
+  - id: print_summary
+    name: Print Summary
+    type: prompt
+    depends_on:
+      - store_episode
+    trigger_rule: all_done
+    prompt: |
+      Print summary for loop-issue $issue_key:
+      - Action taken: $action
+      - Status: $current_status
+    model: sonnet
+    dispatch: inline
