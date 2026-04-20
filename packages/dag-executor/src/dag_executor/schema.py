@@ -268,12 +268,19 @@ class EdgeDef(BaseModel):
     Supports both single-target and multi-target (fan-out) edges:
     - Single: EdgeDef(target="b", condition=...)
     - Multi: EdgeDef(targets=["b", "c"], condition=...)
+
+    NOTE: simpleeval condition expressions use Python syntax, not JSON.
+    - Python: True, False, None
+    - JSON: true, false, null
+    When comparing boolean outputs from JSON-producing nodes, use Python booleans:
+      ✓ Correct: "node.field == True"
+      ✗ Wrong:   "node.field == true"  (NameError: name 'true' is not defined)
     """
     model_config = {"extra": "forbid"}
 
     target: Optional[str] = Field(default=None, description="Target node ID (single-target)")
     targets: Optional[List[str]] = Field(default=None, description="Target node IDs (multi-target fan-out)")
-    condition: Optional[str] = Field(default=None, description="simpleeval condition expression")
+    condition: Optional[str] = Field(default=None, description="simpleeval condition expression (Python syntax, not JSON)")
     default: bool = Field(default=False, description="Default fallback edge")
 
     def model_post_init(self, __context: Any) -> None:
@@ -443,6 +450,67 @@ class ExitHookDef(BaseModel):
         return self
 
 
+class SlackNotificationConfig(BaseModel):
+    """Slack notification configuration."""
+    model_config = {"extra": "forbid"}
+
+    events: List[str] = Field(
+        default=["gate_pending", "workflow_failed", "workflow_completed"],
+        description="List of event names that trigger notifications"
+    )
+    channel: Optional[str] = Field(
+        default=None,
+        description="Slack channel ID (used with bot_token_env)"
+    )
+    webhook_url_env: Optional[str] = Field(
+        default=None,
+        description="Environment variable name containing webhook URL"
+    )
+    bot_token_env: Optional[str] = Field(
+        default=None,
+        description="Environment variable name containing bot token"
+    )
+
+    @model_validator(mode='after')
+    def validate_slack_config(self) -> "SlackNotificationConfig":
+        """Validate Slack configuration."""
+        # Validate event names
+        valid_events = {
+            "gate_pending",
+            "workflow_failed",
+            "workflow_completed",
+            "workflow_started",
+            "node_failed",
+            "node_completed"
+        }
+        for event in self.events:
+            if event not in valid_events:
+                raise ValueError(
+                    f"Unknown event name '{event}'. Valid options: {', '.join(sorted(valid_events))}"
+                )
+
+        # Validate exactly one transport mechanism
+        has_webhook = self.webhook_url_env is not None
+        has_bot_token = self.bot_token_env is not None
+
+        if not has_webhook and not has_bot_token:
+            raise ValueError("Either webhook_url_env or bot_token_env must be specified")
+        if has_webhook and has_bot_token:
+            raise ValueError("Cannot specify both webhook_url_env and bot_token_env")
+
+        return self
+
+
+class NotificationsConfig(BaseModel):
+    """Workflow notification configuration."""
+    model_config = {"extra": "forbid"}
+
+    slack: Optional[SlackNotificationConfig] = Field(
+        default=None,
+        description="Slack notification configuration"
+    )
+
+
 class WorkflowConfig(BaseModel):
     """Workflow-level configuration."""
     model_config = {"extra": "forbid"}
@@ -453,6 +521,10 @@ class WorkflowConfig(BaseModel):
     on_exit: List[ExitHookDef] = Field(
         default_factory=list,
         description="Exit hooks — guaranteed cleanup actions on workflow completion or failure"
+    )
+    notifications: Optional[NotificationsConfig] = Field(
+        default=None,
+        description="Notification configuration"
     )
 
 

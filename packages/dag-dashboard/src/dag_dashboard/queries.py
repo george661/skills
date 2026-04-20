@@ -690,5 +690,180 @@ def get_interrupt_checkpoint(
         result: Dict[str, Any] = interrupt_checkpoint.model_dump()
         return result
 
+
+def get_channel_states(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
+    """Get all channel states for a workflow run.
+
+    Args:
+        db_path: Path to SQLite database
+        run_id: Workflow run ID
+
+    Returns:
+        List of channel state dicts with deserialized JSON fields, sorted by channel_key
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT run_id, channel_key, channel_type, reducer_strategy,
+                   value_json, version, writers_json, conflict_json, updated_at
+            FROM channel_states
+            WHERE run_id = ?
+            ORDER BY channel_key
+            """,
+            (run_id,)
+        )
+        rows = cursor.fetchall()
+
+        # Deserialize JSON fields
+        result = []
+        for row in rows:
+            state = dict(row)
+            # Parse JSON columns
+            if state.get("value_json"):
+                state["value"] = json.loads(state["value_json"])
+                del state["value_json"]
+            else:
+                state["value"] = None
+                del state["value_json"]
+
+            if state.get("writers_json"):
+                state["writers"] = json.loads(state["writers_json"])
+                del state["writers_json"]
+            else:
+                state["writers"] = []
+                del state["writers_json"]
+
+            if state.get("conflict_json"):
+                state["conflict"] = json.loads(state["conflict_json"])
+                del state["conflict_json"]
+            else:
+                state["conflict"] = None
+                del state["conflict_json"]
+
+            result.append(state)
+
+        return result
+    finally:
+        conn.close()
+
+
+def get_state_diff_timeline(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
+    """
+    Get state diff timeline for a workflow run.
+
+    Reconstructs running state by folding state_diff values from NODE_COMPLETED events
+    in chronological order. For each node, compares its state_diff against the running
+    state to classify changes as added/changed/removed.
+
+    Args:
+        db_path: Path to SQLite database
+        run_id: Workflow run ID
+
+    Returns:
+        List of dicts with shape:
+        {
+            "node_name": str,
+            "node_id": str,
+            "started_at": str,
+            "finished_at": str,
+            "changes": [
+                {
+                    "key": str,
+                    "change_type": "added"|"changed"|"removed",
+                    "before": Any|None,
+                    "after": Any|None
+                }
+            ]
+        }
+
+        Ordered by created_at (chronological).
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT
+                e.payload,
+                e.created_at,
+                ne.node_name,
+                ne.started_at,
+                ne.finished_at
+            FROM events e
+            LEFT JOIN node_executions ne ON json_extract(e.payload, '$.node_id') = ne.id
+            WHERE e.run_id = ? AND e.event_type = 'node_completed'
+            ORDER BY e.created_at
+            """,
+            (run_id,)
+        )
+        rows = cursor.fetchall()
+
+        timeline = []
+        running_state: Dict[str, Any] = {}
+
+        for row in rows:
+            payload_str = row[0]
+            payload = json.loads(payload_str)
+
+            # WorkflowEvent shape: node_id, metadata, timestamp
+            node_id = payload.get("node_id", "unknown")
+            metadata = payload.get("metadata", {})
+            state_diff = metadata.get("state_diff", {})
+
+            # Get node_name and timestamps from node_executions JOIN
+            node_name = row[2] if row[2] else "unknown"
+            started_at = row[3]
+            finished_at = row[4]
+
+            # Build changes list for this node
+            changes = []
+            for key, after_value in state_diff.items():
+                before_value = running_state.get(key)
+
+                # Determine change type
+                # NOTE: Executor contract treats state_diff[key]=None as "key was removed",
+                # not "key was set to Python None value". This is a semantic convention
+                # where state_diff encodes delta operations, not literal new values.
+                if key not in running_state:
+                    # Key not in prior state
+                    if after_value is None:
+                        # Executor says "remove this key" but it never existed.
+                        # Edge case: treat as "removed" to match executor semantics,
+                        # even though logically it's removing from empty state.
+                        change_type = "removed"
+                    else:
+                        change_type = "added"
+                elif after_value is None:
+                    # Key was in prior state, executor says "remove it"
+                    change_type = "removed"
+                else:
+                    # Key was in prior state, has non-None value -> changed
+                    change_type = "changed"
+
+                changes.append({
+                    "key": key,
+                    "change_type": change_type,
+                    "before": before_value,
+                    "after": after_value
+                })
+
+                # Update running state
+                if after_value is None:
+                    # Remove from running state
+                    running_state.pop(key, None)
+                else:
+                    running_state[key] = after_value
+
+            # Add node entry to timeline
+            timeline.append({
+                "node_name": node_name,
+                "node_id": node_id,
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "changes": changes
+            })
+
+        return timeline
     finally:
         conn.close()

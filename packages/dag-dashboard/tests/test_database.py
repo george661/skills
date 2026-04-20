@@ -1,8 +1,6 @@
 """Tests for database initialization and schema."""
 import sqlite3
-import os
 from pathlib import Path
-import pytest
 from dag_dashboard.database import ensure_dir, init_db
 
 
@@ -27,12 +25,13 @@ def test_init_db_creates_all_tables(tmp_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    # Check all 7 tables exist (exclude sqlite_sequence which is auto-created)
+    # Check all 8 tables exist (exclude sqlite_sequence which is auto-created)
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence' ORDER BY name")
     tables = [row[0] for row in cursor.fetchall()]
-    
+
     expected_tables = [
         'artifacts',
+        'channel_states',
         'chat_messages',
         'events',
         'gate_decisions',
@@ -84,7 +83,7 @@ def test_init_db_is_idempotent(tmp_path: Path) -> None:
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence'")
     count = cursor.fetchone()[0]
-    assert count == 7
+    assert count == 8
     conn.close()
 
 

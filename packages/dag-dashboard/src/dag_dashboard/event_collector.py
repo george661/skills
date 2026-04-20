@@ -130,16 +130,16 @@ class EventCollector:
         workflow_name = event_data.get("workflow_name", "unknown")
         event_type = event_data.get("event_type", "unknown")
 
-        # Serialize payload to JSON string if it's a dict
-        raw_payload = event_data.get("payload", {})
-        if isinstance(raw_payload, dict):
-            payload = json.dumps(raw_payload)
-        elif isinstance(raw_payload, str):
-            payload = raw_payload
-        else:
-            payload = json.dumps({"value": raw_payload})
+        # Store the full event_data as payload (WorkflowEvent has no 'payload' field)
+        # This preserves node_id, metadata, timestamp, etc. for queries
+        # WorkflowEvent stores channel state in metadata, other data in metadata too
+        payload = json.dumps(event_data)
 
-        created_at = event_data.get("created_at", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+        # Channel events (channel_updated, channel_conflict) carry a nested payload dict
+        raw_payload = event_data.get("payload", {})
+
+        # Use timestamp field from WorkflowEvent, fallback to created_at or now
+        created_at = event_data.get("timestamp") or event_data.get("created_at", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 
         # Persist to SQLite
         conn = sqlite3.connect(self.db_path)
@@ -149,7 +149,8 @@ class EventCollector:
 
             # Handle workflow_started event: store workflow definition and create node stubs
             if event_type == "workflow_started":
-                workflow_definition = raw_payload.get("workflow_definition") if isinstance(raw_payload, dict) else None
+                # WorkflowEvent stores workflow_definition in metadata
+                workflow_definition = event_data.get("metadata", {}).get("workflow_definition")
 
                 # Insert workflow_runs row with workflow_definition (use INSERT OR IGNORE + UPDATE to avoid cascade delete)
                 cursor.execute(
@@ -210,6 +211,78 @@ class EventCollector:
                 (run_id, event_type, payload, created_at)
             )
 
+            # Handle channel events
+            if event_type == "channel_updated" and isinstance(raw_payload, dict):
+                try:
+                    channel_key = raw_payload.get("channel_key")
+                    channel_type = raw_payload.get("channel_type")
+                    value = raw_payload.get("value")
+                    version = raw_payload.get("version")
+                    writer_node_id = raw_payload.get("writer_node_id")
+                    reducer_strategy = raw_payload.get("reducer_strategy")
+
+                    if channel_key and channel_type is not None and version is not None:
+                        # Serialize value to JSON
+                        value_json = json.dumps(value) if value is not None else None
+
+                        # Get existing writers or initialize
+                        cursor.execute(
+                            "SELECT writers_json FROM channel_states WHERE run_id = ? AND channel_key = ?",
+                            (run_id, channel_key)
+                        )
+                        existing_row = cursor.fetchone()
+                        if existing_row and existing_row[0]:
+                            writers = json.loads(existing_row[0])
+                            if writer_node_id and writer_node_id not in writers:
+                                writers.append(writer_node_id)
+                        else:
+                            writers = [writer_node_id] if writer_node_id else []
+
+                        writers_json = json.dumps(writers)
+
+                        # UPSERT channel state
+                        cursor.execute(
+                            """
+                            INSERT INTO channel_states
+                            (run_id, channel_key, channel_type, reducer_strategy, value_json, version, writers_json, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(run_id, channel_key) DO UPDATE SET
+                                channel_type = excluded.channel_type,
+                                reducer_strategy = excluded.reducer_strategy,
+                                value_json = excluded.value_json,
+                                version = excluded.version,
+                                writers_json = excluded.writers_json,
+                                updated_at = excluded.updated_at
+                            """,
+                            (run_id, channel_key, channel_type, reducer_strategy, value_json, version, writers_json, created_at)
+                        )
+                    else:
+                        logger.warning(f"Malformed channel_updated event for run {run_id}: missing required fields")
+                except Exception as e:
+                    logger.warning(f"Failed to persist channel_updated event for run {run_id}: {e}")
+
+            elif event_type == "channel_conflict" and isinstance(raw_payload, dict):
+                try:
+                    channel_key = raw_payload.get("channel_key")
+                    writers = raw_payload.get("writers", [])
+                    message = raw_payload.get("message", "Channel conflict")
+
+                    if channel_key:
+                        conflict_json = json.dumps({"message": message, "timestamp": created_at})
+                        writers_json = json.dumps(writers)
+
+                        # Update existing row with conflict information
+                        cursor.execute(
+                            """
+                            UPDATE channel_states
+                            SET conflict_json = ?, writers_json = ?, updated_at = ?
+                            WHERE run_id = ? AND channel_key = ?
+                            """,
+                            (conflict_json, writers_json, created_at, run_id, channel_key)
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to persist channel_conflict event for run {run_id}: {e}")
+
             conn.commit()
         finally:
             conn.close()
@@ -228,19 +301,20 @@ class EventCollector:
 
         # Slack notification (best effort — errors logged, never raised)
         if self.slack_notifier is not None:
-            self._notify_slack(run_id, event_type, workflow_name, raw_payload)
+            self._notify_slack(run_id, event_type, workflow_name, event_data)
 
     def _notify_slack(
         self,
         run_id: str,
         event_type: str,
         workflow_name: str,
-        raw_payload: Any,
+        event_data: Dict[str, Any],
     ) -> None:
         """Build a Block Kit card for lifecycle events and forward to Slack."""
         assert self.slack_notifier is not None
 
-        payload: Dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+        # event_data is already a dict containing the full WorkflowEvent
+        payload: Dict[str, Any] = event_data
         card: Optional[Dict[str, Any]] = None
 
         if event_type == "workflow_started":
