@@ -294,7 +294,66 @@ async def test_collector_creates_workflow_runs_row(test_db: Path, events_dir: Pa
             assert row["status"] == "running"
         finally:
             conn.close()
-        
+
+    finally:
+        collector.stop()
+
+
+@pytest.mark.asyncio
+async def test_node_progress_event_persisted(test_db: Path, events_dir: Path, broadcaster: Broadcaster) -> None:
+    """Test that node_progress events with retry metadata are persisted correctly."""
+    loop = asyncio.get_event_loop()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop
+    )
+
+    collector.start()
+
+    try:
+        run_id = "test_run_node_progress"
+        ndjson_file = events_dir / f"{run_id}.ndjson"
+
+        # WorkflowEvent shape for node_progress with retry metadata
+        event = {
+            "workflow_name": "test_workflow",
+            "event_type": "node_progress",
+            "node_id": "fix_pr",
+            "metadata": {
+                "message": "Retry 2/3: waiting 5000ms before next attempt",
+                "attempt": 2,
+                "max_attempts": 3,
+                "delay_ms": 5000,
+                "last_error": "Connection timeout"
+            },
+            "timestamp": "2026-04-20T17:00:00Z"
+        }
+
+        with open(ndjson_file, "w") as f:
+            f.write(json.dumps(event) + "\n")
+
+        # Give watchdog time to process
+        await asyncio.sleep(0.3)
+
+        # Verify event was persisted with correct structure
+        persisted = get_persisted_events(test_db, run_id)
+        assert len(persisted) == 1
+        assert persisted[0]["event_type"] == "node_progress"
+
+        # Verify payload stores the full event as JSON string
+        payload_str = persisted[0]["payload"]
+        assert isinstance(payload_str, str)
+
+        # Parse payload to access retry metadata
+        payload_data = json.loads(payload_str)
+        assert payload_data["node_id"] == "fix_pr"
+        assert payload_data["metadata"]["attempt"] == 2
+        assert payload_data["metadata"]["max_attempts"] == 3
+        assert payload_data["metadata"]["delay_ms"] == 5000
+        assert payload_data["metadata"]["last_error"] == "Connection timeout"
+
     finally:
         collector.stop()
 

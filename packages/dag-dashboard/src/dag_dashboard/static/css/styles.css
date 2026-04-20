@@ -1364,3 +1364,110 @@ body {
         font-size: 0.75rem;
     }
 }
+
+/* ==================================================================
+   Retry Progress Overlay
+   ================================================================== */
+
+.retry-overlay {
+    pointer-events: none;
+}
+
+.retry-overlay-content {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--warning);
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    font-size: 12px;
+}
+
+.retry-badge {
+    font-weight: 600;
+    color: var(--warning);
+}
+
+.retry-countdown {
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.retry-error-snippet {
+    color: var(--text-secondary);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 180px;
+}
+
+/* ==================================================================
+   Retry History Tab
+   ================================================================== */
+
+.retry-history-list {
+    padding: 1rem;
+}
+
+.retry-history-list h4 {
+    margin-bottom: 1rem;
+    color: var(--text);
+}
+
+.retry-history-item {
+    padding: 12px;
+    margin-bottom: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+.retry-history-item .retry-attempt {
+    margin-bottom: 6px;
+    color: var(--warning);
+}
+
+.retry-history-item .retry-delay {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.retry-history-item .retry-error {
+    font-size: 13px;
+    color: var(--text);
+    margin-bottom: 6px;
+    font-family: monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.retry-history-item .retry-timestamp {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+/* Mobile responsive for retry UI */
+@media (max-width: 768px) {
+    .retry-overlay-content {
+        font-size: 10px;
+        padding: 6px;
+        gap: 3px;
+    }
+
+    .retry-error-snippet {
+        font-size: 10px;
+        max-width: 150px;
+    }
+
+    .retry-history-item {
+        padding: 10px;
+    }
+
+    .retry-history-item .retry-error {
+        font-size: 12px;
+    }
+}
