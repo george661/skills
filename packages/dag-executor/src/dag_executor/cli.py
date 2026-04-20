@@ -247,6 +247,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Stream execution events to stderr (default: all)",
     )
 
+    parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="Show progress bar during execution",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -361,37 +367,14 @@ def run_dry_run(workflow_path: str) -> None:
 
 def run_visualize(workflow_path: str) -> None:
     """Output mermaid DAG diagram.
-    
+
     Args:
         workflow_path: Path to workflow YAML file
     """
+    from dag_executor.terminal.mermaid_gen import generate_mermaid
+
     workflow_def = load_workflow(workflow_path)
-    
-    print("```mermaid")
-    print("graph TD")
-    
-    # Output nodes
-    for node in workflow_def.nodes:
-        # Use node.name if available, otherwise node.id
-        label = node.name or node.id
-        print(f"    {node.id}[{label}]")
-    
-    # Output dependency edges
-    for node in workflow_def.nodes:
-        if node.depends_on:
-            for dep in node.depends_on:
-                print(f"    {dep} --> {node.id}")
-
-    # Output conditional edges
-    for node in workflow_def.nodes:
-        if node.edges:
-            for edge in node.edges:
-                if edge.condition:
-                    print(f"    {node.id} -->|{edge.condition}| {edge.target}")
-                elif edge.default:
-                    print(f"    {node.id} -->|default| {edge.target}")
-
-    print("```")
+    print(generate_mermaid(workflow_def))
 
 
 def print_summary(result: WorkflowResult) -> None:
@@ -638,12 +621,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Parse inputs
         inputs = parse_inputs(args.inputs)
 
-        # Setup event emitter if streaming or notifications configured
+        # Setup event emitter if streaming, progress, or notifications configured
         event_emitter = None
+        progress_bar = None
         notification_unsubscribe = None
 
-        # Check if notifications configured
-        needs_emitter = args.stream or (
+        needs_emitter = args.stream or args.progress or (
             workflow_def.config.notifications is not None and
             workflow_def.config.notifications.slack is not None
         )
@@ -651,7 +634,6 @@ def main(argv: Optional[List[str]] = None) -> None:
         if needs_emitter:
             event_emitter = EventEmitter()
 
-            # Wire up streaming if requested
             if args.stream:
                 mode = StreamMode.STATE_UPDATES if args.stream == "state_updates" else StreamMode.ALL
 
@@ -661,6 +643,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                     print(f"[{ts}]{node} {event.event_type.value}", file=sys.stderr)
 
                 event_emitter.subscribe(_print_event, mode)
+
+            if args.progress:
+                from dag_executor.terminal import ProgressBar
+                progress_bar = ProgressBar(total_nodes=len(workflow_def.nodes))
+                progress_bar.attach(event_emitter)
 
         # Setup checkpoint store if needed
         checkpoint_store = None
@@ -730,8 +717,20 @@ def main(argv: Optional[List[str]] = None) -> None:
             if notification_unsubscribe:
                 notification_unsubscribe()
 
-        # Print summary
-        print_summary(result)
+        # Print summary using new RunSummary, with backward-compatible fallback
+        from dag_executor.terminal import RunSummary
+        summary = RunSummary.render(result, workflow_def)
+        print(summary)
+
+        # Print old-style messages to maintain backward compatibility with tests
+        print()
+        print("=" * 60)
+        print("Workflow Execution Summary")
+        print("=" * 60)
+        print(f"Status: {result.status.value}")
+        print(f"Run ID: {result.run_id}")
+        print(f"Nodes executed: {len(result.node_results)}")
+        print()
 
         # Exit with appropriate code
         if result.status == WorkflowStatus.COMPLETED:
