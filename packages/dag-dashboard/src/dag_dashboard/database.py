@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     finished_at TEXT,
     inputs TEXT,
     outputs TEXT,
-    error TEXT
+    error TEXT,
+    workflow_definition TEXT
 );
 
 -- 2. node_executions: Per-node execution within a workflow run
@@ -27,7 +28,11 @@ CREATE TABLE IF NOT EXISTS node_executions (
     finished_at TEXT,
     inputs TEXT,
     outputs TEXT,
-    error TEXT
+    error TEXT,
+    depends_on TEXT,
+    model TEXT,
+    tokens INTEGER,
+    cost REAL
 );
 
 -- 3. chat_messages: LLM chat messages per node execution
@@ -89,7 +94,11 @@ def ensure_dir(path: Path) -> None:
 
 
 def init_db(db_path: Path) -> None:
-    """Initialize database with schema and security settings."""
+    """Initialize database with schema and security settings.
+
+    Migration strategy: For existing DBs, ALTER TABLE adds new columns.
+    For new DBs, CREATE TABLE IF NOT EXISTS includes the columns from the start.
+    """
     # Connect and create schema
     conn = sqlite3.connect(db_path)
     try:
@@ -103,8 +112,40 @@ def init_db(db_path: Path) -> None:
         # reapplied when opening the database in production code.
         cursor.execute("PRAGMA foreign_keys=ON")
 
-        # Execute schema
+        # Execute schema (creates tables if not exist)
         cursor.executescript(SCHEMA)
+
+        # Migration: Add new columns if they don't exist (for existing DBs)
+        # SQLite ALTER TABLE ADD COLUMN works for nullable columns
+        try:
+            cursor.execute("ALTER TABLE workflow_runs ADD COLUMN workflow_definition TEXT")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN depends_on TEXT")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN model TEXT")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN tokens INTEGER")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE node_executions ADD COLUMN cost REAL")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
 
         conn.commit()
     finally:

@@ -8,7 +8,11 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from .models import SortBy, RunStatus, StatusSummary
-from .queries import get_run, list_runs, get_node, list_nodes, get_status_counts
+from .queries import (
+    get_run, list_runs, get_node, list_nodes, get_status_counts,
+    get_artifacts, get_chat_messages, get_gate_decisions
+)
+from .layout import compute_layout
 
 router = APIRouter(prefix="/api")
 
@@ -76,14 +80,39 @@ async def get_workflow_node(
     run_id: str,
     node_id: str,
 ) -> Dict[str, Any]:
-    """Get a single node execution."""
+    """Get a single node execution with artifacts, chat messages, and enriched data."""
     db_path = get_db_path(request)
 
     node = get_node(db_path, node_id)
     if node is None or node["run_id"] != run_id:
         raise HTTPException(status_code=404, detail="Node execution not found")
 
-    return node
+    # Enrich with artifacts and chat messages
+    artifacts = get_artifacts(db_path, node_id)
+    chat_messages = get_chat_messages(db_path, node_id)
+
+    return {
+        **node,
+        "artifacts": artifacts,
+        "chat_messages": chat_messages,
+    }
+
+
+@router.get("/workflows/{run_id}/layout")
+async def get_workflow_layout(request: Request, run_id: str) -> Dict[str, Any]:
+    """Compute DAG layout for a workflow run."""
+    db_path = get_db_path(request)
+
+    # Verify workflow exists
+    run = get_run(db_path, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    # Get nodes and compute layout
+    nodes = list_nodes(db_path, run_id)
+    layout_data = compute_layout(nodes)
+
+    return layout_data
 
 
 async def event_generator() -> AsyncIterator[str]:

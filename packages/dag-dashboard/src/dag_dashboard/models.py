@@ -36,6 +36,7 @@ class WorkflowRunResponse(BaseModel):
     inputs: Optional[Dict[str, Any]] = None
     outputs: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    workflow_definition: Optional[str] = None
 
     @field_validator("workflow_name")
     @classmethod
@@ -59,6 +60,10 @@ class NodeExecutionResponse(BaseModel):
     inputs: Optional[Dict[str, Any]] = None
     outputs: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    depends_on: Optional[List[str]] = None
+    model: Optional[str] = None
+    tokens: Optional[int] = None
+    cost: Optional[float] = None
 
 
 T = TypeVar("T")

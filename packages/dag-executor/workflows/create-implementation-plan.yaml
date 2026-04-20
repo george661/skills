@@ -1,0 +1,334 @@
+---
+name: Create Implementation Plan Command Sub-DAG
+config:
+  checkpoint_prefix: create-impl-plan
+  worktree: false
+  labels:
+    on_failure: "outcome:plan-creation-failed"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command create-implementation-plan"
+      run_on: [completed, failed]
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+state:
+  issue_data:
+    type: dict
+    reducer: overwrite
+  issue_type:
+    type: string
+    reducer: overwrite
+  feasibility:
+    type: dict
+    reducer: overwrite
+  worktree_info:
+    type: dict
+    reducer: overwrite
+  plan:
+    type: dict
+    reducer: overwrite
+  validation_criteria:
+    type: dict
+    reducer: overwrite
+  errors:
+    type: list
+    reducer: append
+    default: []
+
+nodes:
+  # ──────────────────────────────────────────────────────────
+  # Phase 0: AgentDB Health Check and Pattern Retrieval
+  # ──────────────────────────────────────────────────────────
+  - id: agentdb_health
+    name: AgentDB Health Check
+    type: bash
+    script: |
+      # Check AgentDB connectivity
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/reflexion/reflexion_retrieve.ts \
+        '{"session_id": "gw", "task": "health-check", "k": 1}' > /dev/null 2>&1
+      echo '{"status": "healthy"}'
+    output_format: json
+
+  - id: retrieve_patterns
+    name: Retrieve Implementation Patterns
+    type: bash
+    depends_on:
+      - agentdb_health
+    script: |
+      # Retrieve planning patterns from AgentDB
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/reflexion/reflexion_retrieve.ts \
+        '{"session_id": "${TENANT_NAMESPACE}", "task": "implementation-patterns", "k": 5}'
+    output_format: json
+
+  - id: fetch_issue
+    name: Fetch Issue from Jira
+    type: bash
+    depends_on:
+      - agentdb_health
+    writes:
+      - issue_data
+    on_failure: stop
+    script: |
+      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
+        '{"issue_key": "$issue_key", "fields": "summary,description,labels,status,issuelinks"}')
+      echo "{\"issue_data\": $issue}"
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 0.5: Domain Context Discovery
+  # ──────────────────────────────────────────────────────────
+  - id: domain_context
+    name: Domain Context Discovery
+    type: bash
+    depends_on:
+      - fetch_issue
+    reads:
+      - issue_data
+    script: |
+      # Search for domain context and related design artifacts
+      echo '{"domain_context": "discovered"}'
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 0.7: File Discovery
+  # ──────────────────────────────────────────────────────────
+  - id: file_discovery
+    name: File Discovery and Feasibility Scan
+    type: prompt
+    depends_on:
+      - domain_context
+      - retrieve_patterns
+    reads:
+      - issue_data
+    writes:
+      - feasibility
+    prompt: |
+      Analyze issue $issue_key to identify files that need to be created or modified.
+      Search the codebase for relevant modules, patterns, and extension points.
+      Output: {"feasibility": {"files_to_change": [...], "complexity": "low|medium|high"}}
+    model: opus
+    dispatch: inline
+    output_format: json
+    checkpoint: true
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 0.8: Already-Implemented Check and Gate
+  # ──────────────────────────────────────────────────────────
+  - id: already_impl_check
+    name: Check if Already Implemented
+    type: prompt
+    depends_on:
+      - file_discovery
+    reads:
+      - issue_data
+      - feasibility
+    prompt: |
+      Review issue $issue_key and feasibility analysis to determine if this
+      feature is already implemented. Check for existing code that matches
+      the requirements. Output: {"already_implemented": true/false, "evidence": "..."}
+    model: opus
+    dispatch: inline
+    output_format: json
+
+  - id: already_impl_gate
+    name: Already Implemented Gate
+    type: gate
+    depends_on:
+      - already_impl_check
+    condition: "$already_impl_check.already_implemented == false"
+    on_failure: stop
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 1.1: Transition Issue to In Progress
+  # ──────────────────────────────────────────────────────────
+  - id: transition_in_progress
+    name: Transition Issue to In Progress
+    type: bash
+    depends_on:
+      - already_impl_gate
+    script: |
+      npx tsx ~/.claude/skills/issues/transition_issue.ts \
+        '{"issue_key": "$issue_key", "transition": "In Progress"}'
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 1.2: Classify Issue Type
+  # ──────────────────────────────────────────────────────────
+  - id: classify_issue_type
+    name: Classify Issue Type
+    type: prompt
+    depends_on:
+      - transition_in_progress
+    reads:
+      - issue_data
+      - feasibility
+    writes:
+      - issue_type
+    prompt: |
+      Classify issue $issue_key based on its requirements and affected files.
+      Types: BACKEND_LOGIC, API_ENDPOINT, UI_COMPONENT, DATABASE_MIGRATION, etc.
+      Output: {"issue_type": "<TYPE>"}
+    model: opus
+    dispatch: inline
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 1.3: Multi-Repo Check
+  # ──────────────────────────────────────────────────────────
+  - id: multi_repo_check
+    name: Multi-Repo Check
+    type: bash
+    depends_on:
+      - classify_issue_type
+    reads:
+      - feasibility
+    script: |
+      # Check if changes span multiple repos
+      echo '{"multi_repo": false, "primary_repo": "skills"}'
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 2: Create Worktree
+  # ──────────────────────────────────────────────────────────
+  - id: create_worktree
+    name: Create Worktree
+    type: bash
+    depends_on:
+      - multi_repo_check
+    writes:
+      - worktree_info
+    checkpoint: true
+    script: |
+      # Create git worktree for the issue
+      repo_name=$(basename $PWD)
+      branch="$issue_key/$(echo $issue_key | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')"
+      worktree_dir="${PROJECT_ROOT}/../${repo_name}-worktrees/$issue_key"
+      
+      mkdir -p "$(dirname $worktree_dir)"
+      git worktree add "$worktree_dir" -b "$branch" origin/main
+      
+      echo "{\"worktree_info\": {\"worktree_path\": \"$worktree_dir\", \"branch\": \"$branch\", \"repo\": \"$repo_name\"}, \"worktree_path\": \"$worktree_dir\", \"branch\": \"$branch\", \"repo\": \"$repo_name\"}"
+    output_format: json
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3.1: Write Implementation Plan
+  # ──────────────────────────────────────────────────────────
+  - id: write_plan
+    name: Write Implementation Plan
+    type: prompt
+    depends_on:
+      - create_worktree
+    reads:
+      - issue_data
+      - issue_type
+      - feasibility
+      - worktree_info
+    writes:
+      - plan
+      - validation_criteria
+    prompt: |
+      Create a detailed TDD implementation plan for issue $issue_key.
+      Include:
+      - Files to change (exact paths)
+      - Tests to write (with RED-GREEN-REFACTOR approach)
+      - Validation criteria
+      - Acceptance criteria mapping
+      
+      Output: {"plan": {...}, "validation_criteria": {...}}
+    model: opus
+    dispatch: inline
+    output_format: json
+    checkpoint: true
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3.3: Post Plan to Jira
+  # ──────────────────────────────────────────────────────────
+  - id: post_plan_jira
+    name: Post Plan to Jira
+    type: bash
+    depends_on:
+      - write_plan
+    reads:
+      - plan
+    script: |
+      # Post implementation plan as Jira comment
+      plan_text=$(echo "$plan" | jq -r '.plan_markdown // .markdown // "Plan created"')
+      npx tsx ~/.claude/skills/issues/add_comment.ts \
+        "{\"issue_key\": \"$issue_key\", \"body\": \"## Implementation Plan\\n\\n$plan_text\"}"
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3.4: Store Validation Criteria in AgentDB
+  # ──────────────────────────────────────────────────────────
+  - id: store_validation
+    name: Store Validation Criteria
+    type: bash
+    depends_on:
+      - post_plan_jira
+    reads:
+      - plan
+      - validation_criteria
+    script: |
+      # Store validation criteria in AgentDB
+      npx tsx ~/.claude/skills/reflexion/reflexion_store_episode.ts \
+        "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"validation-$issue_key\", \"input\": $validation_criteria, \"output\": \"stored\", \"reward\": 0.5, \"success\": true}"
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3.5: Store Implementation Context in AgentDB
+  # ──────────────────────────────────────────────────────────
+  - id: store_impl_context
+    name: Store Implementation Context
+    type: bash
+    depends_on:
+      - store_validation
+    reads:
+      - plan
+      - worktree_info
+    script: |
+      # Store full implementation plan in AgentDB
+      npx tsx ~/.claude/skills/reflexion/reflexion_store_episode.ts \
+        "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"impl-plan-$issue_key\", \"input\": {\"issue_key\": \"$issue_key\", \"worktree_path\": \"${worktree_info.worktree_path}\", \"branch\": \"${worktree_info.branch}\"}, \"output\": $plan, \"reward\": 0.8, \"success\": true}"
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3.6: Write Agent Context File
+  # ──────────────────────────────────────────────────────────
+  - id: write_agent_context
+    name: Write Agent Context File
+    type: bash
+    depends_on:
+      - store_impl_context
+    reads:
+      - worktree_info
+      - issue_type
+    script: |
+      # Write .agent-context.json to worktree
+      worktree_path="${worktree_info.worktree_path}"
+      echo "{\"issue_key\": \"$issue_key\", \"issue_type\": \"${issue_type}\", \"worktree_path\": \"$worktree_path\", \"branch\": \"${worktree_info.branch}\"}" > "$worktree_path/.agent-context.json"
+
+  # ──────────────────────────────────────────────────────────
+  # Phase 3.7: Add Outcome Label
+  # ──────────────────────────────────────────────────────────
+  - id: add_outcome_label
+    name: Add Outcome Label
+    type: bash
+    depends_on:
+      - write_agent_context
+    script: |
+      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts '{"issue_key": "$issue_key", "fields": "labels"}')
+      labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("outcome:") | not)) + ["outcome:success-plan-created"] | @json')
+      npx tsx ~/.claude/skills/issues/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
+
+outputs:
+  worktree_path:
+    node: create_worktree
+    field: worktree_path
+  branch:
+    node: create_worktree
+    field: branch
+  issue_type:
+    node: classify_issue_type
+    field: issue_type
