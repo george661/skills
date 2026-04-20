@@ -584,8 +584,67 @@ function setupExecutingBanner(nodes) {
 }
 
 function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel) {
-    // Poll periodically for updates (layout and channel states)
+    // Store retry history per node for the Retry History tab
+    const retryHistoryStore = {};
 
+    // Subscribe to per-run SSE stream for live events (node_progress, node_update, etc.)
+    const eventSource = new EventSource(`/api/workflows/${runId}/events`);
+
+    eventSource.onmessage = (event) => {
+        try {
+            const evt = JSON.parse(event.data);
+            const payload = JSON.parse(evt.payload);
+
+            if (evt.event_type === 'node_progress' && payload.metadata && payload.metadata.attempt != null) {
+                // This is a retry event (not a token-stream event)
+                const nodeName = payload.node_id;
+                const meta = payload.metadata;
+                const retryState = {
+                    attempt: meta.attempt,
+                    max_attempts: meta.max_attempts,
+                    delay_ms: meta.delay_ms,
+                    last_error: meta.last_error,
+                    timestamp: evt.created_at || payload.timestamp
+                };
+
+                // Accumulate retry history
+                if (!retryHistoryStore[nodeName]) {
+                    retryHistoryStore[nodeName] = [];
+                }
+                retryHistoryStore[nodeName].push(retryState);
+
+                // Update retry overlay on the DAG
+                if (dagRenderer.updateRetryProgress) {
+                    dagRenderer.updateRetryProgress(nodeName, retryState);
+                }
+            } else if (evt.event_type === 'node_update') {
+                // Update node status
+                const nodeName = payload.node_id;
+                const status = payload.metadata?.status || payload.status;
+                if (dagRenderer.updateNodeStatus) {
+                    dagRenderer.updateNodeStatus(nodeName, status);
+                }
+            } else if (evt.event_type === 'node_completed' || evt.event_type === 'node_failed') {
+                // Clear retry overlay when node finishes
+                const nodeName = payload.node_id;
+                if (dagRenderer.clearRetryProgress) {
+                    dagRenderer.clearRetryProgress(nodeName);
+                }
+            }
+        } catch (error) {
+            console.error('Error parsing SSE event:', error, event.data);
+        }
+    };
+
+    eventSource.onerror = (error) => {
+        console.error('SSE connection error:', error);
+        eventSource.close();
+    };
+
+    // Expose retry history store for node detail panel
+    window.retryHistoryStore = retryHistoryStore;
+
+    // Poll periodically for updates (layout and channel states)
     const pollInterval = setInterval(async () => {
         try {
             // Fetch both layout and channel states in parallel
@@ -631,6 +690,8 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel) {
     // Cleanup on route change
     window.addEventListener('hashchange', () => {
         clearInterval(pollInterval);
+        eventSource.close();
+        delete window.retryHistoryStore;
     }, { once: true });
 }
 

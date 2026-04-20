@@ -152,19 +152,67 @@ class DAGRenderer {
 
         if (!sourceNode || !targetNode) return;
 
+        // Create edge group to hold path + label
+        const edgeGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        edgeGroup.setAttribute('class', 'dag-edge-group');
+        edgeGroup.setAttribute('data-edge-id', edge.edge_id || `${edge.source}-${edge.target}`);
+
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         const d = `M ${edge.points[0].x} ${edge.points[0].y} L ${edge.points[1].x} ${edge.points[1].y}`;
         path.setAttribute('d', d);
         path.setAttribute('class', 'dag-edge');
         path.setAttribute('marker-end', 'url(#arrowhead)');
         path.setAttribute('data-source', edge.source);
+        path.setAttribute('data-target', edge.target);
+        path.setAttribute('data-edge-id', edge.edge_id || `${edge.source}-${edge.target}`);
+
+        // Add tooltip with condition info
+        if (edge.condition || edge.default) {
+            const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+            const tooltipText = edge.default
+                ? 'Default edge (fallback)'
+                : `Condition: ${edge.condition}`;
+            title.textContent = tooltipText;
+            path.appendChild(title);
+        }
 
         // Animate edge if source node is running
         if (sourceNode.status === 'running') {
             path.classList.add('edge-animated');
         }
 
-        this.g.appendChild(path);
+        edgeGroup.appendChild(path);
+
+        // Add condition label for conditional edges
+        if (edge.condition && !edge.default) {
+            const midX = (edge.points[0].x + edge.points[1].x) / 2;
+            const midY = (edge.points[0].y + edge.points[1].y) / 2;
+
+            const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            label.setAttribute('x', midX);
+            label.setAttribute('y', midY - 5);
+            label.setAttribute('text-anchor', 'middle');
+            label.setAttribute('font-size', '11');
+            label.setAttribute('class', 'edge-condition-label');
+            label.textContent = edge.condition.length > 30
+                ? edge.condition.substring(0, 27) + '...'
+                : edge.condition;
+
+            // Add background rect for readability
+            const bbox = label.getBBox ? label.getBBox() : { x: midX - 40, y: midY - 15, width: 80, height: 14 };
+            const labelBg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            labelBg.setAttribute('x', bbox.x - 4);
+            labelBg.setAttribute('y', bbox.y - 2);
+            labelBg.setAttribute('width', bbox.width + 8);
+            labelBg.setAttribute('height', bbox.height + 4);
+            labelBg.setAttribute('rx', '3');
+            labelBg.setAttribute('class', 'edge-condition-label-bg');
+
+            edgeGroup.appendChild(labelBg);
+            edgeGroup.appendChild(label);
+        }
+
+        this.g.appendChild(edgeGroup);
     }
 
     centerView(nodes) {
@@ -280,6 +328,108 @@ class DAGRenderer {
                 }
             });
         }
+    }
+
+    updateRetryProgress(nodeName, retryState) {
+        const nodeGroup = this.g.querySelector(`[data-node-name="${nodeName}"]`);
+        if (!nodeGroup) return;
+
+        // Find or create retry overlay container
+        let overlay = nodeGroup.querySelector('.retry-overlay');
+        if (!overlay) {
+            overlay = document.createElementNS('http://www.w3.org/2000/svg', 'foreignObject');
+            overlay.setAttribute('class', 'retry-overlay');
+            // Position below the node card
+            const node = this.g.querySelector(`[data-node-name="${nodeName}"] rect`);
+            const x = parseFloat(node.getAttribute('x'));
+            const y = parseFloat(node.getAttribute('y')) + parseFloat(node.getAttribute('height')) + 5;
+            overlay.setAttribute('x', x);
+            overlay.setAttribute('y', y);
+            overlay.setAttribute('width', '200');
+            overlay.setAttribute('height', '60');
+            nodeGroup.appendChild(overlay);
+        }
+
+        // Compute remaining delay (handle SSE replay edge case)
+        const now = Date.now();
+        const eventTime = new Date(retryState.timestamp).getTime();
+        const elapsed = now - eventTime;
+        const remainingMs = Math.max(0, retryState.delay_ms - elapsed);
+
+        // Render retry badge content
+        const errorSnippet = (retryState.last_error || '').substring(0, 30);
+        const errorText = errorSnippet.length === 30 ? errorSnippet + '...' : errorSnippet;
+
+        overlay.innerHTML = `
+            <div xmlns="http://www.w3.org/1999/xhtml" class="retry-overlay-content">
+                <span class="retry-badge">Retry ${retryState.attempt}/${retryState.max_attempts}</span>
+                <span class="retry-countdown">${(remainingMs / 1000).toFixed(1)}s</span>
+                <span class="retry-error-snippet" title="${retryState.last_error || ''}">${errorText}</span>
+            </div>
+        `;
+
+        // Start countdown timer (update every 100ms)
+        if (!overlay.dataset.intervalId) {
+            const intervalId = setInterval(() => {
+                const now = Date.now();
+                const elapsed = now - eventTime;
+                const remaining = Math.max(0, retryState.delay_ms - elapsed);
+                const countdownSpan = overlay.querySelector('.retry-countdown');
+                if (countdownSpan) {
+                    countdownSpan.textContent = `${(remaining / 1000).toFixed(1)}s`;
+                }
+                if (remaining === 0) {
+                    clearInterval(intervalId);
+                    delete overlay.dataset.intervalId;
+                }
+            }, 100);
+            overlay.dataset.intervalId = intervalId;
+        }
+    }
+
+    clearRetryProgress(nodeName) {
+        const nodeGroup = this.g.querySelector(`[data-node-name="${nodeName}"]`);
+        if (!nodeGroup) return;
+
+        const overlay = nodeGroup.querySelector('.retry-overlay');
+        if (overlay) {
+            // Clear countdown interval
+            if (overlay.dataset.intervalId) {
+                clearInterval(parseInt(overlay.dataset.intervalId));
+                delete overlay.dataset.intervalId;
+            }
+            overlay.remove();
+        }
+    }
+
+    updateEdgeHighlights(edgeStates) {
+        /**
+         * Update edge highlighting based on traversal state.
+         * Called from SSE handler when EDGE_TRAVERSED events arrive.
+         *
+         * Per approved plan v2: Since executor only emits CONDITION_EVALUATED for the
+         * winning edge (first-match-wins break), renderer must infer skipped siblings
+         * from branch_set_id when EDGE_TRAVERSED fires.
+         */
+        if (!this.g) return;
+
+        Object.entries(edgeStates).forEach(([edgeId, edgeState]) => {
+            const edgeGroup = this.g.querySelector(`[data-edge-id="${edgeId}"]`);
+            if (!edgeGroup) return;
+
+            const path = edgeGroup.querySelector('.dag-edge');
+            if (!path) return;
+
+            // Remove existing state classes
+            path.classList.remove('edge-taken', 'edge-skipped');
+
+            // Apply new state class
+            if (edgeState.taken) {
+                path.classList.add('edge-taken');
+            } else if (edgeState.skipped) {
+                path.classList.add('edge-skipped');
+            }
+        });
     }
 }
 

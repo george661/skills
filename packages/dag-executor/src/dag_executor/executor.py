@@ -1,17 +1,20 @@
 """Core DAG workflow executor with layer-parallel execution."""
 import asyncio
 import copy
+import hashlib
 import json
 import random
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from simpleeval import SimpleEval  # type: ignore
 
 from dag_executor.channels import ChannelStore
+from dag_executor.events import EventEmitter, EventType, WorkflowEvent
 from dag_executor.graph import topological_sort_with_layers
 from dag_executor.runners import get_runner
 from dag_executor.runners.base import RunnerContext
@@ -22,7 +25,6 @@ from dag_executor.schema import (
 from dag_executor.variables import resolve_variables
 
 if TYPE_CHECKING:
-    from dag_executor.events import EventEmitter
     from dag_executor.checkpoint import CheckpointStore
     from dag_executor.channels import ChannelStore
 
@@ -688,7 +690,7 @@ class WorkflowExecutor:
 
             # Evaluate conditional edges to determine which branch to take
             if node_def.edges is not None:
-                self._evaluate_edges(node_def, ctx)
+                self._evaluate_edges(node_def, ctx, workflow_def, event_emitter)
 
             # Apply reducers to merge outputs into workflow_state via channel_store
             if workflow_def.state and isinstance(output_to_store, dict):
@@ -847,16 +849,18 @@ class WorkflowExecutor:
     def _evaluate_edges(
         self,
         node_def: NodeDef,
-        ctx: ExecutionContext
+        ctx: ExecutionContext,
+        workflow_def: "WorkflowDef",
+        event_emitter: Optional["EventEmitter"] = None
     ) -> None:
         """Evaluate conditional edges and mark non-matching branches for skipping.
 
         Args:
             node_def: Node definition with edges
             ctx: Execution context
+            workflow_def: Workflow definition
+            event_emitter: Optional event emitter for edge traversal events
         """
-        from types import SimpleNamespace
-
         if node_def.edges is None:
             return
 
@@ -874,12 +878,16 @@ class WorkflowExecutor:
         # Find first matching edge (first truthy condition wins)
         # matching_targets is a list to support multi-target fan-out
         matching_targets: Optional[List[str]] = None
+        matching_edge_index: Optional[int] = None
         default_targets: Optional[List[str]] = None
+        default_edge_index: Optional[int] = None
+        is_default: bool = False
 
-        for edge in node_def.edges:
+        for edge_index, edge in enumerate(node_def.edges):
             if edge.default:
                 # Store default edge as fallback (single or multi-target)
                 default_targets = edge.targets if edge.targets else [edge.target] if edge.target else []
+                default_edge_index = edge_index
                 continue
 
             # Evaluate condition
@@ -887,9 +895,30 @@ class WorkflowExecutor:
                 evaluator = SimpleEval(names=eval_context)
                 try:
                     result = evaluator.eval(edge.condition)
+
+                    # Emit CONDITION_EVALUATED event
+                    if event_emitter:
+                        # Get targets for this edge
+                        edge_targets = edge.targets if edge.targets else [edge.target] if edge.target else []
+                        for target in edge_targets:
+                            event_emitter.emit(WorkflowEvent(
+                                event_type=EventType.CONDITION_EVALUATED,
+                                workflow_id=workflow_def.name,
+                                node_id=node_def.id,
+                                timestamp=datetime.now(),
+                                metadata={
+                                    "source_node_id": node_def.id,
+                                    "target_node_id": target,
+                                    "condition": edge.condition,
+                                    "evaluated_value": bool(result),
+                                    "edge_index": edge_index
+                                }
+                            ))
+
                     if result:
                         # Match found - store targets (single or multi)
                         matching_targets = edge.targets if edge.targets else [edge.target] if edge.target else []
+                        matching_edge_index = edge_index
                         break  # First match wins
                 except Exception:
                     # Condition evaluation failed, try next edge
@@ -898,9 +927,11 @@ class WorkflowExecutor:
         # Use default if no condition matched
         if matching_targets is None and default_targets is not None:
             matching_targets = default_targets
+            matching_edge_index = default_edge_index
+            is_default = True
 
         # Mark all non-matching edge targets for skipping
-        if matching_targets:
+        if matching_targets and matching_edge_index is not None:
             # Collect all possible targets from all edges
             all_edge_targets = set()
             for edge in node_def.edges:
@@ -913,6 +944,38 @@ class WorkflowExecutor:
             for target in all_edge_targets:
                 if target not in matching_targets:
                     ctx.skipped_nodes.add(target)
+
+            # Emit EDGE_TRAVERSED events for taken edges
+            if event_emitter:
+                # Generate edge_group_id for fan-out edges (same for all targets from same edge)
+                edge_group_id = hashlib.sha256(f"{node_def.id}:{matching_edge_index}".encode()).hexdigest()[:16]
+
+                # Get condition from matching edge
+                matching_edge = node_def.edges[matching_edge_index]
+                condition = matching_edge.condition if hasattr(matching_edge, 'condition') else None
+
+                # Emit one event per target (for fan-out support)
+                for target_index, target in enumerate(matching_targets):
+                    edge_id = f"{node_def.id}-{target}-{matching_edge_index}"
+                    event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.EDGE_TRAVERSED,
+                        workflow_id=workflow_def.name,
+                        node_id=node_def.id,
+                        timestamp=datetime.now(),
+                        metadata={
+                            "source_node_id": node_def.id,
+                            "target_node_id": target,
+                            "edge_id": edge_id,
+                            "edge_group_id": edge_group_id,
+                            "branch_set_id": node_def.id,  # All conditional edges from same source
+                            "edge_index": matching_edge_index,
+                            "target_index": target_index,
+                            "taken": True,
+                            "condition": condition,
+                            "default": is_default,
+                            "evaluated_value": True  # If we got here, the condition was true (or default)
+                        }
+                    ))
 
     def _check_trigger_rule(
         self,
