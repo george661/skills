@@ -9,7 +9,7 @@ from .models import SortBy, RunStatus
 
 
 # JSON columns that need deserialization when reading from SQLite
-JSON_COLUMNS = {"inputs", "outputs", "metadata"}
+JSON_COLUMNS = {"inputs", "outputs", "metadata", "depends_on"}
 
 
 def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
@@ -37,20 +37,21 @@ def insert_run(
     status: str,
     started_at: str,
     inputs: Optional[Dict[str, Any]] = None,
+    workflow_definition: Optional[str] = None,
 ) -> str:
     """Insert a new workflow run."""
     # Validate workflow_name at query level (defense in depth)
     if not re.match(r"^[a-zA-Z0-9-]+$", workflow_name):
         raise ValueError("workflow_name must contain only alphanumeric characters and hyphens")
-    
+
     conn = get_connection(db_path)
     try:
         conn.execute(
             """
-            INSERT INTO workflow_runs (id, workflow_name, status, started_at, inputs)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO workflow_runs (id, workflow_name, status, started_at, inputs, workflow_definition)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (run_id, workflow_name, status, started_at, json.dumps(inputs) if inputs else None)
+            (run_id, workflow_name, status, started_at, json.dumps(inputs) if inputs else None, workflow_definition)
         )
         conn.commit()
         return run_id
@@ -227,16 +228,23 @@ def insert_node(
     status: str,
     started_at: str,
     inputs: Optional[Dict[str, Any]] = None,
+    depends_on: Optional[List[str]] = None,
+    model: Optional[str] = None,
+    tokens: Optional[int] = None,
+    cost: Optional[float] = None,
 ) -> str:
     """Insert a new node execution."""
     conn = get_connection(db_path)
     try:
         conn.execute(
             """
-            INSERT INTO node_executions (id, run_id, node_name, status, started_at, inputs)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO node_executions (id, run_id, node_name, status, started_at, inputs, depends_on, model, tokens, cost)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (node_id, run_id, node_name, status, started_at, json.dumps(inputs) if inputs else None)
+            (node_id, run_id, node_name, status, started_at,
+             json.dumps(inputs) if inputs else None,
+             json.dumps(depends_on) if depends_on else None,
+             model, tokens, cost)
         )
         conn.commit()
         return node_id

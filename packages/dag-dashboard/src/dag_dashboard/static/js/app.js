@@ -395,9 +395,8 @@ async function renderHistory() {
     });
 }
 
-function renderWorkflowDetail(runId) {
+async function renderWorkflowDetail(runId) {
     const container = document.getElementById('route-container');
-    const state = store.getState();
 
     container.innerHTML = `
         <div>
@@ -405,14 +404,116 @@ function renderWorkflowDetail(runId) {
                 ← Back to Dashboard
             </a>
             <h2 style="margin-bottom: 1.5rem;">Workflow Detail</h2>
-            <div class="workflow-card">
-                <div class="workflow-title">Run ID: ${escapeHtml(runId)}</div>
-                <div style="margin-top: 0.5rem; color: var(--text-secondary);">
-                    Details will be populated from API
+            <div id="executing-banner" class="executing-banner" style="display: none;">
+                <div class="executing-content">
+                    <span class="executing-label">Currently Executing:</span>
+                    <span id="executing-node-name"></span>
+                    <span id="executing-model" class="executing-model"></span>
+                    <span id="executing-timer" class="executing-timer">0s</span>
                 </div>
+            </div>
+            <div id="dag-container"></div>
+            <div style="margin-top: 1rem; padding: 1rem; background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border);">
+                <h3 style="margin-bottom: 0.5rem;">Run ID:</h3>
+                <code style="color: var(--text-secondary);">${escapeHtml(runId)}</code>
             </div>
         </div>
     `;
+
+    // Fetch layout data
+    try {
+        const response = await fetch(`/api/workflows/${runId}/layout`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch workflow layout');
+        }
+        const layoutData = await response.json();
+
+        // Render DAG
+        const dagRenderer = new window.DAGRenderer('dag-container');
+        dagRenderer.render(layoutData);
+
+        // Setup currently executing banner
+        setupExecutingBanner(layoutData.nodes);
+
+        // Connect to SSE for live updates
+        setupLiveUpdates(runId, dagRenderer, layoutData.nodes);
+
+    } catch (error) {
+        console.error('Error loading workflow detail:', error);
+        container.innerHTML += `
+            <div style="padding: 1rem; background: var(--error); color: white; border-radius: var(--radius); margin-top: 1rem;">
+                Error loading workflow: ${escapeHtml(error.message)}
+            </div>
+        `;
+    }
+}
+
+function setupExecutingBanner(nodes) {
+    const banner = document.getElementById('executing-banner');
+    const nodeNameEl = document.getElementById('executing-node-name');
+    const modelEl = document.getElementById('executing-model');
+    const timerEl = document.getElementById('executing-timer');
+
+    // Find running node
+    const runningNode = nodes.find(n => n.status === 'running');
+
+    if (runningNode) {
+        banner.style.display = 'block';
+        nodeNameEl.textContent = runningNode.node_name;
+        modelEl.textContent = runningNode.model || '';
+
+        // Start live timer
+        const startTime = new Date(runningNode.started_at);
+        let animationId;
+
+        const updateTimer = () => {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+            timerEl.textContent = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+            animationId = requestAnimationFrame(updateTimer);
+        };
+
+        updateTimer();
+
+        // Store animationId for cleanup
+        banner.dataset.animationId = animationId;
+    } else {
+        banner.style.display = 'none';
+    }
+}
+
+function setupLiveUpdates(runId, dagRenderer, nodes) {
+    // Connect to per-run SSE endpoint (if available)
+    // For now, we'll poll periodically for updates
+    // In production, you'd use the SSE endpoint from sse.js
+
+    const pollInterval = setInterval(async () => {
+        try {
+            const response = await fetch(`/api/workflows/${runId}/layout`);
+            if (!response.ok) {
+                clearInterval(pollInterval);
+                return;
+            }
+            const layoutData = await response.json();
+
+            // Update node statuses in the DAG
+            layoutData.nodes.forEach(node => {
+                dagRenderer.updateNodeStatus(node.node_name, node.status);
+            });
+
+            // Update executing banner
+            setupExecutingBanner(layoutData.nodes);
+
+        } catch (error) {
+            console.error('Error polling for updates:', error);
+        }
+    }, 2000); // Poll every 2 seconds
+
+    // Cleanup on route change
+    window.addEventListener('hashchange', () => {
+        clearInterval(pollInterval);
+    }, { once: true });
 }
 
 // Initialize router
