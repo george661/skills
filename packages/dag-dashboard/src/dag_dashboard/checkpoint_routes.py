@@ -13,10 +13,10 @@ from dag_dashboard.models import (
     ReplayRequest,
     ReplaySummary,
 )
-from dag_executor.checkpoint import CheckpointMetadata, CheckpointStore
-from dag_executor.replay import execute_replay
-from dag_executor.schema import WorkflowDef
-from dag_executor import load_workflow
+from dag_executor.checkpoint import CheckpointMetadata, CheckpointStore  # type: ignore[import-untyped]
+from dag_executor.replay import execute_replay  # type: ignore[import-untyped]
+from dag_executor.schema import WorkflowDef  # type: ignore[import-untyped]
+from dag_executor import load_workflow  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def get_checkpoint_store(request: Request) -> CheckpointStore:
 async def list_workflows(request: Request) -> List[str]:
     """List all workflow names discovered in the checkpoint store."""
     store = get_checkpoint_store(request)
-    workflows = store.list_workflows()
+    workflows: List[str] = store.list_workflows()
     return workflows
 
 
@@ -134,7 +134,8 @@ async def get_node_checkpoint(
             detail=f"Node checkpoint {node_id} not found for run {run_id}"
         )
     
-    return node_checkpoint.model_dump()
+    dumped: Dict[str, Any] = node_checkpoint.model_dump()
+    return dumped
 
 
 @router.post("/workflows/{workflow_name}/runs/{run_id}/replay")
