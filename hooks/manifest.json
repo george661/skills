@@ -95,6 +95,10 @@
         "second-brain-alert-checker": {
             "file": "second-brain-alert-checker.py",
             "timeout": 5
+        },
+        "post-node-notification": {
+            "file": "post_node_notification.py",
+            "timeout": 10
         }
     }
 }

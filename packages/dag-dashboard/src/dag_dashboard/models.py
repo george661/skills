@@ -163,3 +163,31 @@ class GateDecisionRequest(BaseModel):
 
     decided_by: Optional[str] = None
     comment: Optional[str] = Field(default=None, max_length=1000)
+
+
+class ChangeType(str, Enum):
+    """Whitelisted change type values for state diff changes."""
+    ADDED = "added"
+    CHANGED = "changed"
+    REMOVED = "removed"
+
+
+class StateDiffChange(BaseModel):
+    """Model for a single state diff change."""
+    model_config = {"extra": "forbid"}
+
+    key: str
+    change_type: ChangeType
+    before: Optional[Any] = None
+    after: Optional[Any] = None
+
+
+class NodeStateDiff(BaseModel):
+    """Model for node state diff timeline entry."""
+    model_config = {"extra": "forbid"}
+
+    node_name: str
+    node_id: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    changes: List[StateDiffChange]

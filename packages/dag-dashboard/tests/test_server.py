@@ -3,7 +3,6 @@ import json
 import time
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from dag_dashboard.server import create_app

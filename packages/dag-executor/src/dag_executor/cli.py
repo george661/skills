@@ -621,11 +621,17 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Parse inputs
         inputs = parse_inputs(args.inputs)
 
-        # Setup event emitter if streaming or progress requested
+        # Setup event emitter if streaming, progress, or notifications configured
         event_emitter = None
         progress_bar = None
+        notification_unsubscribe = None
 
-        if args.stream or args.progress:
+        needs_emitter = args.stream or args.progress or (
+            workflow_def.config.notifications is not None and
+            workflow_def.config.notifications.slack is not None
+        )
+
+        if needs_emitter:
             event_emitter = EventEmitter()
 
             if args.stream:
@@ -648,51 +654,70 @@ def main(argv: Optional[List[str]] = None) -> None:
         checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
         if checkpoint_dir:
             checkpoint_store = CheckpointStore(checkpoint_dir)
-        
+
+        # Wire up notifications if configured
+        if event_emitter and workflow_def.config.notifications:
+            from dag_executor.notifications import attach_to
+            import tempfile
+            # Use checkpoint_dir if available, otherwise temp dir
+            if checkpoint_dir:
+                db_dir = Path(checkpoint_dir)
+            else:
+                db_dir = Path(tempfile.mkdtemp())
+            db_path = db_dir / "notifications.db"
+            notification_unsubscribe = attach_to(
+                event_emitter,
+                workflow_def.config,
+                db_path
+            )
         # Resume mode
-        if args.resume:
-            if not args.run_id:
-                print("Error: --run-id is required with --resume", file=sys.stderr)
-                sys.exit(1)
-            
-            if not checkpoint_store:
-                print("Error: Workflow must have checkpoint_prefix for resume", file=sys.stderr)
-                sys.exit(1)
-            
-            print(f"Resuming workflow '{workflow_def.name}' (run: {args.run_id})...")
-            
-            # Parse resume values if provided
-            resume_values = None
-            if args.resume_values:
-                try:
-                    resume_values = json.loads(args.resume_values)
-                except json.JSONDecodeError as e:
-                    print(f"Error: Invalid JSON in --resume-values: {e}", file=sys.stderr)
+        try:
+            if args.resume:
+                if not args.run_id:
+                    print("Error: --run-id is required with --resume", file=sys.stderr)
                     sys.exit(1)
-            
-            result = resume_workflow(
-                workflow_name=workflow_def.name,
-                run_id=args.run_id,
-                checkpoint_store=checkpoint_store,
-                workflow_def=workflow_def,
-                inputs=inputs if inputs else None,
-                resume_values=resume_values,
-                concurrency_limit=args.concurrency,
-                event_emitter=event_emitter,
-            )
-        else:
-            # Normal execution
-            print(f"Executing workflow '{workflow_def.name}'...")
-            result = execute_workflow(
-                workflow_def=workflow_def,
-                inputs=inputs,
-                concurrency_limit=args.concurrency,
-                checkpoint_store=checkpoint_store,
-                event_emitter=event_emitter,
-            )
-        
-        # Print summary
-        # Use new RunSummary if available, fallback to old print_summary
+
+                if not checkpoint_store:
+                    print("Error: Workflow must have checkpoint_prefix for resume", file=sys.stderr)
+                    sys.exit(1)
+
+                print(f"Resuming workflow '{workflow_def.name}' (run: {args.run_id})...")
+
+                # Parse resume values if provided
+                resume_values = None
+                if args.resume_values:
+                    try:
+                        resume_values = json.loads(args.resume_values)
+                    except json.JSONDecodeError as e:
+                        print(f"Error: Invalid JSON in --resume-values: {e}", file=sys.stderr)
+                        sys.exit(1)
+
+                result = resume_workflow(
+                    workflow_name=workflow_def.name,
+                    run_id=args.run_id,
+                    checkpoint_store=checkpoint_store,
+                    workflow_def=workflow_def,
+                    inputs=inputs if inputs else None,
+                    resume_values=resume_values,
+                    concurrency_limit=args.concurrency,
+                    event_emitter=event_emitter,
+                )
+            else:
+                # Normal execution
+                print(f"Executing workflow '{workflow_def.name}'...")
+                result = execute_workflow(
+                    workflow_def=workflow_def,
+                    inputs=inputs,
+                    concurrency_limit=args.concurrency,
+                    checkpoint_store=checkpoint_store,
+                    event_emitter=event_emitter,
+                )
+        finally:
+            # Cleanup notification listener if attached
+            if notification_unsubscribe:
+                notification_unsubscribe()
+
+        # Print summary using new RunSummary, with backward-compatible fallback
         from dag_executor.terminal import RunSummary
         summary = RunSummary.render(result, workflow_def)
         print(summary)
