@@ -24,10 +24,24 @@ All settings are configured via environment variables with the `DAG_DASHBOARD_` 
 | `DAG_DASHBOARD_DB_DIR` | `~/.dag-dashboard` | SQLite database directory |
 | `DAG_DASHBOARD_EVENTS_DIR` | `dag-events` | Directory to watch for JSONL event files |
 | `DAG_DASHBOARD_MAX_SSE_CONNECTIONS` | `50` | Maximum concurrent SSE subscribers |
+| `DAG_DASHBOARD_DASHBOARD_URL` | `http://127.0.0.1:8100` | Base URL used in Slack card action buttons |
+| `DAG_DASHBOARD_SLACK_ENABLED` | `false` | Turn Slack notifications on |
+| `DAG_DASHBOARD_SLACK_WEBHOOK_URL` | — | Slack incoming webhook (mutually exclusive with bot token) |
+| `DAG_DASHBOARD_SLACK_BOT_TOKEN` | — | Slack bot token `xoxb-...` (enables threaded replies) |
+| `DAG_DASHBOARD_SLACK_CHANNEL_ID` | — | Slack channel id (required when using bot token) |
 
 ```bash
 DAG_DASHBOARD_PORT=9000 DAG_DASHBOARD_EVENTS_DIR=.dag-checkpoints dag-dashboard
 ```
+
+### Slack notifications
+
+Set `DAG_DASHBOARD_SLACK_ENABLED=true` and configure exactly one transport:
+
+- **Webhook**: set `DAG_DASHBOARD_SLACK_WEBHOOK_URL`. Simpler to set up; each event is a separate top-level message (webhooks cannot return a thread ts).
+- **Bot token**: set `DAG_DASHBOARD_SLACK_BOT_TOKEN` and `DAG_DASHBOARD_SLACK_CHANNEL_ID`. All events for a given workflow run are posted in a single thread.
+
+Cards are emitted for `workflow_started`, `workflow_completed`, `workflow_failed`, and `gate_pending` events and include a "View in Dashboard" button linking to `{DAG_DASHBOARD_DASHBOARD_URL}/runs/{run_id}`. Failure cards include the first 200 codepoints of the error message.
 
 ## API Endpoints
 
