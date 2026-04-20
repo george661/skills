@@ -266,7 +266,7 @@ class TestVariableSubstitution:
     def test_issue_key_in_nodes(
         self, nodes_by_id: Dict[str, NodeDef]
     ) -> None:
-        """Nodes reference $issue_key in their scripts or prompts."""
+        """Nodes reference $issue_key in their scripts or prompts or args."""
         nodes_with_issue_key = [
             "resume_check",
             "transition_jira",
@@ -275,6 +275,9 @@ class TestVariableSubstitution:
         for nid in nodes_with_issue_key:
             node = nodes_by_id[nid]
             node_text = (node.script or "") + (node.prompt or "")
+            # Command nodes pass $issue_key via args
+            if node.type == "command" and node.args:
+                node_text += " ".join(str(arg) for arg in node.args)
             assert "$issue_key" in node_text, (
                 f"{nid} should reference $issue_key"
             )
@@ -378,3 +381,48 @@ class TestRoutingPathExecution:
         test_harness.assert_node_skipped("file_verification")
         test_harness.assert_node_skipped("pipeline_verification")
         test_harness.assert_node_completed("deploy_check")
+
+
+class TestSubDAGIntegration:
+    """Test: evaluate_results and transition_jira converted to command nodes."""
+
+    def test_evaluate_results_is_command_node(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """evaluate_results is now a command node invoking validate-evaluate sub-DAG."""
+        node = nodes_by_id["evaluate_results"]
+        assert node.type == "command", (
+            "evaluate_results should be type: command (was prompt, now sub-DAG)"
+        )
+        assert node.command == "validate-evaluate", (
+            "evaluate_results should invoke validate-evaluate sub-DAG"
+        )
+
+    def test_transition_jira_is_command_node(
+        self, nodes_by_id: Dict[str, NodeDef]
+    ) -> None:
+        """transition_jira is now a command node invoking validate-transition sub-DAG."""
+        node = nodes_by_id["transition_jira"]
+        assert node.type == "command", (
+            "transition_jira should be type: command (was prompt, now sub-DAG)"
+        )
+        assert node.command == "validate-transition", (
+            "transition_jira should invoke validate-transition sub-DAG"
+        )
+
+    def test_sub_dag_files_exist(self) -> None:
+        """Verify all sub-DAG YAML files exist."""
+        from pathlib import Path
+        workflows_dir = Path(__file__).parent.parent / "workflows"
+        
+        sub_dags = [
+            "validate-deploy-status.yaml",
+            "validate-run-tests.yaml",
+            "validate-collect-evidence.yaml",
+            "validate-evaluate.yaml",
+            "validate-transition.yaml",
+        ]
+        
+        for sub_dag in sub_dags:
+            path = workflows_dir / sub_dag
+            assert path.exists(), f"Sub-DAG {sub_dag} should exist"

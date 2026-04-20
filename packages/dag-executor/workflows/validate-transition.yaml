@@ -1,0 +1,101 @@
+---
+name: Validate Transition Sub-DAG
+config:
+  checkpoint_prefix: validate-transition
+  worktree: false
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+  verdict:
+    type: string
+    required: true
+  report_path:
+    type: string
+    required: false
+
+state:
+  transition_action:
+    strategy: overwrite
+  transition_result:
+    strategy: overwrite
+
+outputs:
+  transitioned:
+    node: apply_transition
+    field: transitioned
+  new_status:
+    node: apply_transition
+    field: new_status
+  labels_updated:
+    node: apply_transition
+    field: labels_updated
+
+nodes:
+  - id: post_report
+    name: Post Validation Report
+    type: bash
+    script: |
+      # Post report as Jira comment
+      report_path="${report_path:-/tmp/validate-$issue_key-report.md}"
+      
+      if [ -f "$report_path" ]; then
+        report_body=$(cat "$report_path")
+      else
+        report_body="Validation completed with verdict: $verdict"
+      fi
+      
+      # Escape for JSON
+      report_json=$(jq -n --arg body "$report_body" '{body: $body}')
+      
+      npx tsx ~/.claude/skills/issues/add_comment.ts "{\"issue_key\": \"$issue_key\", \"body\": $(echo "$report_json" | jq -r .body)}"
+      
+      echo '{"report_posted": true}'
+    output_format: json
+    writes:
+      - transition_action
+
+  - id: apply_transition
+    name: Apply Jira Transition
+    type: prompt
+    depends_on:
+      - post_report
+    prompt: |
+      Transition Jira issue $issue_key based on verdict: $verdict
+
+      If TRANSITION_DONE:
+        1. Verify report was posted (evidence gate)
+        2. Transition to Done
+        3. Update labels: remove step:validating, add outcome:validated
+
+      If TRANSITION_TODO:
+        1. Transition back to To Do
+        2. Update labels: remove step:validating, add outcome:validation-failed
+
+      If NEEDS_HUMAN:
+        1. Do NOT transition
+        2. Update labels: add outcome:needs-human
+
+      If NEEDS_DEPLOY:
+        1. Transition back to To Do
+        2. Update labels: add outcome:needs-deploy
+
+      Verify status actually changed after transition; retry once if not.
+
+      Store validation metrics in AgentDB using pattern_store.
+
+      Output JSON: {
+        "transitioned": <bool>,
+        "new_status": "<status>",
+        "labels_updated": <bool>,
+        "metrics_stored": <bool>
+      }
+    model: opus
+    dispatch: inline
+    output_format: json
+    reads:
+      - transition_action
+    writes:
+      - transition_result
