@@ -627,3 +627,111 @@ def count_pending_gates(db_path: Path) -> int:
         return int(result[0]) if result else 0
     finally:
         conn.close()
+
+
+def get_state_diff_timeline(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
+    """
+    Get state diff timeline for a workflow run.
+
+    Reconstructs running state by folding state_diff values from NODE_COMPLETED events
+    in chronological order. For each node, compares its state_diff against the running
+    state to classify changes as added/changed/removed.
+
+    Args:
+        db_path: Path to SQLite database
+        run_id: Workflow run ID
+
+    Returns:
+        List of dicts with shape:
+        {
+            "node_name": str,
+            "node_id": str,
+            "started_at": str,
+            "finished_at": str,
+            "changes": [
+                {
+                    "key": str,
+                    "change_type": "added"|"changed"|"removed",
+                    "before": Any|None,
+                    "after": Any|None
+                }
+            ]
+        }
+
+        Ordered by created_at (chronological).
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT payload, created_at
+            FROM events
+            WHERE run_id = ? AND event_type = 'node_completed'
+            ORDER BY created_at
+            """,
+            (run_id,)
+        )
+        rows = cursor.fetchall()
+
+        timeline = []
+        running_state: Dict[str, Any] = {}
+
+        for row in rows:
+            payload_str = row[0]
+            payload = json.loads(payload_str)
+
+            # Extract fields
+            node_name = payload.get("node_name", "unknown")
+            node_id = payload.get("node_id", "unknown")
+            started_at = payload.get("started_at")
+            finished_at = payload.get("finished_at")
+            metadata = payload.get("metadata", {})
+            state_diff = metadata.get("state_diff", {})
+
+            # Build changes list for this node
+            changes = []
+            for key, after_value in state_diff.items():
+                before_value = running_state.get(key)
+
+                # Determine change type
+                if key not in running_state:
+                    # Key not in prior state
+                    if after_value is None:
+                        # Per plan review warning: state_diff[key]=None means removed
+                        # If key never existed before, this is a removal from empty (edge case)
+                        change_type = "removed"
+                    else:
+                        change_type = "added"
+                elif after_value is None:
+                    # Key was in prior state, now None -> removed
+                    change_type = "removed"
+                else:
+                    # Key was in prior state, has non-None value -> changed
+                    change_type = "changed"
+
+                changes.append({
+                    "key": key,
+                    "change_type": change_type,
+                    "before": before_value,
+                    "after": after_value
+                })
+
+                # Update running state
+                if after_value is None:
+                    # Remove from running state
+                    running_state.pop(key, None)
+                else:
+                    running_state[key] = after_value
+
+            # Add node entry to timeline
+            timeline.append({
+                "node_name": node_name,
+                "node_id": node_id,
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "changes": changes
+            })
+
+        return timeline
+    finally:
+        conn.close()
