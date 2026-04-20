@@ -156,3 +156,35 @@ def test_migration_adds_artifact_url_column(tmp_path: Path) -> None:
 
     assert 'url' in columns
     conn.close()
+
+
+def test_migration_adds_checkpoint_columns(tmp_path: Path) -> None:
+    """Migration should add content_hash and input_versions columns to node_executions."""
+    db_path = tmp_path / "old-checkpoint.db"
+
+    # Create a minimal old-schema DB without checkpoint columns
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE node_executions (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            node_name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    # Run migration
+    init_db(db_path)
+
+    # Verify new columns exist
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(node_executions)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    assert 'content_hash' in columns
+    assert 'input_versions' in columns
+    conn.close()
