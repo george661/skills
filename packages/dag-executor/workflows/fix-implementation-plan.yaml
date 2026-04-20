@@ -1,0 +1,160 @@
+---
+# Fix Implementation Plan Workflow
+#
+# Fix loop workflow for plans with NEEDS_FIXES verdict. Addresses findings
+# from the review workflow and produces a revised implementation plan.
+
+name: Fix Implementation Plan
+config:
+  checkpoint_prefix: fix-plan
+  worktree: false
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+state:
+  review_findings:
+    type: dict
+    reducer: overwrite
+  fix_result:
+    type: dict
+    reducer: overwrite
+
+nodes:
+  # Phase 1: Load review findings
+  - id: load_review_findings
+    name: Load Review Findings
+    type: bash
+    writes:
+      - review_findings
+    script: |
+      # Fetch Jira issue comments
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
+        "{\"issue_key\": \"$issue_key\", \"fields\": \"comment\"}")
+      
+      # Find most recent review verdict comment
+      verdict=$(echo "$issue" | jq -r '.fields.comment.comments[] | 
+        select(.body.content[]?.content[]?.text? | contains("Implementation Plan Review")) | 
+        .body.content[]?.content[]?.text' | grep -A5 "Verdict:" | head -1 | awk '{print $NF}')
+      
+      # Extract findings
+      findings=$(echo "$issue" | jq -r '.fields.comment.comments[] | 
+        select(.body.content[]?.content[]?.text? | contains("Implementation Plan Review")) | 
+        .body.content[]?.content[]?.text' | grep -A20 "Findings")
+      
+      # Output as JSON
+      echo "{\"verdict\": \"$verdict\", \"findings\": \"$findings\", \"issue_key\": \"$issue_key\"}"
+
+  # Phase 2: Validate needs fixes
+  - id: validate_needs_fixes
+    name: Validate Needs Fixes
+    type: gate
+    depends_on:
+      - load_review_findings
+    reads:
+      - review_findings
+    condition: "$review_findings_verdict == \"NEEDS_FIXES\""
+    on_failure: stop
+
+  # Phase 3: Fix critical issues
+  - id: fix_critical
+    name: Fix Critical Issues
+    type: prompt
+    depends_on:
+      - validate_needs_fixes
+    model: sonnet
+    dispatch: local
+    retry:
+      max_attempts: 2
+      delay_ms: 0
+    reads:
+      - review_findings
+    writes:
+      - fix_result
+    prompt: |
+      Fix the critical issues identified in the implementation plan review for ${issue_key}.
+      
+      Review findings:
+      ${review_findings}
+      
+      Address all critical issues and produce a revised plan section.
+      Output as JSON: {"status": "FIXED"|"NEEDS_ESCALATION", "changes": "description of fixes", "revised_sections": "markdown"}
+
+  # Phase 4: Fix warnings
+  - id: fix_warnings
+    name: Fix Warnings
+    type: prompt
+    depends_on:
+      - fix_critical
+    model: sonnet
+    dispatch: local
+    reads:
+      - review_findings
+      - fix_result
+    writes:
+      - fix_result
+    prompt: |
+      Fix the warning-level issues identified in the implementation plan review for ${issue_key}.
+      
+      Review findings:
+      ${review_findings}
+      
+      Previous fixes:
+      ${fix_result}
+      
+      Address all warning issues and refine the revised plan.
+      Output as JSON: {"status": "FIXED", "changes": "description of additional fixes", "complete_revised_plan": "full markdown"}
+
+  # Phase 5: Post revised plan
+  - id: post_revised_plan
+    name: Post Revised Plan
+    type: bash
+    depends_on:
+      - fix_warnings
+    reads:
+      - fix_result
+    script: |
+      # Extract revised plan from fix_result
+      revised_plan="${fix_result_complete_revised_plan}"
+      
+      # Build comment body
+      body="## REVISED IMPLEMENTATION PLAN (v2)\n\n"
+      body="${body}### Changes from v1:\n"
+      body="${body}${fix_result_changes}\n\n"
+      body="${body}---\n\n"
+      body="${body}${revised_plan}"
+      
+      # Post to Jira
+      npx tsx ~/.claude/skills/jira/add_comment.ts \
+        "{\"issue_key\": \"${issue_key}\", \"body\": \"$body\"}"
+
+  # Phase 6: Store reflexion episode
+  - id: store_episode
+    name: Store Episode
+    type: bash
+    depends_on:
+      - post_revised_plan
+    reads:
+      - fix_result
+    script: |
+      # Determine success based on fix status
+      status="${fix_result_status}"
+      success="false"
+      reward=0.5
+      if [ "$status" = "FIXED" ]; then
+        success="true"
+        reward=0.8
+      fi
+      
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
+        \"session_id\": \"${TENANT_NAMESPACE}\",
+        \"task\": \"plan-fix-${issue_key}\",
+        \"input\": {\"issue_key\": \"${issue_key}\"},
+        \"output\": \"$status\",
+        \"reward\": $reward,
+        \"success\": $success,
+        \"critique\": \"Plan fixes applied with status: $status\"
+      }"

@@ -1,0 +1,190 @@
+---
+# Review Implementation Plan Workflow
+#
+# Quality gate workflow for plan review. Validates scope alignment with
+# acceptance criteria, technical approach, and test coverage strategy.
+# Produces a verdict (APPROVED/NEEDS_FIXES/REJECTED) and posts findings to Jira.
+
+name: Review Implementation Plan
+config:
+  checkpoint_prefix: review-plan
+  worktree: false
+
+inputs:
+  issue_key:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+state:
+  verdict:
+    type: string
+    reducer: overwrite
+  findings:
+    type: list
+    reducer: append
+    default: []
+
+nodes:
+  # Phase 1: Load context
+  - id: load_context
+    name: Load Context
+    type: bash
+    script: |
+      # Fetch Jira issue with comments
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
+        "{\"issue_key\": \"$issue_key\", \"fields\": \"summary,description,comment\"}")
+      
+      # Find implementation plan in comments
+      plan=$(echo "$issue" | jq -r '.fields.comment.comments[] | 
+        select(.body.content[]?.content[]?.text? | contains("IMPLEMENTATION PLAN")) | 
+        .body.content[]?.content[]?.text' | head -1)
+      
+      # Output plan context
+      echo "{\"issue_key\": \"$issue_key\", \"plan\": \"$plan\"}"
+
+  # Phase 2: Validate plan exists
+  - id: validate_plan_exists
+    name: Validate Plan Exists
+    type: gate
+    depends_on:
+      - load_context
+    condition: "$plan != \"\""
+    on_failure: stop
+
+  # Phase 3: Validate scope alignment
+  - id: validate_scope
+    name: Validate Scope
+    type: prompt
+    depends_on:
+      - validate_plan_exists
+    model: opus
+    dispatch: inline
+    reads:
+      - findings
+    writes:
+      - findings
+    prompt: |
+      Review the implementation plan for ${issue_key} and validate scope coverage.
+      
+      Check:
+      - Does the plan cover all acceptance criteria from the Jira description?
+      - Are files to change/create clearly identified?
+      - Is the domain alignment correct?
+      
+      Output findings as JSON: {"status": "PASS"|"FAIL", "findings": ["finding1", "finding2"]}
+
+  # Phase 4: Validate technical approach
+  - id: validate_technical
+    name: Validate Technical Approach
+    type: prompt
+    depends_on:
+      - validate_scope
+    model: opus
+    dispatch: inline
+    reads:
+      - findings
+    writes:
+      - findings
+    prompt: |
+      Review the technical approach in the implementation plan for ${issue_key}.
+      
+      Check:
+      - Is the technical approach sound?
+      - Are there any architectural concerns?
+      - Are dependencies and integration points identified?
+      
+      Output findings as JSON: {"status": "PASS"|"FAIL", "findings": ["finding1", "finding2"]}
+
+  # Phase 5: Validate test strategy
+  - id: validate_tests
+    name: Validate Tests
+    type: prompt
+    depends_on:
+      - validate_technical
+    model: opus
+    dispatch: inline
+    reads:
+      - findings
+    writes:
+      - findings
+    prompt: |
+      Review the test strategy in the implementation plan for ${issue_key}.
+      
+      Check:
+      - Are tests identified for all new functionality?
+      - Is the test strategy appropriate (unit, integration, e2e)?
+      - Are test fixtures and mocks identified?
+      
+      Output findings as JSON: {"status": "PASS"|"FAIL", "findings": ["finding1", "finding2"]}
+
+  # Phase 6: Produce verdict
+  - id: produce_verdict
+    name: Produce Verdict
+    type: prompt
+    depends_on:
+      - validate_tests
+    model: opus
+    dispatch: inline
+    reads:
+      - findings
+    writes:
+      - verdict
+    prompt: |
+      Based on all findings collected during plan review for ${issue_key}, produce a final verdict.
+      
+      Verdict rules:
+      - APPROVED: Plan is ready for implementation (no critical issues)
+      - NEEDS_FIXES: Plan has issues that must be fixed before implementation
+      - REJECTED: Plan is fundamentally flawed and needs complete rework
+      
+      Output as JSON: {"verdict": "APPROVED"|"NEEDS_FIXES"|"REJECTED", "summary": "brief summary"}
+
+  # Phase 7: Post verdict to Jira
+  - id: post_jira_verdict
+    name: Post Jira Verdict
+    type: bash
+    depends_on:
+      - produce_verdict
+    reads:
+      - verdict
+      - findings
+    script: |
+      # Build comment body with verdict and findings
+      body="## Implementation Plan Review: ${issue_key}\n\n"
+      body="${body}### Verdict: ${verdict}\n\n"
+      
+      if [ -n "${findings}" ]; then
+        body="${body}### Findings\n${findings}\n\n"
+      fi
+      
+      # Post to Jira
+      npx tsx ~/.claude/skills/jira/add_comment.ts \
+        "{\"issue_key\": \"${issue_key}\", \"body\": \"$body\"}"
+
+  # Phase 8: Store reflexion episode
+  - id: store_episode
+    name: Store Episode
+    type: bash
+    depends_on:
+      - post_jira_verdict
+    reads:
+      - verdict
+    script: |
+      # Store reflexion episode
+      success="false"
+      reward=0.0
+      if [ "${verdict}" = "APPROVED" ]; then
+        success="true"
+        reward=1.0
+      fi
+      
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
+        \"session_id\": \"${TENANT_NAMESPACE}\",
+        \"task\": \"plan-review-${issue_key}\",
+        \"input\": {\"issue_key\": \"${issue_key}\"},
+        \"output\": \"${verdict}\",
+        \"reward\": $reward,
+        \"success\": $success,
+        \"critique\": \"Plan review completed with verdict: ${verdict}\"
+      }"
