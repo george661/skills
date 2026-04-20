@@ -59,11 +59,11 @@ nodes:
       - pr_info
     script: |
       # Extract repo from labels (pr:repo/number) or fetch open PRs
-      repo=$(echo "${current_labels}" | jq -r '.[] | select(startswith("pr:")) | split(":")[1] | split("/")[0]' | head -1)
+      repo=$(echo "$current_labels" | jq -r '.[] | select(startswith("pr:")) | split(":")[1] | split("/")[0]' | head -1)
       if [ -z "$repo" ]; then
         echo "{\"pr_info\": {}}"
       else
-        pr_number=$(echo "${current_labels}" | jq -r '.[] | select(startswith("pr:")) | split("/")[1]' | head -1)
+        pr_number=$(echo "$current_labels" | jq -r '.[] | select(startswith("pr:")) | split("/")[1]' | head -1)
         branch="$issue_key"
         echo "{\"pr_info\": {\"repo\": \"$repo\", \"pr_number\": $pr_number, \"branch\": \"$branch\"}}"
       fi
@@ -84,9 +84,9 @@ nodes:
       - action
     prompt: |
       Determine the next action for issue $issue_key based on:
-      - Current Status: ${current_status}
-      - Labels: ${current_labels}
-      - PR Info: ${pr_info}
+      - Current Status: $current_status
+      - Labels: $current_labels
+      - PR Info: $pr_info
 
       Map to one of:
       - work: Status is Backlog/To Do, no PR exists
@@ -104,17 +104,17 @@ nodes:
     output_format: json
     edges:
       - target: dispatch_work
-        condition: "${action} == 'work'"
+        condition: "$action == 'work'"
       - target: dispatch_validate
-        condition: "${action} == 'validate'"
+        condition: "$action == 'validate'"
       - target: dispatch_review
-        condition: "${action} == 'review'"
+        condition: "$action == 'review'"
       - target: dispatch_fix_pr
-        condition: "${action} == 'fix-pr'"
+        condition: "$action == 'fix-pr'"
       - target: dispatch_resolve_pr
-        condition: "${action} == 'resolve-pr'"
+        condition: "$action == 'resolve-pr'"
       - target: ci_wait_gate
-        condition: "${action} == 'ci-wait'"
+        condition: "$action == 'ci-wait'"
       - target: store_episode
         default: true
 
@@ -182,7 +182,7 @@ nodes:
     type: gate
     depends_on:
       - determine_action
-    condition: "${action} == 'ci-wait'"
+    condition: "$action == 'ci-wait'"
     on_failure: continue
     trigger_rule: all_done
 
@@ -228,9 +228,9 @@ nodes:
     trigger_rule: all_done
     script: |
       cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
-        \"session_id\": \"${TENANT_NAMESPACE}\",
+        \"session_id\": \"$TENANT_NAMESPACE\",
         \"task\": \"loop-issue-$issue_key\",
-        \"input\": {\"issue_key\": \"$issue_key\", \"action\": \"${action}\"},
+        \"input\": {\"issue_key\": \"$issue_key\", \"action\": \"$action\"},
         \"output\": \"Action completed\",
         \"reward\": 0.5,
         \"success\": true,
@@ -246,7 +246,7 @@ nodes:
     trigger_rule: all_done
     prompt: |
       Print summary for loop-issue $issue_key:
-      - Action taken: ${action}
-      - Status: ${current_status}
+      - Action taken: $action
+      - Status: $current_status
     model: sonnet
     dispatch: inline

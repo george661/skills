@@ -235,3 +235,30 @@ class TestVariableSubstitution:
         # Check load_context script for issue_key variable
         load_context = next(n for n in workflow.nodes if n.id == "load_context")
         assert "$issue_key" in load_context.script
+
+    def test_no_braced_variable_syntax(self, workflow: WorkflowDef) -> None:
+        """No node uses ${var} syntax — executor only resolves bare $var.
+
+        The variable resolver regex in variables.py matches \\$name but not
+        \\${name}, so ${var} references survive to simpleeval (SyntaxError on
+        conditions) or the LLM (literal pass-through in prompts) or bash
+        (empty string for unexported names). Catch this class of bug at
+        parse time.
+        """
+        for node in workflow.nodes:
+            for field_name in ("script", "prompt", "condition"):
+                value = getattr(node, field_name, None)
+                if value is None:
+                    continue
+                assert "${" not in value, (
+                    f"Node {node.id!r} field {field_name!r} uses ${{var}} "
+                    f"syntax, which the executor does not resolve. Use bare "
+                    f"$var instead. Snippet: {value[:120]!r}"
+                )
+            if node.edges:
+                for edge in node.edges:
+                    if edge.condition:
+                        assert "${" not in edge.condition, (
+                            f"Edge from {node.id!r} uses ${{var}} in "
+                            f"condition: {edge.condition!r}"
+                        )

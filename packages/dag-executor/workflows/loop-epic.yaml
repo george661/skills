@@ -66,7 +66,7 @@ nodes:
       - epic_issues
     prompt: |
       Verify readiness for epic $epic_key:
-      - Children: ${epic_issues}
+      - Children: $epic_issues
       - Check for needs-human labels
       - Verify CLAUDE.md accessibility
       - Count total issues
@@ -96,10 +96,10 @@ nodes:
       - current_issue
     prompt: |
       Iterate through epic issues and dispatch /loop-issue for each:
-      - Epic issues: ${epic_issues}
-      - Already completed: ${completed_issues}
-      - Already blocked: ${blocked_issues}
-      - Already waiting: ${waiting_issues}
+      - Epic issues: $epic_issues
+      - Already completed: $completed_issues
+      - Already blocked: $blocked_issues
+      - Already waiting: $waiting_issues
 
       For each remaining issue:
       1. Set current_issue to the issue key
@@ -134,10 +134,10 @@ nodes:
       - epic_status
     prompt: |
       Verify epic $epic_key completion:
-      - Total issues: ${epic_issues}
-      - Completed: ${completed_issues}
-      - Blocked: ${blocked_issues}
-      - Waiting: ${waiting_issues}
+      - Total issues: $epic_issues
+      - Completed: $completed_issues
+      - Blocked: $blocked_issues
+      - Waiting: $waiting_issues
 
       Check if all children are Done and validated.
       Set epic_status to one of: completed, paused, blocked
@@ -158,10 +158,10 @@ nodes:
       - progress
     script: |
       cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
-        \"session_id\": \"${TENANT_NAMESPACE}\",
+        \"session_id\": \"$TENANT_NAMESPACE\",
         \"task\": \"loop-epic-$epic_key\",
         \"input\": {\"epic_key\": \"$epic_key\"},
-        \"output\": \"Epic status: ${epic_status}\",
+        \"output\": \"Epic status: $epic_status\",
         \"reward\": 0.8,
         \"success\": true,
         \"critique\": \"Epic iteration complete\"
@@ -182,10 +182,10 @@ nodes:
       - waiting_issues
     prompt: |
       Print summary for loop-epic $epic_key:
-      - Epic Status: ${epic_status}
-      - Progress: ${progress}
-      - Completed: ${completed_issues}
-      - Blocked: ${blocked_issues}
-      - Waiting: ${waiting_issues}
+      - Epic Status: $epic_status
+      - Progress: $progress
+      - Completed: $completed_issues
+      - Blocked: $blocked_issues
+      - Waiting: $waiting_issues
     model: sonnet
     dispatch: inline

@@ -47,7 +47,7 @@ nodes:
       - validation_drain
     script: |
       result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
-        "{\"jql\": \"status = Validation AND labels not in (step:needs-human)\", \"fields\": \"key,summary\"}")
+        "{\"jql\": \"project = $TENANT_PROJECT AND status = Validation AND labels not in (step:needs-human)\", \"fields\": \"key,summary\"}")
       count=$(echo "$result" | jq -r '.issues | length')
       issues=$(echo "$result" | jq -r '.issues | map(.key) | @json')
       echo "{\"validation_drain\": {\"count\": $count, \"issues\": $issues}}"
@@ -60,7 +60,7 @@ nodes:
       - validation_drain_check
     reads:
       - validation_drain
-    condition: "${validation_drain.count} == 0"
+    condition: "$validation_drain.count == 0"
     on_failure: stop
 
   # Phase 1: Smoke Check (non-blocking)
@@ -73,12 +73,12 @@ nodes:
       - smoke_result
     script: |
       if [ -n "$TENANT_SMOKE_TEST_PATH" ] && [ -f "$TENANT_SMOKE_TEST_PATH" ]; then
-        output=$($TENANT_SMOKE_TEST_PATH 2>&1 || echo "FAILED")
-        if echo "$output" | grep -q "FAILED"; then
-          echo "{\"smoke_result\": {\"passed\": false, \"output\": \"$output\"}}"
+        if output=$("$TENANT_SMOKE_TEST_PATH" 2>&1); then
+          passed=true
         else
-          echo "{\"smoke_result\": {\"passed\": true, \"output\": \"$output\"}}"
+          passed=false
         fi
+        printf '{"smoke_result": {"passed": %s, "output": %s}}\n' "$passed" "$(printf '%s' "$output" | jq -Rs .)"
       else
         echo "{\"smoke_result\": {\"passed\": true, \"output\": \"No smoke test configured\"}}"
       fi
@@ -109,7 +109,7 @@ nodes:
       - needs_attention
     script: |
       result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
-        "{\"jql\": \"labels IN (outcome:needs-changes, outcome:failure-validation, outcome:failure-merge-blocked) ORDER BY updated DESC\", \"fields\": \"key,summary,status\"}")
+        "{\"jql\": \"project = $TENANT_PROJECT AND labels IN (outcome:needs-changes, outcome:failure-validation, outcome:failure-merge-blocked) ORDER BY updated DESC\", \"fields\": \"key,summary,status\"}")
       issues=$(echo "$result" | jq -r '.issues | map({key, summary: .fields.summary, status: .fields.status.name}) | @json')
       echo "{\"needs_attention\": $issues}"
     output_format: json
@@ -123,7 +123,7 @@ nodes:
       - validation_queue
     script: |
       result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
-        "{\"jql\": \"status = Validation ORDER BY updated ASC\", \"fields\": \"key,summary\"}")
+        "{\"jql\": \"project = $TENANT_PROJECT AND status = Validation ORDER BY updated ASC\", \"fields\": \"key,summary\"}")
       issues=$(echo "$result" | jq -r '.issues | map({key, summary: .fields.summary}) | @json')
       echo "{\"validation_queue\": $issues}"
     output_format: json
@@ -137,7 +137,7 @@ nodes:
       - bugs_todo
     script: |
       result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
-        "{\"jql\": \"issuetype = Bug AND status IN (To Do, Open, Backlog) ORDER BY priority DESC, created ASC\", \"fields\": \"key,summary,priority\"}")
+        "{\"jql\": \"project = $TENANT_PROJECT AND issuetype = Bug AND status IN (To Do, Open, Backlog) ORDER BY priority DESC, created ASC\", \"fields\": \"key,summary,priority\"}")
       issues=$(echo "$result" | jq -r '.issues | map({key, summary: .fields.summary, priority: .fields.priority.name}) | @json')
       echo "{\"bugs_todo\": $issues}"
     output_format: json
@@ -151,7 +151,7 @@ nodes:
       - tasks_todo
     script: |
       result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
-        "{\"jql\": \"issuetype != Bug AND status IN (To Do, Open, Backlog) ORDER BY rank ASC\", \"fields\": \"key,summary,parent\"}")
+        "{\"jql\": \"project = $TENANT_PROJECT AND issuetype != Bug AND status IN (To Do, Open, Backlog) ORDER BY rank ASC\", \"fields\": \"key,summary,parent\"}")
       issues=$(echo "$result" | jq -r '.issues | map({key, summary: .fields.summary, parent: .fields.parent.key}) | @json')
       echo "{\"tasks_todo\": $issues}"
     output_format: json
@@ -167,7 +167,7 @@ nodes:
       - tasks_todo
       - sequence_manifest
     prompt: |
-      For each candidate issue in ${tasks_todo}, filter out non-skeleton issues
+      For each candidate issue in $tasks_todo, filter out non-skeleton issues
       when parent epic has pending skeletons.
 
       Check sequence manifest for skeleton dependencies.
@@ -197,12 +197,12 @@ nodes:
       Render the priority table for issue selection:
 
       Priority order:
-      1. Needs Attention: ${needs_attention}
-      2. Validation Queue: ${validation_queue}
-      3. Bugs: ${bugs_todo}
-      4. Tasks: ${tasks_todo}
+      1. Needs Attention: $needs_attention
+      2. Validation Queue: $validation_queue
+      3. Bugs: $bugs_todo
+      4. Tasks: $tasks_todo
 
-      Include Seq/Unblocks from manifest: ${sequence_manifest}
+      Include Seq/Unblocks from manifest: $sequence_manifest
 
       Present the table with numbered options (1-N) for selection.
     model: opus
@@ -234,7 +234,7 @@ nodes:
       - bugs_todo
       - tasks_todo
     prompt: |
-      Route to /work or /validate based on selected issue ${selected_issue} status.
+      Route to /work or /validate based on selected issue $selected_issue status.
 
       If issue is in Validation queue, dispatch /validate.
       Otherwise, dispatch /work.
@@ -255,5 +255,7 @@ nodes:
     script: |
       cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/pattern_store.ts "{
         \"task_type\": \"next-issue-selection\",
-        \"pattern\": {\"selected_issue\": \"${selected_issue}\"}
+        \"approach\": \"priority-based\",
+        \"success_rate\": 1.0,
+        \"metadata\": {\"selected_issue\": \"$selected_issue\"}
       }"

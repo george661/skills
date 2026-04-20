@@ -157,3 +157,26 @@ class TestStoreEpisode:
         """store_episode uses trigger_rule: all_done."""
         node = nodes_by_id["store_episode"]
         assert node.trigger_rule == TriggerRule.ALL_DONE
+
+
+class TestVariableSubstitution:
+    """Test 7: No ${var} syntax — executor only resolves bare $var."""
+
+    def test_no_braced_variable_syntax(self, workflow: WorkflowDef) -> None:
+        """No node uses ${var} syntax (unresolvable by executor)."""
+        for node in workflow.nodes:
+            for field_name in ("script", "prompt", "condition"):
+                value = getattr(node, field_name, None)
+                if value is None:
+                    continue
+                assert "${" not in value, (
+                    f"Node {node.id!r} field {field_name!r} uses ${{var}} "
+                    f"syntax. Use bare $var instead. Snippet: {value[:120]!r}"
+                )
+            if node.edges:
+                for edge in node.edges:
+                    if edge.condition:
+                        assert "${" not in edge.condition, (
+                            f"Edge from {node.id!r} uses ${{var}}: "
+                            f"{edge.condition!r}"
+                        )

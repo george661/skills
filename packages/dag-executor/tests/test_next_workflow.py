@@ -198,3 +198,49 @@ class TestTopologicalOrdering:
         before("validation_drain_check", "validation_drain_gate")
         before("validation_drain_gate", "query_needs_attention")
         before("query_needs_attention", "present_results")
+
+
+class TestVariableSubstitution:
+    """Test 9: No ${var} syntax — executor only resolves bare $var."""
+
+    def test_no_braced_variable_syntax(self, workflow: WorkflowDef) -> None:
+        """No node uses ${var} syntax (unresolvable by executor)."""
+        for node in workflow.nodes:
+            for field_name in ("script", "prompt", "condition"):
+                value = getattr(node, field_name, None)
+                if value is None:
+                    continue
+                assert "${" not in value, (
+                    f"Node {node.id!r} field {field_name!r} uses ${{var}} "
+                    f"syntax. Use bare $var instead. Snippet: {value[:120]!r}"
+                )
+            if node.edges:
+                for edge in node.edges:
+                    if edge.condition:
+                        assert "${" not in edge.condition, (
+                            f"Edge from {node.id!r} uses ${{var}}: "
+                            f"{edge.condition!r}"
+                        )
+
+
+class TestTenantProjectFilter:
+    """Test 10: All Jira JQL queries scope by tenant project."""
+
+    def test_all_search_nodes_filter_by_tenant_project(
+        self, workflow: WorkflowDef
+    ) -> None:
+        """Every search_issues call in next.yaml must include TENANT_PROJECT."""
+        search_nodes = [
+            n for n in workflow.nodes
+            if n.script and "search_issues.ts" in n.script
+        ]
+        assert len(search_nodes) >= 4, (
+            "Expected at least 4 search_issues nodes "
+            "(validation_drain + 4 query nodes)"
+        )
+        for node in search_nodes:
+            assert "$TENANT_PROJECT" in node.script, (
+                f"Node {node.id!r} search_issues JQL missing "
+                f"'project = $TENANT_PROJECT' filter — will leak across "
+                f"projects on multi-project Jira instances"
+            )
