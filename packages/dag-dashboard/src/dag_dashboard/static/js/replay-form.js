@@ -177,7 +177,7 @@ window.showReplayModal = async function(workflow, runId) {
             // Navigate to the new run if we have a new_run_id
             if (result.new_run_id) {
                 setTimeout(() => {
-                    window.location.hash = `/checkpoints/workflow/${result.new_run_id}`;
+                    window.location.hash = `/checkpoints/${encodeURIComponent(workflow)}/${encodeURIComponent(result.new_run_id)}`;
                 }, 1000);
             }
             

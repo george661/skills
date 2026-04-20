@@ -417,32 +417,52 @@ async function renderCheckpointCompare(workflow, runIdA, runIdB) {
         const comparisonRows = Array.from(allNodeIds).sort().map(nodeId => {
             const nodeA = nodeMapA.get(nodeId);
             const nodeB = nodeMapB.get(nodeId);
-            
+
             let rowClass = '';
+            const hashA = nodeA?.content_hash;
+            const hashB = nodeB?.content_hash;
+            const hashChanged = hashA && hashB && hashA !== hashB;
+
             if (!nodeA) rowClass = 'diff-row-added';
             else if (!nodeB) rowClass = 'diff-row-removed';
-            else if (JSON.stringify(nodeA) !== JSON.stringify(nodeB)) rowClass = 'diff-row-changed';
-            
+            else if (hashChanged) rowClass = 'diff-row-changed';
+
             const statusA = nodeA ? `<span class="workflow-status ${escapeHtml(nodeA.status || 'unknown')}">${escapeHtml(nodeA.status || 'unknown')}</span>` : '<span style="color: var(--text-secondary);">—</span>';
             const statusB = nodeB ? `<span class="workflow-status ${escapeHtml(nodeB.status || 'unknown')}">${escapeHtml(nodeB.status || 'unknown')}</span>` : '<span style="color: var(--text-secondary);">—</span>';
-            
+
+            const hashDisplayA = hashA ? `<code style="font-size: 0.85em;">${escapeHtml(hashA.substring(0, 8))}</code>` : '<span style="color: var(--text-secondary);">—</span>';
+            const hashDisplayB = hashB ? `<code style="font-size: 0.85em;">${escapeHtml(hashB.substring(0, 8))}</code>` : '<span style="color: var(--text-secondary);">—</span>';
+
+            const diffButton = hashChanged ? `
+                <button
+                    class="btn-secondary"
+                    style="padding: 0.25rem 0.5rem; font-size: 0.85em;"
+                    onclick="showOutputDiff('${escapeHtml(workflow)}', '${escapeHtml(runIdA)}', '${escapeHtml(runIdB)}', '${escapeHtml(nodeId)}')"
+                >
+                    Show Diff
+                </button>
+            ` : '<span style="color: var(--text-secondary);">—</span>';
+
             return `
                 <tr class="history-row ${rowClass}">
                     <td class="history-cell">${escapeHtml(nodeId)}</td>
                     <td class="history-cell">${statusA}</td>
                     <td class="history-cell">${statusB}</td>
+                    <td class="history-cell">${hashDisplayA}</td>
+                    <td class="history-cell">${hashDisplayB}</td>
+                    <td class="history-cell">${diffButton}</td>
                 </tr>
             `;
         }).join('');
-        
+
         const content = document.getElementById('checkpoint-compare-content');
         content.innerHTML = `
             <div class="diff-legend" style="margin-bottom: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
                 <div><span class="diff-indicator diff-row-added" style="display: inline-block; width: 12px; height: 12px; border-radius: 2px;"></span> Added in Run B</div>
                 <div><span class="diff-indicator diff-row-removed" style="display: inline-block; width: 12px; height: 12px; border-radius: 2px;"></span> Removed in Run B</div>
-                <div><span class="diff-indicator diff-row-changed" style="display: inline-block; width: 12px; height: 12px; border-radius: 2px;"></span> Changed between runs</div>
+                <div><span class="diff-indicator diff-row-changed" style="display: inline-block; width: 12px; height: 12px; border-radius: 2px;"></span> Content hash changed</div>
             </div>
-            
+
             <div class="history-table-wrapper">
                 <table class="history-table">
                     <thead>
@@ -450,6 +470,9 @@ async function renderCheckpointCompare(workflow, runIdA, runIdB) {
                             <th class="history-header">Node ID</th>
                             <th class="history-header">Run A Status</th>
                             <th class="history-header">Run B Status</th>
+                            <th class="history-header">Run A Hash</th>
+                            <th class="history-header">Run B Hash</th>
+                            <th class="history-header">Output Diff</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -457,8 +480,15 @@ async function renderCheckpointCompare(workflow, runIdA, runIdB) {
                     </tbody>
                 </table>
             </div>
+            <div id="diff-output-panel" style="display: none; margin-top: 1rem; padding: 1rem; background: var(--surface-secondary); border-radius: 8px; border: 1px solid var(--border);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                    <strong id="diff-output-title">Output Diff</strong>
+                    <button class="btn-secondary" style="padding: 0.25rem 0.5rem;" onclick="document.getElementById('diff-output-panel').style.display='none'">Close</button>
+                </div>
+                <div id="diff-output-content" style="max-height: 400px; overflow: auto;"></div>
+            </div>
         `;
-        
+
     } catch (error) {
         console.error('Error loading comparison:', error);
         const content = document.getElementById('checkpoint-compare-content');
@@ -467,5 +497,64 @@ async function renderCheckpointCompare(workflow, runIdA, runIdB) {
                 <strong>Error loading comparison:</strong> ${escapeHtml(error.message)}
             </div>
         `;
+    }
+}
+
+/**
+ * Show output diff for a specific node between two runs
+ */
+async function showOutputDiff(workflow, runIdA, runIdB, nodeId) {
+    const panel = document.getElementById('diff-output-panel');
+    const title = document.getElementById('diff-output-title');
+    const content = document.getElementById('diff-output-content');
+
+    panel.style.display = 'block';
+    title.textContent = `Output Diff: ${nodeId}`;
+    content.innerHTML = '<div class="loading-spinner">Loading node outputs...</div>';
+
+    try {
+        // Fetch both node checkpoints in parallel
+        const [responseA, responseB] = await Promise.all([
+            fetch(`/api/checkpoints/workflows/${encodeURIComponent(workflow)}/runs/${encodeURIComponent(runIdA)}/nodes/${encodeURIComponent(nodeId)}`),
+            fetch(`/api/checkpoints/workflows/${encodeURIComponent(workflow)}/runs/${encodeURIComponent(runIdB)}/nodes/${encodeURIComponent(nodeId)}`)
+        ]);
+
+        let nodeA = null;
+        let nodeB = null;
+
+        if (responseA.ok) {
+            nodeA = await responseA.json();
+        }
+        if (responseB.ok) {
+            nodeB = await responseB.json();
+        }
+
+        if (!nodeA && !nodeB) {
+            content.innerHTML = '<div class="error-message">Failed to load both node checkpoints</div>';
+            return;
+        }
+
+        const outputA = nodeA?.output || null;
+        const outputB = nodeB?.output || null;
+
+        // Display side-by-side JSON
+        const outputAStr = outputA !== null ? JSON.stringify(outputA, null, 2) : '(no output)';
+        const outputBStr = outputB !== null ? JSON.stringify(outputB, null, 2) : '(no output)';
+
+        content.innerHTML = `
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div>
+                    <strong style="display: block; margin-bottom: 0.5rem;">Run A Output</strong>
+                    <pre style="background: var(--surface); padding: 0.5rem; border-radius: 4px; overflow: auto; max-height: 300px; font-size: 0.85em;">${escapeHtml(outputAStr)}</pre>
+                </div>
+                <div>
+                    <strong style="display: block; margin-bottom: 0.5rem;">Run B Output</strong>
+                    <pre style="background: var(--surface); padding: 0.5rem; border-radius: 4px; overflow: auto; max-height: 300px; font-size: 0.85em;">${escapeHtml(outputBStr)}</pre>
+                </div>
+            </div>
+        `;
+    } catch (error) {
+        console.error('Error loading output diff:', error);
+        content.innerHTML = `<div class="error-message">Error: ${escapeHtml(error.message)}</div>`;
     }
 }
