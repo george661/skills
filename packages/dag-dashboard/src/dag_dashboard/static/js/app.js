@@ -70,7 +70,7 @@ class Router {
         const hash = window.location.hash.slice(1) || '/';
         const [path, ...params] = hash.split('/').filter(Boolean);
         const route = '/' + path;
-        
+
         // Update active nav link
         document.querySelectorAll('.nav-link, .mobile-nav-link').forEach(link => {
             const linkRoute = link.dataset.route;
@@ -80,7 +80,7 @@ class Router {
                 link.classList.remove('active');
             }
         });
-        
+
         // Handle parameterized routes
         if (hash.startsWith('/workflow/')) {
             const runId = hash.split('/')[2];
@@ -90,7 +90,40 @@ class Router {
             }
             return;
         }
-        
+
+        // Handle checkpoint routes
+        if (hash.startsWith('/checkpoints/compare/')) {
+            const parts = hash.split('/').filter(Boolean);
+            if (parts.length >= 5) {
+                const workflow = parts[2];
+                const runIdA = parts[3];
+                const runIdB = parts[4];
+                this.currentRoute = '/checkpoints/compare/:wf/:runIdA/:runIdB';
+                if (this.routes['/checkpoints/compare/:wf/:runIdA/:runIdB']) {
+                    this.routes['/checkpoints/compare/:wf/:runIdA/:runIdB'](workflow, runIdA, runIdB);
+                }
+                return;
+            }
+        } else if (hash.startsWith('/checkpoints/')) {
+            const parts = hash.split('?')[0].split('/').filter(Boolean);
+            if (parts.length === 3) {
+                const workflow = parts[1];
+                const runId = parts[2];
+                this.currentRoute = '/checkpoints/:wf/:runId';
+                if (this.routes['/checkpoints/:wf/:runId']) {
+                    this.routes['/checkpoints/:wf/:runId'](workflow, runId);
+                }
+                return;
+            } else if (parts.length === 2) {
+                const workflow = parts[1];
+                this.currentRoute = '/checkpoints/:wf';
+                if (this.routes['/checkpoints/:wf']) {
+                    this.routes['/checkpoints/:wf'](workflow);
+                }
+                return;
+            }
+        }
+
         // Handle static routes
         const handler = this.routes[route] || this.routes['/'];
         if (handler) {
@@ -724,6 +757,10 @@ const router = new Router();
 router.register('/', renderDashboard);
 router.register('/history', renderHistory);
 router.register('/workflow/:runId', renderWorkflowDetail);
+router.register('/checkpoints', renderCheckpointWorkflows);
+router.register('/checkpoints/:wf', renderCheckpointRuns);
+router.register('/checkpoints/:wf/:runId', renderCheckpointRunDetail);
+router.register('/checkpoints/compare/:wf/:runIdA/:runIdB', renderCheckpointCompare);
 
 // Mobile menu toggle
 document.getElementById('mobile-menu-toggle')?.addEventListener('click', () => {

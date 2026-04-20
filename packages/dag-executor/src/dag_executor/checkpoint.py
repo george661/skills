@@ -385,6 +385,37 @@ class CheckpointStore:
 
         return None
 
+    def list_workflows(self) -> List[str]:
+        """Scan checkpoint prefix for all workflow names.
+
+        Parses directory names ``{workflow_name}-{run_id}`` to extract
+        unique workflow names. This implementation collects all unique workflow
+        names by checking what list_runs() would match for each possible prefix.
+
+        Returns:
+            Sorted list of unique workflow name strings
+        """
+        if not self.checkpoint_prefix.exists():
+            return []
+
+        workflow_names: set[str] = set()
+        for entry in self.checkpoint_prefix.iterdir():
+            if not entry.is_dir() or "-" not in entry.name:
+                continue
+            # Try each possible split point to find the workflow name
+            # The workflow name is the shortest prefix such that the remainder is non-empty
+            parts = entry.name.split("-")
+            for i in range(1, len(parts)):  # Start from 1 to ensure workflow name is non-empty
+                potential_workflow = "-".join(parts[:i])
+                # Remainder would be the run_id
+                run_id_start_idx = len(potential_workflow) + 1
+                if run_id_start_idx < len(entry.name):
+                    # This is a valid split - workflow name exists and run_id part exists
+                    # Add the shortest workflow name prefix (take the first match)
+                    workflow_names.add(potential_workflow)
+                    break
+        return sorted(workflow_names)
+
     def list_runs(self, workflow_name: str) -> List[str]:
         """Scan checkpoint prefix for directories matching a workflow name.
 
