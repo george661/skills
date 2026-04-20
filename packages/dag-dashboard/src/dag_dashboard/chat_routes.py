@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel
 
 from .models import ChatMessageRequest
 from .queries import (
@@ -71,8 +70,8 @@ def create_chat_router(db_path: Path) -> APIRouter:
 
         # Broadcast via SSE if broadcaster available
         if hasattr(request.app.state, "broadcaster"):
-            await request.app.state.broadcaster.broadcast(
-                f"chat_message_{run_id}",
+            await request.app.state.broadcaster.publish(
+                run_id,
                 {
                     "type": "chat_message",
                     "run_id": run_id,
@@ -148,8 +147,8 @@ def create_chat_router(db_path: Path) -> APIRouter:
 
         # Broadcast via SSE
         if hasattr(request.app.state, "broadcaster"):
-            await request.app.state.broadcaster.broadcast(
-                f"chat_message_{run_id}_{node_id}",
+            await request.app.state.broadcaster.publish(
+                run_id,
                 {
                     "type": "chat_message",
                     "run_id": run_id,
