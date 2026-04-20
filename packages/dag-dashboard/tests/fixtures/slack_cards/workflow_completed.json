@@ -1,0 +1,39 @@
+{
+  "text": "Workflow completed: pipeline-a (run-123) in 12.35s",
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": ":white_check_mark: Workflow completed: pipeline-a"
+      }
+    },
+    {
+      "type": "section",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Run ID*\n`run-123`"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Duration*\n12.35s"
+        }
+      ]
+    },
+    {
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "View in Dashboard"
+          },
+          "url": "https://dash.example.com/runs/run-123",
+          "action_id": "view_run_run-123"
+        }
+      ]
+    }
+  ]
+}

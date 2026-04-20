@@ -3,7 +3,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Dict
+from typing import AsyncIterator, Dict, Optional
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -12,13 +12,20 @@ from fastapi.responses import FileResponse
 from .broadcast import Broadcaster
 from .database import ensure_dir, init_db
 from .event_collector import EventCollector
+from .notifier import SlackNotifier
 from .sse import create_sse_router
 from .routes import router
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(db_dir: Path, events_dir: Path = Path("dag-events"), max_sse_connections: int = 50) -> FastAPI:
+def create_app(
+    db_dir: Path,
+    events_dir: Path = Path("dag-events"),
+    max_sse_connections: int = 50,
+    slack_notifier: Optional[SlackNotifier] = None,
+    dashboard_url: str = "http://127.0.0.1:8100",
+) -> FastAPI:
     """Create and configure FastAPI application."""
 
     # Initialize database first (before creating app)
@@ -45,7 +52,9 @@ def create_app(db_dir: Path, events_dir: Path = Path("dag-events"), max_sse_conn
             events_dir=events_dir,
             db_path=db_path,
             broadcaster=broadcaster,
-            loop=loop
+            loop=loop,
+            slack_notifier=slack_notifier,
+            dashboard_url=dashboard_url,
         )
         collector.start()
         app.state.collector = collector

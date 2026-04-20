@@ -5,12 +5,14 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from .broadcast import Broadcaster
+from . import formatter as slack_formatter
+from .notifier import SlackNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -24,20 +26,27 @@ class EventCollector:
         db_path: Path,
         broadcaster: Broadcaster,
         loop: asyncio.AbstractEventLoop,
+        slack_notifier: Optional[SlackNotifier] = None,
+        dashboard_url: str = "http://127.0.0.1:8100",
     ) -> None:
         """
         Initialize event collector.
-        
+
         Args:
             events_dir: Directory containing {run_id}.ndjson files
             db_path: Path to SQLite database
             broadcaster: Broadcaster instance for real-time event distribution
             loop: Event loop for async bridge (run_coroutine_threadsafe)
+            slack_notifier: Optional Slack notifier. When set, lifecycle events
+                are forwarded to Slack with a card built by ``formatter``.
+            dashboard_url: Base URL used in Slack card action links.
         """
         self.events_dir = events_dir
         self.db_path = db_path
         self.broadcaster = broadcaster
         self.loop = loop
+        self.slack_notifier = slack_notifier
+        self.dashboard_url = dashboard_url
         self.observer = Observer()
         self._file_positions: Dict[str, int] = {}
         
@@ -216,6 +225,52 @@ class EventCollector:
             self.broadcaster.publish(run_id, broadcast_event),
             self.loop
         )
+
+        # Slack notification (best effort — errors logged, never raised)
+        if self.slack_notifier is not None:
+            self._notify_slack(run_id, event_type, workflow_name, raw_payload)
+
+    def _notify_slack(
+        self,
+        run_id: str,
+        event_type: str,
+        workflow_name: str,
+        raw_payload: Any,
+    ) -> None:
+        """Build a Block Kit card for lifecycle events and forward to Slack."""
+        assert self.slack_notifier is not None
+
+        payload: Dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+        card: Optional[Dict[str, Any]] = None
+
+        if event_type == "workflow_started":
+            card = slack_formatter.format_workflow_started(
+                workflow_name, run_id, self.dashboard_url
+            )
+        elif event_type == "workflow_completed":
+            duration_ms = int(payload.get("duration_ms", 0) or 0)
+            card = slack_formatter.format_workflow_completed(
+                workflow_name, run_id, duration_ms, self.dashboard_url
+            )
+        elif event_type == "workflow_failed":
+            error = str(payload.get("error", "") or "")
+            card = slack_formatter.format_workflow_failed(
+                workflow_name, run_id, error, self.dashboard_url
+            )
+        elif event_type == "gate_pending":
+            node_name = str(payload.get("node_name", "") or "")
+            condition = str(payload.get("condition", "") or "")
+            card = slack_formatter.format_gate_pending(
+                workflow_name, run_id, node_name, condition, self.dashboard_url
+            )
+
+        if card is None:
+            return
+
+        try:
+            self.slack_notifier.notify(run_id, event_type, card)
+        except Exception as e:
+            logger.warning(f"Slack notify failed for run_id={run_id}: {e}")
 
 
 class _EventFileHandler(FileSystemEventHandler):

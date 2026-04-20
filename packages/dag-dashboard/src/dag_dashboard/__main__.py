@@ -3,6 +3,7 @@ import logging
 import uvicorn
 
 from .config import Settings
+from .notifier import SlackNotifier
 from .server import create_app
 
 logging.basicConfig(level=logging.INFO)
@@ -14,10 +15,21 @@ def main() -> None:
     settings = Settings()
     settings.validate_host()
 
+    slack_notifier = None
+    if settings.slack_enabled:
+        slack_notifier = SlackNotifier(
+            db_path=settings.db_dir / "dashboard.db",
+            webhook_url=settings.slack_webhook_url,
+            bot_token=settings.slack_bot_token,
+            channel_id=settings.slack_channel_id,
+        )
+
     app = create_app(
         db_dir=settings.db_dir,
         events_dir=settings.events_dir,
-        max_sse_connections=settings.max_sse_connections
+        max_sse_connections=settings.max_sse_connections,
+        slack_notifier=slack_notifier,
+        dashboard_url=settings.dashboard_url,
     )
 
     logger.info(f"Starting DAG Dashboard on {settings.host}:{settings.port}")
