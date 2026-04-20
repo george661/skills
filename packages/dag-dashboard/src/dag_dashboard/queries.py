@@ -428,3 +428,41 @@ def get_artifacts(db_path: Path, execution_id: str) -> List[Dict[str, Any]]:
         return [_row_to_dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+def get_pending_gates(db_path: Path) -> List[Dict[str, Any]]:
+    """Get all interrupted nodes in running workflows (pending gate approvals)."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT ne.*
+            FROM node_executions ne
+            JOIN workflow_runs wr ON ne.run_id = wr.id
+            WHERE ne.status = 'interrupted'
+            AND wr.status = 'running'
+            ORDER BY ne.started_at
+            """
+        )
+        return [_row_to_dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def count_pending_gates(db_path: Path) -> int:
+    """Count the number of pending gate approvals (interrupted nodes in running workflows)."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM node_executions ne
+            JOIN workflow_runs wr ON ne.run_id = wr.id
+            WHERE ne.status = 'interrupted'
+            AND wr.status = 'running'
+            """
+        )
+        result = cursor.fetchone()
+        return int(result[0]) if result else 0
+    finally:
+        conn.close()

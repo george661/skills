@@ -101,3 +101,17 @@ class StatusSummary(BaseModel):
     failed: int
     pending: int
     cancelled: int
+
+
+class GateDecision(str, Enum):
+    """Whitelisted decision values for gate approvals."""
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class GateDecisionRequest(BaseModel):
+    """Request model for gate approval/rejection."""
+    model_config = {"extra": "forbid"}
+
+    decided_by: Optional[str] = None
+    comment: Optional[str] = Field(default=None, max_length=1000)

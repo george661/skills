@@ -35,6 +35,7 @@ class NodeDetailPanel {
         // Create panel
         this.panel = document.createElement('div');
         this.panel.className = 'node-detail-panel';
+        const isInterrupted = node.status === 'interrupted';
         this.panel.innerHTML = `
             <div class="panel-header">
                 <h3>${this.escapeHtml(node.node_name)}</h3>
@@ -42,14 +43,20 @@ class NodeDetailPanel {
             </div>
             <div class="panel-content">
                 <div class="panel-tabs">
-                    <button class="tab-btn active" data-tab="config">Config</button>
+                    ${isInterrupted ? '<button class="tab-btn active" data-tab="approval">Approval</button>' : ''}
+                    <button class="tab-btn ${!isInterrupted ? 'active' : ''}" data-tab="config">Config</button>
                     <button class="tab-btn" data-tab="logs">Logs</button>
                     <button class="tab-btn" data-tab="output">Output</button>
                     <button class="tab-btn" data-tab="artifacts">Artifacts</button>
                     ${node.error ? '<button class="tab-btn error-tab" data-tab="error">Error</button>' : ''}
                 </div>
                 <div class="panel-body">
-                    <div class="tab-content active" data-tab="config">
+                    ${isInterrupted ? `
+                        <div class="tab-content active" data-tab="approval">
+                            ${this.renderApproval(node)}
+                        </div>
+                    ` : ''}
+                    <div class="tab-content ${!isInterrupted ? 'active' : ''}" data-tab="config">
                         ${this.renderConfig(node)}
                     </div>
                     <div class="tab-content" data-tab="logs">
@@ -82,6 +89,16 @@ class NodeDetailPanel {
         this.panel.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', (e) => this.switchTab(e.target.dataset.tab));
         });
+
+        // Setup gate approval button listeners
+        const approveBtn = this.panel.querySelector('.gate-btn-approve');
+        const rejectBtn = this.panel.querySelector('.gate-btn-reject');
+        if (approveBtn) {
+            approveBtn.addEventListener('click', () => this.handleGateDecision('approve', node));
+        }
+        if (rejectBtn) {
+            rejectBtn.addEventListener('click', () => this.handleGateDecision('reject', node));
+        }
 
         // Click outside to close
         this.panel.addEventListener('click', (e) => {
@@ -179,12 +196,126 @@ class NodeDetailPanel {
         `;
     }
 
+    renderApproval(node) {
+        const username = localStorage.getItem('dag_username') || '';
+        const runId = node.run_id;
+        const nodeName = node.node_name;
+
+        return `
+            <div class="gate-approval-panel">
+                <div class="gate-info">
+                    <h4>Gate: ${this.escapeHtml(nodeName)}</h4>
+                    <span class="gate-status-badge">Awaiting Approval</span>
+                </div>
+
+                <div class="gate-form" data-run-id="${runId}" data-node-name="${nodeName}">
+                    <div class="form-group">
+                        <label for="gate-username">Your Name</label>
+                        <input
+                            type="text"
+                            id="gate-username"
+                            class="gate-username"
+                            value="${this.escapeHtml(username)}"
+                            placeholder="Your name"
+                        />
+                    </div>
+
+                    <div class="form-group">
+                        <label for="gate-comment">Comment (optional)</label>
+                        <textarea
+                            id="gate-comment"
+                            class="gate-comment"
+                            placeholder="Add a comment..."
+                            maxlength="1000"
+                        ></textarea>
+                    </div>
+
+                    <div class="gate-actions">
+                        <button class="gate-btn gate-btn-approve" data-action="approve">
+                            ✓ Approve
+                        </button>
+                        <button class="gate-btn gate-btn-reject" data-action="reject">
+                            ✗ Reject
+                        </button>
+                    </div>
+
+                    <div class="gate-feedback hidden"></div>
+                </div>
+            </div>
+        `;
+    }
+
     renderError(node) {
         return `
             <div class="error-container">
                 <pre class="error-text">${this.escapeHtml(node.error)}</pre>
             </div>
         `;
+    }
+
+    async handleGateDecision(action, node) {
+        const usernameInput = this.panel.querySelector('.gate-username');
+        const commentInput = this.panel.querySelector('.gate-comment');
+        const feedback = this.panel.querySelector('.gate-feedback');
+        const approveBtn = this.panel.querySelector('.gate-btn-approve');
+        const rejectBtn = this.panel.querySelector('.gate-btn-reject');
+
+        const username = usernameInput.value.trim();
+        const comment = commentInput.value.trim();
+
+        // Save username to localStorage
+        if (username) {
+            localStorage.setItem('dag_username', username);
+        }
+
+        // Show loading state
+        approveBtn.disabled = true;
+        rejectBtn.disabled = true;
+        feedback.textContent = 'Processing...';
+        feedback.className = 'gate-feedback';
+        feedback.classList.remove('hidden');
+
+        try {
+            const runId = node.run_id;
+            const nodeName = node.node_name;
+            const response = await fetch(`/api/workflows/${runId}/gates/${nodeName}/${action}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    decided_by: username || null,
+                    comment: comment || null,
+                }),
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || 'Failed to process gate decision');
+            }
+
+            const result = await response.json();
+
+            // Show success feedback
+            feedback.textContent = `Gate ${action}d successfully by ${result.decided_by}`;
+            feedback.classList.add('success');
+
+            // Refresh the workflow view after 1 second
+            setTimeout(() => {
+                this.hide();
+                // Trigger workflow refresh if available
+                if (window.app && window.app.refreshCurrentView) {
+                    window.app.refreshCurrentView();
+                }
+            }, 1000);
+
+        } catch (error) {
+            // Show error feedback
+            feedback.textContent = `Error: ${error.message}`;
+            feedback.classList.add('error');
+            approveBtn.disabled = false;
+            rejectBtn.disabled = false;
+        }
     }
 
     switchTab(tabName) {
