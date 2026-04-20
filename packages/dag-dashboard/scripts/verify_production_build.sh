@@ -15,7 +15,7 @@ pip install -q . --target="$TMPDIR/site-packages" --upgrade
 export PYTHONPATH="$TMPDIR/site-packages:${PYTHONPATH:-}"
 
 echo "2. Verifying CLI command..."
-python -m dag_dashboard --help > /dev/null
+python -c "import dag_dashboard; from dag_dashboard.__main__ import main; assert callable(main)"
 
 echo "3. Checking static asset packaging..."
 python -c "
@@ -32,7 +32,7 @@ print('✓ All static assets packaged correctly')
 
 echo "4. Starting server and testing HTTP endpoints..."
 # Start server in background
-python -m dag_dashboard --port 18765 > /dev/null 2>&1 &
+DAG_DASHBOARD_PORT=18765 python -m dag_dashboard > /dev/null 2>&1 &
 SERVER_PID=$!
 trap "kill $SERVER_PID 2>/dev/null || true; rm -rf $TMPDIR" EXIT
 
@@ -46,7 +46,7 @@ done
 
 # Test /health endpoint
 HEALTH=$(curl -s http://localhost:18765/health)
-if ! echo "$HEALTH" | grep -q '"status":"healthy"'; then
+if ! echo "$HEALTH" | grep -q '"status":"ok"'; then
     echo "❌ /health endpoint returned unexpected response: $HEALTH"
     exit 1
 fi

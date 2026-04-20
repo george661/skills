@@ -1,4 +1,8 @@
-"""End-to-end mobile viewport tests (requires PLAYWRIGHT_E2E=1)."""
+"""End-to-end mobile viewport tests (requires PLAYWRIGHT_E2E=1).
+
+These tests require a running server. The conftest.py module provides
+a dashboard_server fixture that automatically starts/stops the server.
+"""
 import os
 import pytest
 
@@ -39,8 +43,4 @@ def test_mobile_viewport_375x667(page: Page) -> None:
 
 def test_resumed_node_indicator_desktop(page: Page) -> None:
     """Test that resumed nodes render with dashed outline at desktop viewport."""
-    page.set_viewport_size({"width": 1440, "height": 900})
-    page.goto("http://localhost:8100")
-    
-    # TODO: Load a workflow with cache_hit=true nodes and verify SVG has stroke-dasharray
-    pass
+    pytest.skip("Not yet implemented: need fixture to load workflow with cache_hit=true nodes")
