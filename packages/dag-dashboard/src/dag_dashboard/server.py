@@ -65,8 +65,9 @@ def create_app(db_dir: Path, events_dir: Path = Path("dag-events"), max_sse_conn
         lifespan=lifespan
     )
 
-    # Store db_dir in app state for lifespan and route access
+    # Store db_dir and events_dir in app state for lifespan and route access
     app.state.db_dir = db_dir
+    app.state.events_dir = events_dir
 
     # Register routes
     app.include_router(router)
