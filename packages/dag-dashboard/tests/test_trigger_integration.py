@@ -33,16 +33,19 @@ def workflows_dir(tmp_path: Path) -> Path:
     
     # Create a work.yaml workflow with issue_key input
     workflow_file = workflows / "work.yaml"
-    workflow_file.write_text("""
+    workflow_file.write_text("""\
 name: work
+config:
+  checkpoint_prefix: work
 inputs:
   issue_key:
     type: string
     required: true
 nodes:
   - id: test-node
-    type: command
-    command: echo "Processing {issue_key}"
+    name: Test Node
+    type: bash
+    script: echo "Processing ${issue_key}"
 """)
     return workflows
 
