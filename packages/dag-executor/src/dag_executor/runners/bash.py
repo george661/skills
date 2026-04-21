@@ -61,7 +61,7 @@ class BashRunner(BaseRunner):
 
             # Register with subprocess registry if available
             if ctx.subprocess_registry is not None:
-                ctx.subprocess_registry.register(process)  # type: ignore[arg-type]
+                ctx.subprocess_registry.register(process)
 
             try:
                 # Assert streams are not None (guaranteed by PIPE)
@@ -170,7 +170,7 @@ class BashRunner(BaseRunner):
             finally:
                 # Deregister from subprocess registry
                 if ctx.subprocess_registry is not None:
-                    ctx.subprocess_registry.deregister(process)  # type: ignore[arg-type]
+                    ctx.subprocess_registry.deregister(process)
 
         except Exception as e:
             return NodeResult(

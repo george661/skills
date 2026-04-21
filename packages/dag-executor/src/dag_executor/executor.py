@@ -61,6 +61,14 @@ class SubprocessRegistry:
         """Return list of registered processes."""
         return list(self._processes)
 
+    def _is_alive(self, proc: Union["subprocess.Popen[Any]", "asyncio.subprocess.Process"]) -> bool:
+        """Check if a process is still running."""
+        if isinstance(proc, subprocess.Popen):
+            return proc.poll() is None
+        else:
+            # asyncio.subprocess.Process
+            return proc.returncode is None
+
     def terminate_all(self, timeout: float = 5.0) -> None:
         """Terminate all registered processes.
 
@@ -76,7 +84,7 @@ class SubprocessRegistry:
         # Send SIGTERM to all
         for proc in self._processes:
             try:
-                if proc.poll() is None:  # Still running
+                if self._is_alive(proc):
                     proc.terminate()
             except Exception:
                 pass  # Process may have already exited
@@ -84,7 +92,7 @@ class SubprocessRegistry:
         # Wait for graceful termination
         start = time.time()
         while time.time() - start < timeout:
-            alive = [p for p in self._processes if p.poll() is None]
+            alive = [p for p in self._processes if self._is_alive(p)]
             if not alive:
                 return
             time.sleep(0.1)
@@ -92,7 +100,7 @@ class SubprocessRegistry:
         # Escalate to SIGKILL for remaining processes
         for proc in self._processes:
             try:
-                if proc.poll() is None:
+                if self._is_alive(proc):
                     proc.kill()
             except Exception:
                 pass
