@@ -2,6 +2,8 @@
 import asyncio
 import json
 import os
+import subprocess
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
@@ -9,7 +11,7 @@ from typing import Any, AsyncIterator, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from .models import SortBy, RunStatus, StatusSummary, GateDecisionRequest, InterruptResumeRequest, NodeStateDiff
+from .models import SortBy, RunStatus, StatusSummary, GateDecisionRequest, InterruptResumeRequest, NodeStateDiff, RerunRequest
 from .queries import (
     get_run, list_runs, get_node, list_nodes, get_status_counts,
     get_artifacts, get_chat_messages, get_workflow_totals,
@@ -17,7 +19,7 @@ from .queries import (
     get_interrupt_checkpoint,
     get_state_diff_timeline, get_checkpoint_comparison,
     list_run_artifacts,
-    get_nodes_by_names,
+    get_nodes_by_names, get_run_for_rerun, insert_run,
 )
 from .layout import compute_layout
 
@@ -26,6 +28,11 @@ router = APIRouter(prefix="/api")
 
 def get_db_path(request: Request) -> Path:
     """Extract database path from app state."""
+    # Try to use db_path directly if available (used when db_path passed to create_app)
+    db_path_attr = getattr(request.app.state, 'db_path', None)
+    if db_path_attr:
+        return Path(db_path_attr)
+    # Fall back to db_dir / "dashboard.db" (used when db_dir passed to create_app)
     db_dir: Path = request.app.state.db_dir
     return db_dir / "dashboard.db"
 
@@ -86,6 +93,75 @@ async def get_workflow(request: Request, run_id: str) -> Dict[str, Any]:
         "run": run,
         "nodes": nodes,
         "totals": totals,
+    }
+
+
+@router.post("/workflows/{run_id}/rerun")
+async def rerun_workflow(request: Request, run_id: str, body: RerunRequest = RerunRequest()) -> Dict[str, Any]:
+    """Rerun a workflow with optionally modified inputs."""
+    db_path = get_db_path(request)
+
+    # Load prior run
+    prior_run = get_run_for_rerun(db_path, run_id)
+    if prior_run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    workflow_name = prior_run["workflow_name"]
+    prior_inputs = prior_run["inputs"]
+
+    # Handle input override (full replacement, not merge)
+    if body.inputs is not None:
+        inputs = body.inputs
+    else:
+        inputs = prior_inputs
+
+    # Generate new run ID
+    new_run_id = str(uuid.uuid4())
+    started_at = datetime.now(timezone.utc).isoformat()
+
+    # Insert new run with parent_run_id BEFORE spawning subprocess
+    insert_run(
+        db_path=db_path,
+        run_id=new_run_id,
+        workflow_name=workflow_name,
+        status="running",
+        started_at=started_at,
+        inputs=inputs,
+        parent_run_id=run_id,
+    )
+
+    # Spawn dag-exec subprocess
+    workflows_dir = getattr(request.app.state, 'workflows_dir', Path("workflows"))
+    workflow_file = workflows_dir / f"{workflow_name}.yaml"
+
+    # Check file exists before spawning
+    if not workflow_file.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Workflow file not found: {workflow_name}.yaml"
+        )
+
+    # Build input args for subprocess
+    input_args = []
+    for k, v in inputs.items():
+        if isinstance(v, (dict, list)):
+            input_args.append(f"{k}={json.dumps(v)}")
+        else:
+            input_args.append(f"{k}={v}")
+
+    # Spawn subprocess (detached)
+    await asyncio.create_subprocess_exec(
+        "dag-exec",
+        str(workflow_file),
+        *input_args,
+        "--run-id", new_run_id,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+
+    return {
+        "run_id": new_run_id,
+        "parent_run_id": run_id,
     }
 
 

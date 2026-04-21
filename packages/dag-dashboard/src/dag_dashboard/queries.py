@@ -39,6 +39,7 @@ def insert_run(
     inputs: Optional[Dict[str, Any]] = None,
     workflow_definition: Optional[str] = None,
     trigger_source: Optional[str] = None,
+    parent_run_id: Optional[str] = None,
 ) -> str:
     """Insert a new workflow run."""
     # Validate workflow_name at query level (defense in depth)
@@ -49,13 +50,34 @@ def insert_run(
     try:
         conn.execute(
             """
-            INSERT INTO workflow_runs (id, workflow_name, status, started_at, inputs, workflow_definition, trigger_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO workflow_runs (id, workflow_name, status, started_at, inputs, workflow_definition, trigger_source, parent_run_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (run_id, workflow_name, status, started_at, json.dumps(inputs) if inputs else None, workflow_definition, trigger_source)
+            (run_id, workflow_name, status, started_at, json.dumps(inputs) if inputs else None, workflow_definition, trigger_source, parent_run_id)
         )
         conn.commit()
         return run_id
+    finally:
+        conn.close()
+
+
+def get_run_for_rerun(db_path: Path, run_id: str) -> Optional[Dict[str, Any]]:
+    """Get workflow run data for rerun operation."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT workflow_name, inputs FROM workflow_runs WHERE id = ?",
+            (run_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        return {
+            "workflow_name": row[0],
+            "inputs": json.loads(row[1]) if row[1] else {}
+        }
     finally:
         conn.close()
 
