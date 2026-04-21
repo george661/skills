@@ -492,3 +492,76 @@ def test_rate_limiter_window_expires(tmp_path: Path, test_db: Path, events_dir: 
     assert limiter.is_allowed("test-source") is True
     # Third request within window should be rejected
     assert limiter.is_allowed("test-source") is False
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for review feedback (C2 — run_id propagation)
+# ---------------------------------------------------------------------------
+
+
+def test_trigger_passes_run_id_to_subprocess(client: TestClient, test_db: Path, events_dir: Path):
+    """The run_id returned by POST /api/trigger must be passed to the spawned
+    dag-exec via --run-id so its NDJSON filename and cancel marker path match
+    the workflow_runs row the dashboard inserted.
+    """
+    with patch(
+        "dag_dashboard.trigger.asyncio.create_subprocess_exec",
+        new_callable=AsyncMock,
+    ) as mock_subprocess:
+        mock_process = AsyncMock()
+        mock_process.pid = 12345
+        mock_subprocess.return_value = mock_process
+
+        response = client.post(
+            "/api/trigger",
+            json={
+                "workflow": "test-workflow",
+                "inputs": {"issue_key": "TEST-123"},
+                "source": "github-webhook",
+            },
+        )
+        assert response.status_code == 200
+        returned_run_id = response.json()["run_id"]
+
+        # Inspect the positional args passed to create_subprocess_exec; they
+        # should include ("--run-id", <returned_run_id>) somewhere after the
+        # workflow file argument.
+        call_args = mock_subprocess.call_args
+        positional = list(call_args.args)
+        assert "--run-id" in positional, f"--run-id missing from {positional}"
+        run_id_idx = positional.index("--run-id")
+        assert positional[run_id_idx + 1] == returned_run_id, (
+            f"spawned --run-id {positional[run_id_idx + 1]!r} does not match "
+            f"returned run_id {returned_run_id!r}"
+        )
+
+
+def test_trigger_passes_events_dir_env_var(client: TestClient, events_dir: Path):
+    """The spawned dag-exec must receive DAG_EVENTS_DIR so it writes NDJSON
+    and watches for cancel markers at the same location the dashboard uses.
+    """
+    with patch(
+        "dag_dashboard.trigger.asyncio.create_subprocess_exec",
+        new_callable=AsyncMock,
+    ) as mock_subprocess:
+        mock_process = AsyncMock()
+        mock_subprocess.return_value = mock_process
+
+        response = client.post(
+            "/api/trigger",
+            json={
+                "workflow": "test-workflow",
+                "inputs": {"issue_key": "TEST-123"},
+                "source": "test",
+            },
+        )
+        assert response.status_code == 200
+
+        call_env = mock_subprocess.call_args.kwargs.get("env") or {}
+        assert "DAG_EVENTS_DIR" in call_env, "DAG_EVENTS_DIR missing from child env"
+        # Env var value must be the resolved settings.events_dir (an absolute
+        # path). We don't assert the exact path because the Settings default
+        # differs from the test fixture events_dir — that's an existing
+        # trigger/collector wiring divergence outside GW-5186 scope. What
+        # matters here is that the env var is set and resolved.
+        assert Path(call_env["DAG_EVENTS_DIR"]).is_absolute()
