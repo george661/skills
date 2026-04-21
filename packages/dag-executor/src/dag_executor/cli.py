@@ -532,11 +532,16 @@ def run_rerun(argv: List[str]) -> None:
     # Remote mode: POST to API
     if args.remote:
         try:
-            import requests
+            import urllib.request
             url = f"{args.remote.rstrip('/')}/api/workflows/{args.run_id}/rerun"
-            response = requests.post(url, json={})
-            response.raise_for_status()
-            result = response.json()
+            req = urllib.request.Request(
+                url,
+                data=json.dumps({}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req) as response:
+                result = json.loads(response.read().decode("utf-8"))
             print(f"Rerun started: {result['run_id']}")
             sys.exit(0)
         except Exception as e:

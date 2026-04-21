@@ -144,14 +144,17 @@ def test_cli_rerun_inserts_row_before_subprocess():
 def test_cli_rerun_remote_mode_posts_to_api():
     """Test that rerun --remote POSTs to /api/workflows/{run_id}/rerun."""
     from dag_executor.cli import main
-    
-    with patch("requests.post") as mock_post:
-        mock_post.return_value.status_code = 200
-        mock_post.return_value.json.return_value = {
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
             "run_id": "new-run-123",
             "parent_run_id": "prior-run-123",
-        }
-        
+        }).encode("utf-8")
+        mock_response.__enter__ = lambda self: mock_response
+        mock_response.__exit__ = lambda *a: None
+        mock_urlopen.return_value = mock_response
+
         with patch("sys.argv", [
             "dag-exec", "rerun", "prior-run-123",
             "--remote", "https://dashboard.example.com"
@@ -160,11 +163,11 @@ def test_cli_rerun_remote_mode_posts_to_api():
                 main()
             except SystemExit:
                 pass
-            
+
             # Verify API call
-            assert mock_post.called
-            call_url = mock_post.call_args[0][0]
-            assert "/api/workflows/prior-run-123/rerun" in call_url
+            assert mock_urlopen.called
+            req = mock_urlopen.call_args[0][0]
+            assert "/api/workflows/prior-run-123/rerun" in req.full_url
 
 
 def test_cli_rerun_passes_run_id_to_subprocess():
