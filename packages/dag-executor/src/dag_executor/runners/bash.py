@@ -1,7 +1,10 @@
 """Bash runner for executing bash script nodes."""
 import os
 import subprocess
+from datetime import datetime, timezone
 
+from dag_executor.artifacts import detect_artifacts
+from dag_executor.events import EventType, WorkflowEvent
 from dag_executor.schema import NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 
@@ -32,38 +35,58 @@ class BashRunner(BaseRunner):
         for key, value in ctx.resolved_inputs.items():
             env[f"DAG_{key.upper()}"] = str(value)
         
-        # Execute bash script
+        # Execute bash script using Popen for subprocess registry support
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 ["bash", "-c", script],
                 env=env,
-                capture_output=True,
-                text=True,
-                timeout=ctx.node_def.timeout or 300  # Default 5 min timeout
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
             )
-            
+
+            # Register with subprocess registry if available
+            if ctx.subprocess_registry is not None:
+                ctx.subprocess_registry.register(proc)
+
+            try:
+                stdout, stderr = proc.communicate(timeout=ctx.node_def.timeout or 300)
+                returncode = proc.returncode
+            finally:
+                # Deregister from registry
+                if ctx.subprocess_registry is not None:
+                    ctx.subprocess_registry.deregister(proc)
+
             # Check output size limit
-            total_output_size = len(result.stdout) + len(result.stderr)
+            total_output_size = len(stdout) + len(stderr)
             if total_output_size > ctx.max_output_bytes:
                 return NodeResult(
                     status=NodeStatus.FAILED,
                     error=f"Output size limit exceeded: {total_output_size} bytes > {ctx.max_output_bytes} bytes"
                 )
-            
+
             # Check exit code
-            if result.returncode != 0:
+            if returncode != 0:
                 return NodeResult(
                     status=NodeStatus.FAILED,
-                    error=result.stderr or f"Script exited with code {result.returncode}",
-                    output={"stdout": result.stdout, "stderr": result.stderr}
+                    error=stderr or f"Script exited with code {returncode}",
+                    output={"stdout": stdout, "stderr": stderr}
                 )
-            
+
+            # Emit artifact events for successful completion
+            if ctx.event_emitter is not None:
+                for artifact in detect_artifacts(stdout + "\n" + stderr):
+                    ctx.event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.ARTIFACT_CREATED,
+                        workflow_id=ctx.workflow_id,
+                        node_id=ctx.node_def.id,
+                        metadata=artifact,
+                        timestamp=datetime.now(timezone.utc),
+                    ))
+
             return NodeResult(
                 status=NodeStatus.COMPLETED,
-                output={
-                    "stdout": result.stdout,
-                    "stderr": result.stderr
-                }
+                output={"stdout": stdout, "stderr": stderr}
             )
             
         except subprocess.TimeoutExpired:

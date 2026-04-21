@@ -1,8 +1,11 @@
 """Skill runner for executing skill nodes."""
 import json
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
+from dag_executor.artifacts import detect_artifacts
+from dag_executor.events import EventType, WorkflowEvent
 from dag_executor.schema import NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 
@@ -44,30 +47,57 @@ class SkillRunner(BaseRunner):
                 error=str(e)
             )
         
-        # Execute skill via subprocess
+        # Execute skill via subprocess using Popen for subprocess registry support
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 ["python3", str(resolved_path)],
-                input=json.dumps(params),
-                capture_output=True,
-                text=True,
-                timeout=ctx.node_def.timeout or 300  # Default 5 min timeout
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
             )
-            
+
+            # Register with subprocess registry if available
+            if ctx.subprocess_registry is not None:
+                ctx.subprocess_registry.register(proc)
+
+            try:
+                stdout, stderr = proc.communicate(
+                    input=json.dumps(params),
+                    timeout=ctx.node_def.timeout or 300
+                )
+                returncode = proc.returncode
+            finally:
+                # Deregister from registry
+                if ctx.subprocess_registry is not None:
+                    ctx.subprocess_registry.deregister(proc)
+
             # Parse output
-            if result.returncode != 0:
+            if returncode != 0:
                 return NodeResult(
                     status=NodeStatus.FAILED,
-                    error=result.stderr or f"Skill exited with code {result.returncode}"
+                    error=stderr or f"Skill exited with code {returncode}"
                 )
-            
+
             # Try to parse JSON output
             try:
-                output = json.loads(result.stdout)
+                output = json.loads(stdout)
             except json.JSONDecodeError:
                 # Non-JSON output, return as raw text
-                output = {"stdout": result.stdout}
-            
+                output = {"stdout": stdout}
+
+            # Emit artifact events for successful completion
+            if ctx.event_emitter is not None:
+                combined = (stdout or "") + "\n" + (stderr or "")
+                for artifact in detect_artifacts(combined):
+                    ctx.event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.ARTIFACT_CREATED,
+                        workflow_id=ctx.workflow_id,
+                        node_id=ctx.node_def.id,
+                        metadata=artifact,
+                        timestamp=datetime.now(timezone.utc),
+                    ))
+
             return NodeResult(
                 status=NodeStatus.COMPLETED,
                 output=output

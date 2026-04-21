@@ -1,5 +1,6 @@
 """CLI entry point for DAG executor."""
 import argparse
+import os
 import json
 import shutil
 import sqlite3
@@ -27,7 +28,7 @@ from dag_executor import (
 from dag_executor.replay import execute_replay
 from dag_executor.validator import WorkflowValidator
 
-SUBCOMMANDS = {"replay", "history", "inspect", "rerun"}
+SUBCOMMANDS = {"replay", "history", "inspect", "cancel", "rerun"}
 
 
 def _build_list_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -211,7 +212,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     
     parser.add_argument(
         "--run-id",
-        help="Run ID to resume (required with --resume)",
+        help=(
+            "Run ID. Required with --resume. For normal execution, when set, "
+            "the executor uses this run_id instead of generating a new UUID; "
+            "this is how the dashboard trigger endpoint keeps its database "
+            "run_id in sync with the NDJSON filename and cancel marker path."
+        ),
     )
     
     parser.add_argument(
@@ -260,6 +266,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--parent-run-id",
         help="Parent run ID (for rerun operations)",
+    )
+
+    parser.add_argument(
+        "--events-dir",
+        help=(
+            "Directory for NDJSON event logs and cancel markers. "
+            "When set, events are written to {events-dir}/{run_id}.ndjson "
+            "and the executor polls {events-dir}/{run_id}.cancel for "
+            "cancellation signals. Env var: DAG_EVENTS_DIR."
+        ),
     )
 
     return parser.parse_args(argv)
@@ -677,6 +693,38 @@ def run_replay(argv: List[str]) -> None:
     print(json.dumps(summary, indent=2))
 
 
+def run_cancel(argv: List[str]) -> int:
+    """Run the ``cancel`` subcommand.
+
+    ``dag-exec cancel RUN_ID [--events-dir DIR] [--cancelled-by USER]``
+
+    Writes atomic cancel marker to {events_dir}/{run_id}.cancel
+    """
+    from dag_executor.cancel import InvalidRunIdError, write_cancel_marker
+
+    parser = argparse.ArgumentParser(prog="dag-exec cancel")
+    parser.add_argument("run_id", help="Run ID to cancel")
+    parser.add_argument("--events-dir", help="Events directory (default: $DAG_EVENTS_DIR or .dag-events)")
+    parser.add_argument("--cancelled-by", default="cli", help="User or system that initiated cancel")
+    args = parser.parse_args(argv)
+
+    # Determine events_dir: flag > env var > default
+    if args.events_dir:
+        events_dir = Path(args.events_dir)
+    elif "DAG_EVENTS_DIR" in os.environ:
+        events_dir = Path(os.environ["DAG_EVENTS_DIR"])
+    else:
+        events_dir = Path(".dag-events")
+
+    try:
+        write_cancel_marker(events_dir, args.run_id, args.cancelled_by)
+    except InvalidRunIdError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     """Main CLI entry point.
 
@@ -690,13 +738,20 @@ def main(argv: Optional[List[str]] = None) -> None:
         if argv and argv[0] in SUBCOMMANDS:
             subcmd = argv[0]
             if subcmd == "history":
-                return run_history(argv[1:])
+                run_history(argv[1:])
+                return
             elif subcmd == "inspect":
-                return run_inspect(argv[1:])
+                run_inspect(argv[1:])
+                return
             elif subcmd == "replay":
-                return run_replay(argv[1:])
+                run_replay(argv[1:])
+                return
+            elif subcmd == "cancel":
+                run_cancel(argv[1:])
+                return
             elif subcmd == "rerun":
-                return run_rerun(argv[1:])
+                run_rerun(argv[1:])
+                return
 
         args = parse_args(argv)
 
@@ -725,18 +780,48 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Parse inputs
         inputs = parse_inputs(args.inputs)
 
-        # Setup event emitter if streaming, progress, or notifications configured
+        # Resolve events_dir from --events-dir flag or DAG_EVENTS_DIR env var.
+        # When set, the executor writes {events_dir}/{run_id}.ndjson and polls
+        # {events_dir}/{run_id}.cancel for cancellation markers.
+        events_dir_str = args.events_dir or os.environ.get("DAG_EVENTS_DIR")
+        events_dir: Optional[Path] = None
+        if events_dir_str:
+            events_dir = Path(events_dir_str)
+            events_dir.mkdir(parents=True, exist_ok=True)
+
+        # Resolve run_id. When the caller (e.g. dashboard trigger) supplies one
+        # via --run-id, use it so the NDJSON filename, cancel marker path, and
+        # the caller's database row all agree. Otherwise generate a fresh UUID.
+        import uuid
+        from dag_executor.cancel import InvalidRunIdError, validate_run_id
+        if args.run_id and not args.resume:
+            try:
+                validate_run_id(args.run_id)
+            except InvalidRunIdError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(2)
+            run_id = args.run_id
+        else:
+            run_id = str(uuid.uuid4())
+
+        # Setup event emitter if streaming, progress, notifications, or events_dir configured.
+        # events_dir forces event logging so the dashboard collector can tail runs.
         event_emitter = None
         progress_bar = None
         notification_unsubscribe = None
 
-        needs_emitter = args.stream or args.progress or (
+        needs_emitter = args.stream or args.progress or events_dir is not None or (
             workflow_def.config.notifications is not None and
             workflow_def.config.notifications.slack is not None
         )
 
         if needs_emitter:
-            event_emitter = EventEmitter()
+            log_file = (
+                str(events_dir / f"{run_id}.ndjson")
+                if events_dir is not None
+                else None
+            )
+            event_emitter = EventEmitter(log_file=log_file)
 
             if args.stream:
                 mode = StreamMode.STATE_UPDATES if args.stream == "state_updates" else StreamMode.ALL
@@ -815,6 +900,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     concurrency_limit=args.concurrency,
                     checkpoint_store=checkpoint_store,
                     event_emitter=event_emitter,
+                    run_id=run_id,
+                    events_dir=events_dir,
                 )
         finally:
             # Cleanup notification listener if attached

@@ -33,6 +33,7 @@ from .queries import (
     get_gate_decisions,
     insert_artifact,
     get_artifacts,
+    list_run_artifacts,
 )
 
 __all__ = [
@@ -68,4 +69,5 @@ __all__ = [
     "get_gate_decisions",
     "insert_artifact",
     "get_artifacts",
+    "list_run_artifacts",
 ]

@@ -89,6 +89,7 @@ def update_run(
     finished_at: Optional[str] = None,
     outputs: Optional[Dict[str, Any]] = None,
     error: Optional[str] = None,
+    cancelled_by: Optional[str] = None,
 ) -> None:
     """Update workflow run fields."""
     conn = get_connection(db_path)
@@ -96,7 +97,7 @@ def update_run(
         # Build dynamic update query based on provided fields
         fields = []
         values = []
-        
+
         if status is not None:
             fields.append("status = ?")
             values.append(status)
@@ -109,6 +110,9 @@ def update_run(
         if error is not None:
             fields.append("error = ?")
             values.append(error)
+        if cancelled_by is not None:
+            fields.append("cancelled_by = ?")
+            values.append(cancelled_by)
         
         if not fields:
             return
@@ -992,5 +996,29 @@ def get_state_diff_timeline(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
             })
 
         return timeline
+    finally:
+        conn.close()
+
+
+def list_run_artifacts(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
+    """List all artifacts for a workflow run, joined to node_name.
+
+    Ordered by created_at ascending.
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT a.id, a.execution_id, a.name, a.artifact_type,
+                   a.path, a.content, a.created_at, a.url,
+                   ne.node_name
+            FROM artifacts a
+            JOIN node_executions ne ON ne.id = a.execution_id
+            WHERE ne.run_id = ?
+            ORDER BY a.created_at
+            """,
+            (run_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()

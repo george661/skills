@@ -3,6 +3,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dag_executor.artifacts import detect_artifacts
+from dag_executor.events import EventType, WorkflowEvent
 from dag_executor.schema import NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 
@@ -43,6 +45,7 @@ class PromptRunner(BaseRunner):
             cmd.extend(["--file", node.prompt_file])
         
         # Execute CLI with streaming support
+        process = None
         try:
             # Use Popen for line-by-line streaming
             process = subprocess.Popen(
@@ -52,6 +55,10 @@ class PromptRunner(BaseRunner):
                 stderr=subprocess.PIPE,
                 text=True
             )
+
+            # Register with subprocess registry so cancel can SIGTERM it
+            if ctx.subprocess_registry is not None:
+                ctx.subprocess_registry.register(process)
 
             # Write input if provided
             if prompt_input and process.stdin:
@@ -102,6 +109,17 @@ class PromptRunner(BaseRunner):
             # Combine all output lines
             full_output = "".join(output_lines)
 
+            # Emit artifact events for successful completion
+            if ctx.event_emitter is not None:
+                for artifact in detect_artifacts(full_output):
+                    ctx.event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.ARTIFACT_CREATED,
+                        workflow_id=ctx.workflow_id,
+                        node_id=ctx.node_def.id,
+                        metadata=artifact,
+                        timestamp=datetime.now(timezone.utc),
+                    ))
+
             return NodeResult(
                 status=NodeStatus.COMPLETED,
                 output={"response": full_output}
@@ -112,3 +130,7 @@ class PromptRunner(BaseRunner):
                 status=NodeStatus.FAILED,
                 error=f"Prompt execution failed: {str(e)}"
             )
+        finally:
+            # Always deregister from subprocess registry, even on exception
+            if process is not None and ctx.subprocess_registry is not None:
+                ctx.subprocess_registry.deregister(process)
