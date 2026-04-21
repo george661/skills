@@ -8,7 +8,7 @@ Each artifact dict has at least: name, artifact_type.
 Optional: url, path.
 """
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set, Tuple
 
 # GitHub / Bitbucket PR URLs (no trailing slash, no fragment)
 _PR_RE = re.compile(
@@ -37,7 +37,7 @@ def detect_artifacts(text: str) -> List[Dict[str, Any]]:
     if not text:
         return []
 
-    seen: set = set()
+    seen: Set[Tuple[str, str]] = set()
     artifacts: List[Dict[str, Any]] = []
 
     for match in _PR_RE.finditer(text):
