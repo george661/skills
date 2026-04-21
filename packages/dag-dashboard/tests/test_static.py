@@ -65,3 +65,33 @@ def test_trigger_source_column_responsive() -> None:
     # Check for mobile breakpoint hiding Source column
     assert "max-width: 767px" in content or "max-width:767px" in content
     assert "nth-child(5)" in content  # Source is 5th column
+
+
+def test_dag_renderer_has_failure_path_edge_class() -> None:
+    """Test that dag-renderer.js includes edge-failure-path class."""
+    from pathlib import Path
+
+    dag_renderer_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "dag-renderer.js"
+    content = dag_renderer_path.read_text()
+
+    assert "edge-failure-path" in content
+
+
+def test_styles_has_failure_banner_class() -> None:
+    """Test that styles.css includes workflow-failure-banner class."""
+    from pathlib import Path
+
+    css_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "css" / "styles.css"
+    content = css_path.read_text()
+
+    assert "workflow-failure-banner" in content
+
+
+def test_app_renders_failure_banner() -> None:
+    """Test that app.js includes workflow-failure-banner render path."""
+    from pathlib import Path
+
+    app_js_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "app.js"
+    content = app_js_path.read_text()
+
+    assert "workflow-failure-banner" in content
