@@ -165,6 +165,7 @@ def compute_layout(nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
                             "target_index": target_index,
                             "condition": edge_def.get("condition"),
                             "default": edge_def.get("default", False),
+                            "failure_path": node_name in failure_path and target_name in failure_path,
                             "points": [
                                 {"x": source_pos[0], "y": source_pos[1] + NODE_HEIGHT / 2},
                                 {"x": target_pos[0], "y": target_pos[1] - NODE_HEIGHT / 2},
@@ -184,6 +185,7 @@ def compute_layout(nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
                         "source": parent_name,
                         "target": node_name,
                         "edge_id": edge_id,
+                        "failure_path": parent_name in failure_path and node_name in failure_path,
                         "points": [
                             {"x": source_pos[0], "y": source_pos[1] + NODE_HEIGHT / 2},
                             {"x": target_pos[0], "y": target_pos[1] - NODE_HEIGHT / 2},

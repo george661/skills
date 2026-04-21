@@ -440,3 +440,52 @@ def test_compute_layout_default_edge():
     assert len(default_edges) == 1
     assert default_edges[0]["target"] == "path_b"
     assert default_edges[0].get("condition") is None  # Default edges have no condition
+
+
+def test_compute_layout_tags_edges_on_failure_path():
+    """Test that edges are tagged with failure_path when both endpoints are on the failure path."""
+    # Diamond DAG: A completed, B failed, C completed (parallel to B), D pending (depends on B)
+    nodes = [
+        {
+            "id": "run1:A",
+            "run_id": "run1",
+            "node_name": "A",
+            "status": "completed",
+            "depends_on": [],
+        },
+        {
+            "id": "run1:B",
+            "run_id": "run1",
+            "node_name": "B",
+            "status": "failed",
+            "depends_on": ["A"],
+        },
+        {
+            "id": "run1:C",
+            "run_id": "run1",
+            "node_name": "C",
+            "status": "completed",
+            "depends_on": ["A"],
+        },
+        {
+            "id": "run1:D",
+            "run_id": "run1",
+            "node_name": "D",
+            "status": "skipped",
+            "depends_on": ["B"],
+        },
+    ]
+
+    layout = compute_layout(nodes)
+
+    # Find edges by source/target
+    edges_by_pair = {(e["source"], e["target"]): e for e in layout["edges"]}
+
+    # Edge A→B: A not on failure path, B on failure path → edge NOT on failure path
+    assert edges_by_pair[("A", "B")].get("failure_path") is False
+
+    # Edge A→C: neither on failure path → edge NOT on failure path
+    assert edges_by_pair[("A", "C")].get("failure_path") is False
+
+    # Edge B→D: both on failure path → edge IS on failure path
+    assert edges_by_pair[("B", "D")].get("failure_path") is True
