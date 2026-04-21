@@ -24,6 +24,7 @@ from dag_dashboard.queries import (
     get_pending_gates,
     count_pending_gates,
     get_checkpoint_comparison,
+    get_nodes_by_names,
 )
 from dag_dashboard.models import SortBy, RunStatus
 
@@ -799,3 +800,32 @@ def test_get_checkpoint_comparison_no_checkpoint_data(db_path: Path):
     result = get_checkpoint_comparison(db_path, "run-1", "node-1")
 
     assert result is None
+
+
+def test_get_nodes_by_names_returns_matching_executions(db_path: Path):
+    """Test get_nodes_by_names returns dict of matching node executions keyed by name."""
+
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(db_path, "node-1", "run-1", "upstream-a", "completed", "2026-04-17T12:00:00Z")
+    insert_node(db_path, "node-2", "run-1", "upstream-b", "completed", "2026-04-17T12:00:00Z")
+    insert_node(db_path, "node-3", "run-1", "gate", "pending", "2026-04-17T12:01:00Z")
+
+    result = get_nodes_by_names(db_path, "run-1", ["upstream-a", "upstream-b"])
+
+    assert len(result) == 2
+    assert "upstream-a" in result
+    assert "upstream-b" in result
+    assert result["upstream-a"]["id"] == "node-1"
+    assert result["upstream-b"]["id"] == "node-2"
+    assert "gate" not in result
+
+
+def test_get_nodes_by_names_empty_list_returns_empty_dict(db_path: Path):
+    """Test get_nodes_by_names returns empty dict when given empty list."""
+
+    insert_run(db_path, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(db_path, "node-1", "run-1", "upstream-a", "completed", "2026-04-17T12:00:00Z")
+
+    result = get_nodes_by_names(db_path, "run-1", [])
+
+    assert result == {}

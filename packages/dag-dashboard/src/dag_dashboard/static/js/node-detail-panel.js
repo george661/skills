@@ -378,12 +378,46 @@ class NodeDetailPanel {
         const runId = node.run_id;
         const nodeName = node.node_name;
 
+        // Render gate description if present
+        const gateDescription = node.inputs?.description ? `
+            <div class="gate-description">
+                <h5>Description</h5>
+                <p>${this.escapeHtml(node.inputs.description)}</p>
+            </div>
+        ` : '';
+
+        // Render upstream context if present
+        const upstreamContext = (node.upstream_context && node.upstream_context.length > 0) ? `
+            <div class="gate-upstream-context">
+                <h5>Upstream Artifacts</h5>
+                ${node.upstream_context.map(upstream => `
+                    <div class="gate-upstream-node">
+                        <strong>${this.escapeHtml(upstream.node_name)}</strong>
+                        <span class="upstream-status status-${upstream.status}">${upstream.status}</span>
+                        ${upstream.artifacts && upstream.artifacts.length > 0 ? `
+                            <ul class="upstream-artifacts">
+                                ${upstream.artifacts.map(artifact => `
+                                    <li>
+                                        <span class="artifact-name">${this.escapeHtml(artifact.name)}</span>
+                                        <span class="artifact-type">(${this.escapeHtml(artifact.artifact_type)})</span>
+                                    </li>
+                                `).join('')}
+                            </ul>
+                        ` : '<p class="no-artifacts">No artifacts</p>'}
+                    </div>
+                `).join('')}
+            </div>
+        ` : '';
+
         return `
             <div class="gate-approval-panel">
                 <div class="gate-info">
                     <h4>Gate: ${this.escapeHtml(nodeName)}</h4>
                     <span class="gate-status-badge">Awaiting Approval</span>
                 </div>
+
+                ${gateDescription}
+                ${upstreamContext}
 
                 <div class="gate-form" data-run-id="${runId}" data-node-name="${nodeName}">
                     <div class="form-group">
