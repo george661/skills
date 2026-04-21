@@ -531,6 +531,7 @@ async function renderWorkflowDetail(runId) {
                 <div id="state-diff-timeline-container"></div>
             </div>
             <section id="chat-container" class="chat-section"></section>
+            <div id="run-artifacts-container" style="margin-top: 1rem;"></div>
             <div style="margin-top: 1rem; padding: 1rem; background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border);">
                 <h3 style="margin-bottom: 0.5rem;">Run ID:</h3>
                 <code style="color: var(--text-secondary);">${escapeHtml(runId)}</code>
@@ -587,6 +588,11 @@ async function renderWorkflowDetail(runId) {
         // Initialize chat panel
         const chatPanel = new window.ChatPanel('chat-container', runId);
         chatPanel.render();
+
+        // Render workflow-aggregated artifacts
+        if (window.ArtifactList) {
+            window.ArtifactList.render('run-artifacts-container', runId);
+        }
 
         // Connect to SSE for live updates
         setupLiveUpdates(runId, dagRenderer, layoutData.nodes, channelPanel, chatPanel);

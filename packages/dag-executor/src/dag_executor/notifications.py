@@ -184,7 +184,7 @@ def attach_to(
     def notifier_factory(config: SlackNotificationConfig) -> Any:
         # Import here to avoid hard dependency on dag-dashboard at module load time
         try:
-            from dag_dashboard.notifier import SlackNotifier  # type: ignore[import-untyped]
+            from dag_dashboard.notifier import SlackNotifier
         except ImportError:
             logger.warning("dag-dashboard not installed, notifications disabled")
             # Return a no-op notifier

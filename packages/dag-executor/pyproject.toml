@@ -37,6 +37,14 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 
+# dag-dashboard is only imported inside a try/except ImportError for optional
+# Slack notifier wiring. CI installs dag-executor before dag-dashboard, so
+# mypy cannot always resolve the module. This override makes the import
+# tolerant regardless of install order.
+[[tool.mypy.overrides]]
+module = "dag_dashboard.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
