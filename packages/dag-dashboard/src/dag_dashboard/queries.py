@@ -325,6 +325,37 @@ def list_nodes(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
         conn.close()
 
 
+def get_nodes_by_names(db_path: Path, run_id: str, names: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Get node executions by name within a run.
+
+    Args:
+        db_path: Path to the SQLite database.
+        run_id: Workflow run ID.
+        names: List of node names to retrieve.
+
+    Returns:
+        Dict keyed by node_name containing node execution data.
+    """
+    if not names:
+        return {}
+
+    conn = get_connection(db_path)
+    try:
+        # Build parameterized query with correct number of placeholders
+        placeholders = ",".join(["?"] * len(names))
+        query = f"SELECT * FROM node_executions WHERE run_id = ? AND node_name IN ({placeholders})"
+        cursor = conn.execute(query, [run_id] + names)
+
+        result = {}
+        for row in cursor.fetchall():
+            node_dict = _row_to_dict(row)
+            result[node_dict["node_name"]] = node_dict
+
+        return result
+    finally:
+        conn.close()
+
+
 def get_checkpoint_comparison(db_path: Path, run_id: str, node_id: str) -> Optional[Dict[str, Any]]:
     """Get checkpoint version comparison for a node.
 

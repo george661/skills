@@ -67,6 +67,46 @@ def test_trigger_source_column_responsive() -> None:
     assert "nth-child(5)" in content  # Source is 5th column
 
 
+def test_node_detail_panel_renders_upstream_context_block() -> None:
+    """Test that node-detail-panel.js renders upstream context."""
+    from pathlib import Path
+
+    js_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "node-detail-panel.js"
+    content = js_path.read_text()
+
+    # Check that upstream_context is referenced
+    assert "gate-upstream-context" in content
+    assert "node.upstream_context" in content or "upstream_context" in content
+
+
+def test_node_detail_panel_renders_gate_description() -> None:
+    """Test that node-detail-panel.js renders gate description."""
+    from pathlib import Path
+
+    js_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "node-detail-panel.js"
+    content = js_path.read_text()
+
+    # Check that gate description is referenced
+    assert "gate-description" in content
+    assert "node.inputs" in content or "inputs.description" in content or "inputs?.description" in content
+
+
+def test_gate_indicator_meets_44px_touch_target() -> None:
+    """Test that .gate-indicator CSS meets 44px touch target requirement."""
+    from pathlib import Path
+
+    css_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "css" / "styles.css"
+    content = css_path.read_text()
+
+    # Check for .gate-indicator block
+    assert ".gate-indicator" in content
+
+    # Check for 44px touch target (both min-width and min-height)
+    # The requirement is that the touch target is at least 44px
+    assert "min-width: 44px" in content or "min-width:44px" in content
+    assert "min-height: 44px" in content or "min-height:44px" in content
+
+
 def test_dag_renderer_has_failure_path_edge_class() -> None:
     """Test that dag-renderer.js includes edge-failure-path class."""
     from pathlib import Path

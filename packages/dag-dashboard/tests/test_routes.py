@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dag_dashboard.database import init_db
-from dag_dashboard.queries import insert_run, insert_node, get_node, get_gate_decisions, get_connection
+from dag_dashboard.queries import insert_run, insert_node, get_node, get_gate_decisions, get_connection, insert_artifact
 from dag_dashboard.server import create_app
 
 
@@ -761,3 +761,58 @@ def test_get_node_includes_content_hash_and_input_versions(client: TestClient, t
     assert "input_versions" in data
     assert data["input_versions"] == json.dumps(input_versions)
 
+
+def test_get_workflow_node_includes_upstream_context_for_gate(client: TestClient, test_db: Path):
+    """Test that get_workflow_node includes upstream_context with resolved artifacts."""
+    # Insert a run and upstream nodes
+    insert_run(test_db, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(test_db, "node-upstream-a", "run-1", "upstream-a", "completed", "2026-04-17T12:00:00Z")
+    insert_node(test_db, "node-upstream-b", "run-1", "upstream-b", "completed", "2026-04-17T12:00:00Z")
+    
+    # Insert artifacts for upstream nodes
+    insert_artifact(test_db, "node-upstream-a", "result.json", "json", "2026-04-17T12:01:00Z", content='{"data": "a"}')
+    insert_artifact(test_db, "node-upstream-b", "output.csv", "csv", "2026-04-17T12:01:00Z", path="/tmp/output.csv")
+    
+    # Insert gate node with depends_on
+    depends_on = json.dumps(["upstream-a", "upstream-b"])
+    conn = get_connection(test_db)
+    conn.execute(
+        "INSERT INTO node_executions (id, run_id, node_name, status, started_at, depends_on) VALUES (?, ?, ?, ?, ?, ?)",
+        ("node-gate", "run-1", "gate", "pending", "2026-04-17T12:02:00Z", depends_on)
+    )
+    conn.commit()
+    conn.close()
+    
+    response = client.get("/api/workflows/run-1/nodes/node-gate")
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert "upstream_context" in data
+    assert len(data["upstream_context"]) == 2
+    
+    # Check upstream-a
+    upstream_a = next((u for u in data["upstream_context"] if u["node_name"] == "upstream-a"), None)
+    assert upstream_a is not None
+    assert upstream_a["status"] == "completed"
+    assert len(upstream_a["artifacts"]) == 1
+    assert upstream_a["artifacts"][0]["name"] == "result.json"
+    
+    # Check upstream-b
+    upstream_b = next((u for u in data["upstream_context"] if u["node_name"] == "upstream-b"), None)
+    assert upstream_b is not None
+    assert upstream_b["status"] == "completed"
+    assert len(upstream_b["artifacts"]) == 1
+    assert upstream_b["artifacts"][0]["name"] == "output.csv"
+
+
+def test_get_workflow_node_upstream_context_empty_when_no_depends_on(client: TestClient, test_db: Path):
+    """Test that upstream_context is empty when node has no depends_on."""
+    insert_run(test_db, "run-1", "wf1", "running", "2026-04-17T12:00:00Z")
+    insert_node(test_db, "node-1", "run-1", "gate", "pending", "2026-04-17T12:00:00Z")
+    
+    response = client.get("/api/workflows/run-1/nodes/node-1")
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert "upstream_context" in data
+    assert data["upstream_context"] == []
