@@ -67,6 +67,7 @@ def update_run(
     finished_at: Optional[str] = None,
     outputs: Optional[Dict[str, Any]] = None,
     error: Optional[str] = None,
+    cancelled_by: Optional[str] = None,
 ) -> None:
     """Update workflow run fields."""
     conn = get_connection(db_path)
@@ -74,7 +75,7 @@ def update_run(
         # Build dynamic update query based on provided fields
         fields = []
         values = []
-        
+
         if status is not None:
             fields.append("status = ?")
             values.append(status)
@@ -87,6 +88,9 @@ def update_run(
         if error is not None:
             fields.append("error = ?")
             values.append(error)
+        if cancelled_by is not None:
+            fields.append("cancelled_by = ?")
+            values.append(cancelled_by)
         
         if not fields:
             return

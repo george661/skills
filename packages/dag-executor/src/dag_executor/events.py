@@ -19,6 +19,7 @@ class EventType(str, Enum):
     WORKFLOW_COMPLETED = "workflow_completed"
     WORKFLOW_FAILED = "workflow_failed"
     WORKFLOW_INTERRUPTED = "workflow_interrupted"
+    WORKFLOW_CANCELLED = "workflow_cancelled"
     NODE_STARTED = "node_started"
     NODE_COMPLETED = "node_completed"
     NODE_FAILED = "node_failed"
@@ -134,6 +135,7 @@ class EventEmitter:
             EventType.WORKFLOW_COMPLETED,
             EventType.WORKFLOW_FAILED,
             EventType.WORKFLOW_INTERRUPTED,
+            EventType.WORKFLOW_CANCELLED,
             EventType.NODE_STARTED,
             EventType.NODE_COMPLETED,
             EventType.NODE_FAILED,
