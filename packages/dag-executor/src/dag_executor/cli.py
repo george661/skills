@@ -255,6 +255,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Show progress bar during execution",
     )
 
+    parser.add_argument(
+        "--events-dir",
+        help=(
+            "Directory for NDJSON event logs and cancel markers. "
+            "When set, events are written to {events-dir}/{run_id}.ndjson "
+            "and the executor polls {events-dir}/{run_id}.cancel for "
+            "cancellation signals. Env var: DAG_EVENTS_DIR."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -664,18 +674,37 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Parse inputs
         inputs = parse_inputs(args.inputs)
 
-        # Setup event emitter if streaming, progress, or notifications configured
+        # Resolve events_dir from --events-dir flag or DAG_EVENTS_DIR env var.
+        # When set, the executor writes {events_dir}/{run_id}.ndjson and polls
+        # {events_dir}/{run_id}.cancel for cancellation markers.
+        events_dir_str = args.events_dir or os.environ.get("DAG_EVENTS_DIR")
+        events_dir: Optional[Path] = None
+        if events_dir_str:
+            events_dir = Path(events_dir_str)
+            events_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate run_id early so we can name the NDJSON log file.
+        import uuid
+        run_id = str(uuid.uuid4())
+
+        # Setup event emitter if streaming, progress, notifications, or events_dir configured.
+        # events_dir forces event logging so the dashboard collector can tail runs.
         event_emitter = None
         progress_bar = None
         notification_unsubscribe = None
 
-        needs_emitter = args.stream or args.progress or (
+        needs_emitter = args.stream or args.progress or events_dir is not None or (
             workflow_def.config.notifications is not None and
             workflow_def.config.notifications.slack is not None
         )
 
         if needs_emitter:
-            event_emitter = EventEmitter()
+            log_file = (
+                str(events_dir / f"{run_id}.ndjson")
+                if events_dir is not None
+                else None
+            )
+            event_emitter = EventEmitter(log_file=log_file)
 
             if args.stream:
                 mode = StreamMode.STATE_UPDATES if args.stream == "state_updates" else StreamMode.ALL
@@ -754,6 +783,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     concurrency_limit=args.concurrency,
                     checkpoint_store=checkpoint_store,
                     event_emitter=event_emitter,
+                    run_id=run_id,
+                    events_dir=events_dir,
                 )
         finally:
             # Cleanup notification listener if attached

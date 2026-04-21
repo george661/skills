@@ -3,6 +3,7 @@ import asyncio
 import hmac
 import hashlib
 import json
+import os
 import re
 import time
 from collections import defaultdict
@@ -260,6 +261,11 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
                 # Keep scalars as-is
                 input_args.append(f"{k}={v}")
 
+        # Pass events_dir to the executor via DAG_EVENTS_DIR so it writes
+        # NDJSON events at {events_dir}/{run_id}.ndjson (where the collector
+        # watches) and polls {events_dir}/{run_id}.cancel for cancel markers.
+        child_env = {**os.environ, "DAG_EVENTS_DIR": str(settings.events_dir.resolve())}
+
         # Spawn the subprocess (detached, survives dashboard restart)
         # CRITICAL: Pass workflow FILE PATH, not name
         # CRITICAL: Use DEVNULL for stdout/stderr to avoid pipe buffer blocking
@@ -269,7 +275,8 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
             *input_args,
             stdout=asyncio.subprocess.DEVNULL,  # Avoid pipe leak
             stderr=asyncio.subprocess.DEVNULL,  # Avoid pipe leak
-            cwd=str(settings.events_dir.parent) if settings.events_dir.parent != Path(".") else None
+            cwd=str(settings.events_dir.parent) if settings.events_dir.parent != Path(".") else None,
+            env=child_env,
         )
 
         return TriggerResponse(run_id=run_id)
