@@ -373,17 +373,17 @@ class EventCollector:
             if event_type == "node_log_line":
                 try:
                     # node_id is at top level (WorkflowEvent.node_id)
-                    node_id = event_data.get("node_id")
+                    log_node_id = event_data.get("node_id")
                     # stream, sequence, line are in metadata
                     metadata = event_data.get("metadata", {})
                     stream = metadata.get("stream")
                     sequence = metadata.get("sequence")
                     line = metadata.get("line")
 
-                    if not all([node_id, stream, sequence is not None, line is not None]):
+                    if not isinstance(log_node_id, str) or not stream or sequence is None or line is None:
                         logger.warning(f"Malformed node_log_line event for run {run_id}: missing required fields")
                     else:
-                        node_key = (run_id, node_id)
+                        node_key = (run_id, log_node_id)
 
                         # Check if this node is already capped - if so, skip insertion but don't return
                         # (we still need to commit the parent events row INSERT)
@@ -392,7 +392,7 @@ class EventCollector:
                             if node_key not in self._node_log_counts:
                                 cursor.execute(
                                     "SELECT COUNT(*) FROM node_logs WHERE run_id = ? AND node_id = ?",
-                                    (run_id, node_id)
+                                    (run_id, log_node_id)
                                 )
                                 self._node_log_counts[node_key] = cursor.fetchone()[0]
 
@@ -405,7 +405,7 @@ class EventCollector:
                                     INSERT INTO node_logs (run_id, node_id, stream, sequence, line, created_at)
                                     VALUES (?, ?, ?, ?, ?, ?)
                                     """,
-                                    (run_id, node_id, stream, sequence, line, created_at)
+                                    (run_id, log_node_id, stream, sequence, line, created_at)
                                 )
                                 self._node_log_counts[node_key] = current_count + 1
 
@@ -415,7 +415,7 @@ class EventCollector:
                                     self._capped_nodes.add(node_key)
                                     warning_payload = json.dumps({
                                         "run_id": run_id,
-                                        "node_id": node_id,
+                                        "node_id": log_node_id,
                                         "cap": self.node_log_line_cap,
                                         "dropped_at_sequence": sequence + 1
                                     })
@@ -433,7 +433,7 @@ class EventCollector:
                                     # First drop, emit warning
                                     warning_payload = json.dumps({
                                         "run_id": run_id,
-                                        "node_id": node_id,
+                                        "node_id": log_node_id,
                                         "cap": self.node_log_line_cap,
                                         "dropped_at_sequence": sequence
                                     })
