@@ -86,6 +86,7 @@ def create_chat_router(db_path: Path) -> APIRouter:
             "id": msg_id,
             "content": message.content,
             "role": "operator",
+            "operator_username": message.operator_username,
             "created_at": now
         }
 
@@ -164,6 +165,7 @@ def create_chat_router(db_path: Path) -> APIRouter:
             "id": msg_id,
             "content": message.content,
             "role": "operator",
+            "operator_username": message.operator_username,
             "created_at": now
         }
 

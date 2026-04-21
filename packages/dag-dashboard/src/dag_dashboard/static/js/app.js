@@ -496,6 +496,7 @@ async function renderWorkflowDetail(runId) {
                 <h3 style="margin-bottom: 1rem;">State Changes Timeline</h3>
                 <div id="state-diff-timeline-container"></div>
             </div>
+            <section id="chat-container" class="chat-section"></section>
             <div style="margin-top: 1rem; padding: 1rem; background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border);">
                 <h3 style="margin-bottom: 0.5rem;">Run ID:</h3>
                 <code style="color: var(--text-secondary);">${escapeHtml(runId)}</code>
@@ -538,8 +539,12 @@ async function renderWorkflowDetail(runId) {
         // Initialize channel state panel
         const channelPanel = new window.ChannelStatePanel('channel-state-container');
 
+        // Initialize chat panel
+        const chatPanel = new window.ChatPanel('chat-container', runId);
+        chatPanel.render();
+
         // Connect to SSE for live updates
-        setupLiveUpdates(runId, dagRenderer, layoutData.nodes, channelPanel);
+        setupLiveUpdates(runId, dagRenderer, layoutData.nodes, channelPanel, chatPanel);
 
     } catch (error) {
         console.error('Error loading workflow detail:', error);
@@ -586,7 +591,7 @@ function setupExecutingBanner(nodes) {
     }
 }
 
-function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel) {
+function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel) {
     // Store retry history per node for the Retry History tab
     const retryHistoryStore = {};
 
@@ -596,9 +601,16 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel) {
     eventSource.onmessage = (event) => {
         try {
             const evt = JSON.parse(event.data);
-            const payload = JSON.parse(evt.payload);
 
-            if (evt.event_type === 'node_progress' && payload.metadata && payload.metadata.attempt != null) {
+            // SSE shape-detection: handle both persisted (string payload) and live (object payload) events
+            const isPersisted = typeof evt.payload === 'string';
+            const payload = isPersisted ? JSON.parse(evt.payload) : evt;
+            const eventType = isPersisted ? evt.event_type : evt.type;
+
+            // Route chat_message events to chat panel
+            if (eventType === 'chat_message' && chatPanel) {
+                chatPanel.handleSSEMessage(payload);
+            } else if (eventType === 'node_progress' && payload.metadata && payload.metadata.attempt != null) {
                 // This is a retry event (not a token-stream event)
                 const nodeName = payload.node_id;
                 const meta = payload.metadata;
@@ -620,14 +632,14 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel) {
                 if (dagRenderer.updateRetryProgress) {
                     dagRenderer.updateRetryProgress(nodeName, retryState);
                 }
-            } else if (evt.event_type === 'node_update') {
+            } else if (eventType === 'node_update') {
                 // Update node status
                 const nodeName = payload.node_id;
                 const status = payload.metadata?.status || payload.status;
                 if (dagRenderer.updateNodeStatus) {
                     dagRenderer.updateNodeStatus(nodeName, status);
                 }
-            } else if (evt.event_type === 'node_completed' || evt.event_type === 'node_failed') {
+            } else if (eventType === 'node_completed' || eventType === 'node_failed') {
                 // Clear retry overlay when node finishes
                 const nodeName = payload.node_id;
                 if (dagRenderer.clearRetryProgress) {
@@ -695,6 +707,9 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel) {
         clearInterval(pollInterval);
         eventSource.close();
         delete window.retryHistoryStore;
+        if (chatPanel) {
+            chatPanel.destroy();
+        }
     }, { once: true });
 }
 
