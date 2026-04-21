@@ -1,6 +1,8 @@
 """Bash runner for executing bash script nodes."""
+import asyncio
 import os
-import subprocess
+from datetime import datetime
+from typing import List, Tuple
 
 from dag_executor.schema import NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
@@ -16,61 +18,135 @@ class BashRunner(BaseRunner):
     
     def run(self, ctx: RunnerContext) -> NodeResult:
         """Execute a bash script node.
-        
+
         Args:
             ctx: Runner execution context
-            
+
+        Returns:
+            NodeResult with execution status and output
+        """
+        # Wrap async implementation in asyncio.run to preserve sync interface
+        return asyncio.run(self._run_async(ctx))
+
+    async def _run_async(self, ctx: RunnerContext) -> NodeResult:
+        """Async implementation of bash script execution with line streaming.
+
+        Args:
+            ctx: Runner execution context
+
         Returns:
             NodeResult with execution status and output
         """
         script = ctx.node_def.script
         if script is None:
             raise ValueError("script field is required for type=bash")
-        
+
         # Build environment with DAG_ prefixed variables
         env = os.environ.copy()
         for key, value in ctx.resolved_inputs.items():
             env[f"DAG_{key.upper()}"] = str(value)
-        
-        # Execute bash script
+
+        timeout = ctx.node_def.timeout or 300  # Default 5 min timeout
+
         try:
-            result = subprocess.run(
-                ["bash", "-c", script],
+            # Create subprocess with pipes for stdout/stderr
+            process = await asyncio.create_subprocess_exec(
+                "bash", "-c", script,
                 env=env,
-                capture_output=True,
-                text=True,
-                timeout=ctx.node_def.timeout or 300  # Default 5 min timeout
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
-            
-            # Check output size limit
-            total_output_size = len(result.stdout) + len(result.stderr)
-            if total_output_size > ctx.max_output_bytes:
+
+            # Track cumulative output and sequence number
+            stdout_lines: List[str] = []
+            stderr_lines: List[str] = []
+            total_bytes = 0
+            sequence = 0
+            size_exceeded = False
+
+            async def read_stream(stream: asyncio.StreamReader, stream_name: str, lines_list: List[str]) -> None:
+                """Read lines from a stream and emit events."""
+                nonlocal total_bytes, sequence, size_exceeded
+
+                while True:
+                    line_bytes = await stream.readline()
+                    if not line_bytes:
+                        break
+
+                    # Check size limit before decoding
+                    total_bytes += len(line_bytes)
+                    if total_bytes > ctx.max_output_bytes:
+                        size_exceeded = True
+                        break
+
+                    # Decode and store
+                    line = line_bytes.decode('utf-8', errors='replace')
+                    lines_list.append(line)
+
+                    # Emit event if emitter is present
+                    if ctx.event_emitter:
+                        from dag_executor.events import EventType, WorkflowEvent
+                        ctx.event_emitter.emit(WorkflowEvent(
+                            event_type=EventType.NODE_LOG_LINE,
+                            workflow_id=ctx.workflow_id,
+                            node_id=ctx.node_def.id,
+                            timestamp=datetime.now(),
+                            metadata={
+                                "sequence": sequence,
+                                "stream": stream_name,
+                                "line": line.rstrip('\n')
+                            }
+                        ))
+                        sequence += 1
+
+            # Read both streams concurrently with timeout
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        read_stream(process.stdout, "stdout", stdout_lines),  # type: ignore
+                        read_stream(process.stderr, "stderr", stderr_lines),  # type: ignore
+                        process.wait()
+                    ),
+                    timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                # Kill process on timeout
+                process.kill()
+                await process.wait()
                 return NodeResult(
                     status=NodeStatus.FAILED,
-                    error=f"Output size limit exceeded: {total_output_size} bytes > {ctx.max_output_bytes} bytes"
+                    error=f"Script execution timed out after {timeout} seconds"
                 )
-            
+
+            # Check if size limit was exceeded
+            if size_exceeded:
+                process.kill()
+                await process.wait()
+                return NodeResult(
+                    status=NodeStatus.FAILED,
+                    error=f"Output size limit exceeded: {total_bytes} bytes > {ctx.max_output_bytes} bytes"
+                )
+
+            # Combine output
+            stdout = "".join(stdout_lines)
+            stderr = "".join(stderr_lines)
+
             # Check exit code
-            if result.returncode != 0:
+            if process.returncode != 0:
                 return NodeResult(
                     status=NodeStatus.FAILED,
-                    error=result.stderr or f"Script exited with code {result.returncode}",
-                    output={"stdout": result.stdout, "stderr": result.stderr}
+                    error=stderr or f"Script exited with code {process.returncode}",
+                    output={"stdout": stdout, "stderr": stderr}
                 )
-            
+
             return NodeResult(
                 status=NodeStatus.COMPLETED,
                 output={
-                    "stdout": result.stdout,
-                    "stderr": result.stderr
+                    "stdout": stdout,
+                    "stderr": stderr
                 }
             )
-            
-        except subprocess.TimeoutExpired:
-            return NodeResult(
-                status=NodeStatus.FAILED,
-                error=f"Script execution timed out after {ctx.node_def.timeout} seconds"
-            )
+
         except Exception as e:
             return NodeResult(
                 status=NodeStatus.FAILED,

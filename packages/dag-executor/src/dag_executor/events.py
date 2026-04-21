@@ -25,6 +25,7 @@ class EventType(str, Enum):
     NODE_SKIPPED = "node_skipped"
     NODE_INTERRUPTED = "node_interrupted"
     NODE_STREAM_TOKEN = "node_stream_token"
+    NODE_LOG_LINE = "node_log_line"
     NODE_PROGRESS = "node_progress"
     EDGE_TRAVERSED = "edge_traversed"
     CONDITION_EVALUATED = "condition_evaluated"
