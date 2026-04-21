@@ -800,11 +800,16 @@ install_commands() {
 install_hooks() {
     log_section "Installing Hooks"
 
-    local hooks_src="${REPO_DIR}/.claude/hooks"
+    # Flat layout: repo keeps hooks in ${REPO_DIR}/hooks (no .claude/ prefix).
+    # Legacy tenant repos used ${REPO_DIR}/.claude/hooks; fall back for compat.
+    local hooks_src="${REPO_DIR}/hooks"
+    if [[ ! -d "$hooks_src" ]]; then
+        hooks_src="${REPO_DIR}/.claude/hooks"
+    fi
     local hooks_dst="${CLAUDE_DIR}/hooks"
 
     if [[ ! -d "$hooks_src" ]]; then
-        log_warn "Hooks directory not found: ${hooks_src}"
+        log_warn "Hooks directory not found: ${REPO_DIR}/hooks or ${REPO_DIR}/.claude/hooks"
         return 1
     fi
 
@@ -923,11 +928,14 @@ setup_project_hooks() {
         project_root="$(cd "$REPO_DIR" && cd "$project_root" && pwd)"
     fi
 
-    local hooks_src="${REPO_DIR}/.claude/hooks"
+    local hooks_src="${REPO_DIR}/hooks"
+    if [[ ! -d "$hooks_src" ]]; then
+        hooks_src="${REPO_DIR}/.claude/hooks"
+    fi
     local copied=0
 
     if [[ ! -d "$hooks_src" ]]; then
-        log_warn "Hooks source directory not found: ${hooks_src}"
+        log_warn "Hooks source directory not found: ${REPO_DIR}/hooks or ${REPO_DIR}/.claude/hooks"
         return 1
     fi
 
@@ -1930,14 +1938,20 @@ install_smart_hooks() {
     # Claude Code's matcher system handles routing — hook-loader adds
     # circuit breaker (auto-disable after N failures) and time budget.
 
+    # Resolve source location — flat hooks/ preferred, legacy .claude/hooks/ fallback.
+    local smart_hooks_src="${BASE_CONFIG_DIR}/hooks"
+    if [[ ! -d "$smart_hooks_src" ]]; then
+        smart_hooks_src="${BASE_CONFIG_DIR}/.claude/hooks"
+    fi
+
     # Copy hook loader and manifest
-    cp "${BASE_CONFIG_DIR}/.claude/hooks/hook-loader.py" "${hooks_dst}/"
+    cp "${smart_hooks_src}/hook-loader.py" "${hooks_dst}/"
     chmod +x "${hooks_dst}/hook-loader.py"
-    cp "${BASE_CONFIG_DIR}/.claude/hooks/manifest.json" "${hooks_dst}/"
+    cp "${smart_hooks_src}/manifest.json" "${hooks_dst}/"
 
     # Copy emergency disable script
-    if [[ -f "${BASE_CONFIG_DIR}/.claude/hooks/EMERGENCY-DISABLE.sh" ]]; then
-        cp "${BASE_CONFIG_DIR}/.claude/hooks/EMERGENCY-DISABLE.sh" "${hooks_dst}/"
+    if [[ -f "${smart_hooks_src}/EMERGENCY-DISABLE.sh" ]]; then
+        cp "${smart_hooks_src}/EMERGENCY-DISABLE.sh" "${hooks_dst}/"
         chmod +x "${hooks_dst}/EMERGENCY-DISABLE.sh"
     fi
 

@@ -10,35 +10,36 @@ from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 @register_runner("prompt")
 class PromptRunner(BaseRunner):
     """Runner for LLM prompt nodes.
-    
-    Invokes Claude Code CLI via dispatch-local.sh with model tier.
-    MVP: local dispatch only.
+
+    Invokes Claude Code CLI via dispatch-local.sh in raw-prompt mode. The model
+    tier (opus/sonnet/haiku/local) is resolved to a concrete model by the
+    dispatcher via model-routing.json, so workflows only need to declare intent.
     """
-    
+
     def run(self, ctx: RunnerContext) -> NodeResult:
         """Execute a prompt node.
-        
+
         Args:
             ctx: Runner execution context
-            
+
         Returns:
             NodeResult with execution status and LLM response
         """
         node = ctx.node_def
         if node.model is None:
             raise ValueError("model field is required for type=prompt")
-        
-        # Build CLI command
-        dispatch_script = Path.home() / ".claude" / "dispatch-local.sh"
+
+        # Dispatcher is installed by scripts/install.sh into ~/.claude/hooks/.
+        dispatch_script = Path.home() / ".claude" / "hooks" / "dispatch-local.sh"
         cmd = [str(dispatch_script), "--model", node.model.value]
-        
-        # Handle prompt vs prompt_file
+
+        # Handle prompt vs prompt_file. Inline prompts go via stdin (avoids arg
+        # length limits); prompt_file is passed through --file.
         prompt_input = None
         if node.prompt is not None:
-            # Inline prompt - pass via stdin or temp file
+            cmd.append("--prompt-stdin")
             prompt_input = node.prompt
         elif node.prompt_file is not None:
-            # Prompt file - pass file path as argument
             cmd.extend(["--file", node.prompt_file])
         
         # Execute CLI with streaming support

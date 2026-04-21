@@ -50,9 +50,11 @@ def test_prompt_inline_mode(inline_prompt_node):
         assert result.status == NodeStatus.COMPLETED
         assert "answer" in result.output["response"].lower()
 
-        # Verify dispatch-local.sh was called
+        # Verify dispatch-local.sh in ~/.claude/hooks/ was called
         call_args = mock_popen.call_args[0][0]
-        assert any("dispatch-local.sh" in str(arg) for arg in call_args)
+        assert any("hooks/dispatch-local.sh" in str(arg) for arg in call_args)
+        # Inline prompts must use --prompt-stdin so the dispatcher reads stdin.
+        assert "--prompt-stdin" in call_args
 
 
 def test_prompt_file_mode(file_prompt_node):
@@ -65,11 +67,16 @@ def test_prompt_file_mode(file_prompt_node):
     mock_process.stderr.read.return_value = ""
     mock_process.wait.return_value = 0
 
-    with patch("subprocess.Popen", return_value=mock_process):
+    with patch("subprocess.Popen", return_value=mock_process) as mock_popen:
         runner = PromptRunner()
         result = runner.run(ctx)
 
         assert result.status == NodeStatus.COMPLETED
+        call_args = mock_popen.call_args[0][0]
+        # prompt_file → --file <path>, no stdin flag.
+        assert "--file" in call_args
+        assert "prompts/analyze.md" in call_args
+        assert "--prompt-stdin" not in call_args
 
 
 def test_prompt_model_tier_mapping():
@@ -116,9 +123,9 @@ def test_prompt_dispatch_local_only(inline_prompt_node):
         runner = PromptRunner()
         runner.run(ctx)
 
-        # Verify dispatch-local.sh was used
+        # Verify hooks/dispatch-local.sh was used
         call_args = mock_popen.call_args[0][0]
-        assert any("dispatch-local.sh" in str(arg) for arg in call_args)
+        assert any("hooks/dispatch-local.sh" in str(arg) for arg in call_args)
 
 
 def test_prompt_subprocess_error(inline_prompt_node):

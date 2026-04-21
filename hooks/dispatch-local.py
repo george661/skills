@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """
-dispatch-local.py — Single source of truth for dispatching commands to local Ollama model.
+dispatch-local.py — Tenant-agnostic dispatcher for Claude Code subprocess execution.
 
-Called by:
-  1. route-slash-command.py (hook) — when intercepting Skill/SlashCommand
-  2. /work orchestrator (via Bash) — when dispatching sub-commands
+Two modes:
 
-Usage:
-  python3 ~/.claude/hooks/dispatch-local.py <command-name> <args...>
+  1. Command mode (legacy):
+       dispatch-local.py <command-name> [args...]
+     Reads ~/.claude/commands/<command-name>.md and builds an enriched prompt.
+     Routes through model-routing.json to pick Ollama vs Bedrock.
 
-Output: result to stdout, progress to /dev/tty
+  2. Raw-prompt mode (used by dag-executor PromptRunner):
+       dispatch-local.py --model <tier> --prompt-stdin
+       dispatch-local.py --model <tier> --file <path>
+       dispatch-local.py --model <tier> -- <prompt text>
+     <tier> is one of: opus, sonnet, haiku, local (or any alias in model-routing.json).
+     No command-file lookup, no enrichment. Prompt is passed straight through.
+
+Output: final text to stdout, progress to /dev/tty.
 """
 
 import json
@@ -24,15 +31,48 @@ import time
 from pathlib import Path
 
 # --- Constants ---
-OLLAMA_API_KEY = (
+# Sentinel API key used when routing through an OpenAI-compatible local endpoint (Ollama).
+# Claude Code rejects empty API keys even when the endpoint ignores auth, so we pass a constant.
+LOCAL_API_KEY_SENTINEL = (
     "sk-ant-api03-ollama"
     "000000000000000000000000000000000000000000000000000000000000"
     "000000000000000000-00000000AA"
 )
-OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_MODEL = "global.anthropic.claude-sonnet-4-20250514-v1:0"
+
+# Claude Code will reject arbitrary model IDs; this canonical alias is what
+# setup-ollama-aliases.sh points at whichever local model is active. The Ollama
+# server resolves the alias to the real model via its own alias table.
+LOCAL_MODEL_ALIAS_DEFAULT = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+
+def _resolve_actual_model(command_name: str = "implement") -> dict:
+    """Resolve the command → model routing entry from model-routing.json.
+
+    Returns a dict with keys: alias, model, provider, base_url, is_local.
+    Falls back to a Bedrock sonnet default if routing can't be loaded.
+    """
+    try:
+        _dir = os.path.dirname(os.path.abspath(__file__))
+        if _dir not in sys.path:
+            sys.path.insert(0, _dir)
+        from load_model_routing import load_routing, get_command_alias, resolve_alias
+        config = load_routing()
+        alias = get_command_alias(config, command_name)
+        return resolve_alias(config, alias)
+    except Exception:
+        return {
+            "alias": "sonnet",
+            "model": "global.anthropic.claude-sonnet-4-6",
+            "provider": "bedrock",
+            "provider_type": "bedrock",
+            "base_url": None,
+            "is_local": False,
+            "api_key_env": None,
+        }
+
+
 def _get_project_root() -> str:
-    """Resolve project root from environment or tenant env file, with dynamic fallback."""
+    """Resolve project root from environment or tenant env file."""
     for k in ("WORKSPACE_ROOT", "PROJECT_ROOT"):
         v = os.environ.get(k, "").rstrip("/")
         if v:
@@ -49,19 +89,8 @@ def _get_project_root() -> str:
                             return _v
     except OSError:
         pass
-    # Walk up from cwd looking for a directory that contains sdk/ (project workspace marker)
-    d = Path.cwd()
-    while d != d.parent:
-        if (d / "sdk").is_dir():
-            return str(d)
-        d = d.parent
-    # Last resort: probe common workspace layouts under $HOME
-    home = Path.home()
-    for rel in ("dev/gw", "projects/gw", "${TENANT_NAMESPACE}"):
-        candidate = home / rel
-        if (candidate / "sdk").is_dir():
-            return str(candidate)
-    return str(home / "dev" / "${TENANT_NAMESPACE}")  # best-guess default
+    # No tenant hints — fall back to the current working directory.
+    return str(Path.cwd())
 
 
 PROJECT_ROOT = _get_project_root()
@@ -476,22 +505,24 @@ def enrich_prompt(command_name, args):
         _prod_url = TENANT_ENV.get("TENANT_APP_URL_PROD", "(not configured)")
 
         if command_name == "validate-deploy-status":
+            _ci_provider_note = (
+                os.environ.get("TENANT_CI_PROVIDER")
+                or TENANT_ENV.get("TENANT_CI_PROVIDER", "(not configured)")
+            )
             extra += f"""
 YOUR TASK: Check if {issue_key} code is deployed to the target environment.
 
 STEPS:
 1. From the ISSUE CONTEXT above, find the repository:
-   a. Look for a label starting with `repo-` (e.g., repo-lambda-functions → repo is lambda-functions)
+   a. Look for a label starting with `repo-` (e.g., repo-my-service → repo is my-service)
    b. If NO repo-* label exists, parse the repo name from square brackets in the issue title
-      (e.g., "[lambda-functions] Fix X" → repo is lambda-functions)
+      (e.g., "[my-service] Fix X" → repo is my-service)
    c. If neither works, STOP and output DEPLOY_STATUS: UNKNOWN
-2. Check the Concourse pipeline for that repo:
-   ```bash
-   cd {PROJECT_ROOT} && npx tsx ~/.claude/skills/fly/list_builds.ts '{{"pipeline": "<repo>", "count": 5}}'
-   ```
-   Look for the most recent build. Status "succeeded" = deployed.
+2. Check the tenant's CI pipeline for that repo. CI provider for this tenant: {_ci_provider_note}.
+   Use whatever CI skill is installed under ~/.claude/skills/ (fly, github-actions, bitbucket, etc.).
+   Look for the most recent build on the main branch. Status "succeeded"/"success" = deployed.
 3. Determine environment from env-* labels on the issue (default: dev).
-   - dev → {_dev_url}
+   - dev  → {_dev_url}
    - demo → {_demo_url}
    - prod → {_prod_url}
 
@@ -507,27 +538,19 @@ ENV_URL: <full URL>
 """
 
         elif command_name == "validate-run-tests":
-            # Build the Playwright block: always include when has_visual_effects is true
-            _env = env_url_arg.split("//")[-1].split(".")[0] if env_url_arg else "dev"
+            _paths_to_check = ui_paths if ui_paths else ["(infer from issue description)"]
+            _paths_display = "\n     ".join(f"- {p}" for p in _paths_to_check)
             if has_visual_effects:
-                _paths_to_check = ui_paths if ui_paths else ["(infer from issue description)"]
-                _paths_display = "\n   ".join(f"- {p}" for p in _paths_to_check)
                 playwright_block = f"""
-   - PLAYWRIGHT (required — has_visual_effects=true): Visit these pages with authenticated browser:
-   {_paths_display}
-     ```bash
-     # Get auth token first
-     TOKEN=$(node ~/.claude/skills/cognito-srp-token.js "$EMAIL" "$PASSWORD" {_env})
-     # Console check — detects JS errors on authenticated pages
-     cd {PROJECT_ROOT} && npx tsx ~/.claude/skills/playwright/console-check.ts \
-       '{{"url": "{env_url_arg}<path>", "auth": {{"env": "{_env}", "role": "admin"}}, "failOnError": true}}'
-     # Screenshot — captures visual state of the page
-     cd {PROJECT_ROOT} && npx tsx ~/.claude/skills/playwright/screenshot.ts \
-       '{{"url": "{env_url_arg}<path>", "outputPath": "/tmp/validate-{issue_key}-<name>.png", "auth": {{"env": "{_env}", "role": "admin"}}}}'
-     ```
-     CRITICAL: Check `authRedirectDetected` in output — if true, mark criterion FAIL (login page ≠ evidence)."""
+   - UI CRITERIA (has_visual_effects=true): Visit these paths with an authenticated browser:
+     {_paths_display}
+     Use the tenant's Playwright skill to take a screenshot and a console-error scan for each path.
+     Look up the skill under ~/.claude/skills/ (e.g. playwright/screenshot.ts, playwright/console-check.ts)
+     or whatever screenshot skill the tenant has wired up. Save each screenshot to
+     /tmp/validate-{issue_key}-<name>.png.
+     If the page redirects to a login screen, mark the criterion FAIL — a login screenshot is NOT evidence."""
             else:
-                playwright_block = "\n   - (Playwright skipped — has_visual_effects=false for this issue)"
+                playwright_block = "\n   - (UI screenshots skipped — has_visual_effects=false for this issue)"
 
             extra += f"""
 YOUR TASK: Run validation tests for {issue_key} against {env_url_arg}.
@@ -538,21 +561,14 @@ VISUAL IMPACT: has_visual_effects={has_visual_effects}, ui_paths={ui_paths}
 STEPS:
 1. From the ISSUE CONTEXT above, extract the **Validation Criteria** from the description
    or comments. Each criterion is a testable assertion.
-1.5. ALWAYS obtain an auth token before testing API or UI endpoints:
-   ```bash
-   if [ ! -f $WORKSPACE_ROOT/e2e-tests/tests/fixtures/testData.json ]; then
-     cd $WORKSPACE_ROOT/e2e-tests && npm install --silent && npm run test-data:download
-   fi
-   CREDS=$(cat $WORKSPACE_ROOT/e2e-tests/tests/fixtures/testData.json | jq -r '[.[] | select(.role == "org_admin")][0] | "\\(.email) \\(.password) \\(.orgId)"')
-   EMAIL=$(echo "$CREDS" | awk '{{print $1}}')
-   PASSWORD=$(echo "$CREDS" | awk '{{print $2}}')
-   ORG_ID=$(echo "$CREDS" | awk '{{print $3}}')
-   TOKEN=$(node ~/.claude/skills/cognito-srp-token.js "$EMAIL" "$PASSWORD" {_env})
-   ```
-2. For each criterion, run a test:{playwright_block}
-   - API criteria: curl with Bearer token: curl -s -w '\\nHTTP %{{http_code}}' -H "Authorization: Bearer $TOKEN" -H "X-Organization-Id: $ORG_ID" {env_url_arg}/api/<path>
-   - Infrastructure criteria: use AWS CLI
-3. Write ALL results to /tmp/validate-{issue_key}-test-results.txt
+2. Obtain an auth token if API/UI criteria require one. The tenant should have an auth skill
+   under ~/.claude/skills/ (e.g. an SRP/OIDC/JWT helper). If there is no auth skill, mark
+   AUTHENTICATED: false and note AUTH_NOT_REQUIRED or AUTH_UNAVAILABLE in the output.
+3. For each criterion, run a test:{playwright_block}
+   - API criteria: curl with the auth token if one is available
+     (e.g. curl -s -w '\\nHTTP %{{http_code}}' -H "Authorization: Bearer $TOKEN" {env_url_arg}/api/<path>)
+   - Infrastructure criteria: use the appropriate cloud CLI (aws, gcloud, az, kubectl, etc.)
+4. Write ALL results to /tmp/validate-{issue_key}-test-results.txt
 
 OUTPUT FORMAT (the orchestrator parses these exact lines — you MUST include them):
 ```
@@ -573,24 +589,17 @@ Write this same block to /tmp/validate-{issue_key}-test-results.txt.
 """
 
         elif command_name == "validate-collect-evidence":
-            _env = env_url_arg.split("//")[-1].split(".")[0] if env_url_arg else "dev"
+            _paths_to_check = ui_paths if ui_paths else ["(infer from issue description)"]
+            _paths_display = "\n   ".join(f"- {p}" for p in _paths_to_check)
             if has_visual_effects:
-                _paths_to_check = ui_paths if ui_paths else ["(infer from issue description)"]
-                _paths_display = "\n   ".join(f"- {p}" for p in _paths_to_check)
                 playwright_block = f"""
-2. PLAYWRIGHT SCREENSHOTS (required — has_visual_effects=true): For EACH of these pages:
+2. UI SCREENSHOTS (has_visual_effects=true): For each of these paths, capture an authenticated
+   screenshot AND a console-error scan using the tenant's Playwright skill:
    {_paths_display}
-   Collect authenticated screenshots AND console errors:
-   ```bash
-   cd {PROJECT_ROOT} && npx tsx ~/.claude/skills/playwright/screenshot.ts \
-     '{{"url": "{env_url_arg}<path>", "outputPath": "/tmp/validate-{issue_key}-<name>.png", "auth": {{"env": "{_env}", "role": "admin"}}}}'
-   cd {PROJECT_ROOT} && npx tsx ~/.claude/skills/playwright/console-check.ts \
-     '{{"url": "{env_url_arg}<path>", "auth": {{"env": "{_env}", "role": "admin"}}, "failOnError": false}}'
-   ```
-   CRITICAL: Check `authRedirectDetected` in output — if true, mark EVIDENCE_QUALITY INSUFFICIENT.
-   Do NOT accept a login page screenshot as evidence of the feature working."""
+   Save screenshots as /tmp/validate-{issue_key}-<name>.png. Do NOT accept a login-page screenshot
+   as evidence — if the page redirects to login, mark EVIDENCE_QUALITY INSUFFICIENT."""
             else:
-                playwright_block = "\n2. (Playwright screenshots skipped — has_visual_effects=false for this issue)"
+                playwright_block = "\n2. (UI screenshots skipped — has_visual_effects=false for this issue)"
 
             extra += f"""
 YOUR TASK: Collect evidence artifacts for {issue_key} validation report.
@@ -599,13 +608,11 @@ Repository: {repo_arg}, Environment: {env_url_arg}
 VISUAL IMPACT: has_visual_effects={has_visual_effects}, ui_paths={ui_paths}
 
 STEPS:
-1. Collect build logs:
-   ```bash
-   cd {PROJECT_ROOT} && npx tsx ~/.claude/skills/fly/list_builds.ts '{{"pipeline": "{repo_arg}", "count": 1}}'
-   ```
+1. Collect the most recent CI build log for the repo using whatever CI skill the tenant has
+   under ~/.claude/skills/ (fly, github-actions, bitbucket, etc.).
 {playwright_block}
-3. If API repo (lambda-functions) or any backend with API endpoints: capture API responses with curl (use auth token from testData.json via cognito-srp-token.js)
-4. If infra repo (core-infra): capture relevant CloudWatch logs
+3. For API-producing repos: capture a few example API responses with curl + auth token.
+4. For infra repos: capture relevant cloud-provider logs (CloudWatch, Stackdriver, Azure Monitor).
 5. Write manifest to /tmp/validate-{issue_key}-evidence.txt
 
 EVIDENCE QUALITY RULES:
@@ -657,135 +664,57 @@ Write this same block to /tmp/validate-{issue_key}-evidence.txt.
         if repo:
             extra += f"\n\nTARGET REPO (from Jira label): {repo}\n"
             repo_path = os.path.join(workspace_root, repo)
-
-            if repo == "e2e-tests" and os.path.isdir(repo_path):
-                # Pre-fetch actual POM and journey directories — prevents wrong path in plan
-                pages_dir = os.path.join(repo_path, "pages")
-                journeys_dir = os.path.join(repo_path, "tests", "journeys")
+            # Tenant-agnostic: produce a shallow layout summary for the plan author.
+            # Tenant-specific repo hints (e.g. Terraform tfvars conventions, Next.js layouts)
+            # should be provided via $PROJECT_ROOT/.claude/repo-hints/<repo>.md; the model
+            # is instructed to read them below.
+            if os.path.isdir(repo_path):
                 try:
-                    if os.path.isdir(pages_dir):
-                        pages = sorted(os.listdir(pages_dir))
-                        extra += (
-                            f"\nACTUAL pages/ DIRECTORY ({len(pages)} files"
-                            " — use these exact paths in plan):\n"
-                            + "\n".join(f"  pages/{p}" for p in pages[:30]) + "\n"
-                            + "NOTE: POM files live in pages/ — never tests/page-objects/ or similar.\n"
-                        )
-                    if os.path.isdir(journeys_dir):
-                        journeys = sorted(os.listdir(journeys_dir))
-                        extra += (
-                            "\nACTUAL tests/journeys/ DOMAINS:\n"
-                            + "\n".join(f"  tests/journeys/{j}" for j in journeys) + "\n"
-                        )
-                except Exception:
+                    top_entries = sorted(
+                        e for e in os.listdir(repo_path)
+                        if not e.startswith(".") and e != "node_modules"
+                    )[:30]
+                    extra += (
+                        f"\nREPO LAYOUT ({repo_path}, top {len(top_entries)} entries):\n"
+                        + "\n".join(f"  {e}" for e in top_entries) + "\n"
+                    )
+                except OSError:
                     pass
 
-            elif repo == "lambda-functions" and os.path.isdir(repo_path):
-                functions_dir = os.path.join(repo_path, "functions")
-                try:
-                    if os.path.isdir(functions_dir):
-                        fns = sorted(
-                            f for f in os.listdir(functions_dir)
-                            if os.path.isdir(os.path.join(functions_dir, f))
-                        )
-                        extra += (
-                            f"\nACTUAL functions/ DIRECTORY ({len(fns)} functions):\n"
-                            + "\n".join(f"  functions/{f}" for f in fns) + "\n"
-                        )
-                        # tfvars per function — exposes exact env count before plan is written
-                        tfvars_lines = []
-                        for fn_name in fns:
-                            tf_dir = os.path.join(functions_dir, fn_name, "terraform")
-                            if os.path.isdir(tf_dir):
-                                tvars = sorted(
-                                    f for f in os.listdir(tf_dir) if f.endswith(".tfvars")
-                                )
-                                if tvars:
-                                    tfvars_lines.append(
-                                        f"  {fn_name}: {len(tvars)} tfvars"
-                                        f" ({', '.join(tvars)})"
-                                    )
-                        if tfvars_lines:
-                            extra += (
-                                "\nTFVARS COUNT PER FUNCTION"
-                                " (plan MUST address ALL envs for each affected function):\n"
-                                + "\n".join(tfvars_lines) + "\n"
-                            )
-                except Exception:
-                    pass
-
-                extra += (
-                    "\n\nINFRA COMPLETENESS (MANDATORY for lambda-functions plans):\n"
-                    "- If Go code calls os.Getenv(\"VAR\"), add that var to:"
-                    " variables.tf AND every tfvars file listed above\n"
-                    "- DynamoDB IAM: policy needs BOTH table_arn AND"
-                    " \"${table_arn}/index/*\" for any GSI queries\n"
-                    "- Before writing 'add X to all envs', grep each env's existing"
-                    " tfvars to verify what's already present\n"
-                    "- 'Files to Change' in plan MUST list each tfvars file explicitly"
-                    " (not 'all environments')\n"
+                hint_path = os.path.join(
+                    workspace_root, ".claude", "repo-hints", f"{repo}.md"
                 )
+                if os.path.isfile(hint_path):
+                    extra += (
+                        f"\nREPO HINTS: Read {hint_path} for tenant-specific conventions"
+                        " (directory layout, infra completeness rules, etc.) before writing the plan.\n"
+                    )
 
-            elif repo in ("core-infra", "bootstrap") and os.path.isdir(repo_path):
-                tf_envs_dir = os.path.join(repo_path, "terraform", "environments")
-                try:
-                    if os.path.isdir(tf_envs_dir):
-                        envs = sorted(os.listdir(tf_envs_dir))
-                        extra += (
-                            f"\nACTUAL terraform/environments/ ({len(envs)} envs):"
-                            f" {', '.join(envs)}\n"
-                            f"NOTE: Plan must address ALL {len(envs)} environments"
-                            " unless issue explicitly scopes to fewer.\n"
-                        )
-                except Exception:
-                    pass
-
-                extra += (
-                    "\n\nINFRA COMPLETENESS (MANDATORY for core-infra plans):\n"
-                    "- Before writing 'add X to all envs', grep each env's main.tf —"
-                    " some may already have the change\n"
-                    "- DynamoDB IAM: policy needs BOTH table ARN AND"
-                    " index ARN (\"${table_arn}/index/*\") for any GSI queries\n"
-                    "- 'Files to Change' in plan MUST list each environment file explicitly\n"
-                )
-
-            elif repo == "frontend-app" and os.path.isdir(repo_path):
-                src_dir = os.path.join(repo_path, "src")
-                try:
-                    for sub in ("pages", "components", "store", "types"):
-                        sub_dir = os.path.join(src_dir, sub)
-                        if os.path.isdir(sub_dir):
-                            entries = sorted(os.listdir(sub_dir))
-                            extra += (
-                                f"\nACTUAL src/{sub}/ ({len(entries)} items):\n"
-                                + "\n".join(f"  src/{sub}/{e}" for e in entries[:20]) + "\n"
-                            )
-                except Exception:
-                    pass
-
-    # Global CI infrastructure context — injected into ALL dispatched commands
-    # Reads TENANT_CI_PROVIDER from tenant config (default: concourse)
-    ci_provider = os.environ.get("TENANT_CI_PROVIDER") or TENANT_ENV.get("TENANT_CI_PROVIDER", "concourse")
+    # Global CI infrastructure context — injected into ALL dispatched commands.
+    # TENANT_CI_PROVIDER comes from the tenant env (load-tenant-config.py writes it to
+    # /tmp/tenant.env at session start). If unset, we skip the CI block entirely rather
+    # than baking in a default that might be wrong for this tenant.
+    ci_provider = os.environ.get("TENANT_CI_PROVIDER") or TENANT_ENV.get("TENANT_CI_PROVIDER", "")
     if ci_provider == "concourse":
         extra += (
-            "\n\nCI INFRASTRUCTURE (CRITICAL):\n"
-            "- CI is **Concourse**, NOT Bitbucket Pipelines. NEVER look for pipelines on Bitbucket.\n"
-            "- Pipeline names match repo names (e.g., frontend-app, lambda-functions, core-infra).\n"
-            f"- Check CI status: cd {PROJECT_ROOT} && npx tsx ~/.claude/skills/fly/wait_for_build.ts "
+            "\n\nCI INFRASTRUCTURE:\n"
+            "- CI is **Concourse**. Pipeline names typically match repo names.\n"
+            f"- List builds: cd {PROJECT_ROOT} && npx tsx ~/.claude/skills/fly/list_builds.ts "
+            "'{{\"pipeline\": \"<repo>\"}}'\n"
+            f"- Wait for build: cd {PROJECT_ROOT} && npx tsx ~/.claude/skills/fly/wait_for_build.ts "
             "'{{\"pipeline\": \"<repo>\", \"timeout_seconds\": 60}}'\n"
             "- Get build logs: npx tsx ~/.claude/skills/fly/watch_build.ts '{\"build_id\": <id>}'\n"
-            "- List builds: npx tsx ~/.claude/skills/fly/list_builds.ts '{\"pipeline\": \"<repo>\"}'\n"
         )
     elif ci_provider == "github-actions":
         extra += (
-            "\n\nCI INFRASTRUCTURE (CRITICAL):\n"
+            "\n\nCI INFRASTRUCTURE:\n"
             "- CI is **GitHub Actions**. Check workflow runs via `gh run list` and `gh run view`.\n"
-            "- Do NOT look for Bitbucket Pipelines or Concourse builds.\n"
         )
     elif ci_provider == "bitbucket-pipelines":
         extra += (
-            "\n\nCI INFRASTRUCTURE (CRITICAL):\n"
-            "- CI is **Bitbucket Pipelines**. Check pipeline status via Bitbucket API.\n"
+            "\n\nCI INFRASTRUCTURE:\n"
+            "- CI is **Bitbucket Pipelines**. Check pipeline status via the Bitbucket skill"
+            " under ~/.claude/skills/bitbucket/.\n"
         )
 
     return extra
@@ -863,20 +792,40 @@ def _prefetch_worktree_map(worktree_path):
     )
 
 
-def build_env():
-    """Build clean environment for the subprocess."""
+def build_env(resolution: dict | None = None):
+    """Build clean environment for the subprocess.
+
+    resolution is a routing entry from load_model_routing.resolve_alias(). When it
+    points at an OpenAI-compatible local provider (e.g. Ollama) we set
+    ANTHROPIC_BASE_URL + a sentinel API key so Claude Code routes requests there;
+    otherwise we leave Claude Code's default Bedrock/Anthropic auth path alone.
+    """
     env = {
         "HOME": os.environ.get("HOME", ""),
         "PATH": os.environ.get("PATH", ""),
         "TERM": os.environ.get("TERM", "xterm-256color"),
         "SHELL": os.environ.get("SHELL", "/bin/bash"),
-        "ANTHROPIC_API_KEY": OLLAMA_API_KEY,
-        "ANTHROPIC_BASE_URL": OLLAMA_BASE_URL,
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
         "CLAUDE_SUBPROCESS": "1",
     }
 
-    # AWS credentials (needed for SSM fallback in skills)
+    is_local = bool(resolution and resolution.get("is_local"))
+    if is_local:
+        base_url = resolution.get("base_url") or "http://localhost:11434"
+        # Claude Code expects the Anthropic-style base URL without /v1 suffix.
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+        env["ANTHROPIC_API_KEY"] = LOCAL_API_KEY_SENTINEL
+        env["ANTHROPIC_BASE_URL"] = base_url
+    else:
+        # Bedrock or remote Anthropic — propagate any already-set auth without overriding.
+        for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+                    "CLAUDE_CODE_USE_BEDROCK", "AWS_BEARER_TOKEN_BEDROCK"):
+            val = os.environ.get(var)
+            if val:
+                env[var] = val
+
+    # AWS credentials (needed for Bedrock auth and SSM fallback in skills)
     for var in ("AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
                 "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"):
         val = os.environ.get(var)
@@ -886,18 +835,20 @@ def build_env():
     env.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
     # Tenant env vars (needed for AgentDB session_id consistency across dispatches)
-    for key in ("TENANT_NAMESPACE", "TENANT_PROJECT", "TENANT_CI_PROVIDER"):
+    for key in ("TENANT_NAMESPACE", "TENANT_PROJECT", "TENANT_CI_PROVIDER",
+                "TENANT_DOTENV_PATH"):
         val = os.environ.get(key) or TENANT_ENV.get(key)
         if val:
             env[key] = val
 
     # Workspace path vars (needed so $WORKSPACE_ROOT/$PROJECT_ROOT expand in command files)
-    for key in ("PROJECT_ROOT", "DOCS_REPO"):
+    for key in ("WORKSPACE_ROOT", "PROJECT_ROOT", "DOCS_REPO"):
         val = os.environ.get(key) or TENANT_ENV.get(key)
         if val:
             env[key] = val
 
-    # Jira/Bitbucket creds from .env (optimization to skip SSM)
+    # VCS / issue-tracker creds from tenant .env (optimization to skip SSM lookups).
+    # Pass through anything with a tenant-integration prefix, not just GW's Jira/Bitbucket.
     if os.path.isfile(DOTENV_PATH):
         try:
             with open(DOTENV_PATH) as f:
@@ -909,7 +860,10 @@ def build_env():
                         key, _, val = line.partition("=")
                         key = key.strip()
                         val = val.strip().strip("'\"")
-                        if key.startswith(("BITBUCKET_", "JIRA_")):
+                        if key.startswith((
+                            "BITBUCKET_", "JIRA_", "GITHUB_", "GITLAB_",
+                            "SLACK_", "LINEAR_", "CONCOURSE_", "FLY_",
+                        )):
                             env[key] = val
         except OSError:
             pass
@@ -917,8 +871,8 @@ def build_env():
     return env
 
 
-def run(command_name, args):
-    """Dispatch command to local Ollama model."""
+def _build_command_prompt(command_name: str, args: str) -> str:
+    """Build the full enriched prompt for command mode."""
     enrichment = enrich_prompt(command_name, args)
 
     # Build lightweight worktree map for commands that work in worktrees
@@ -952,7 +906,7 @@ def run(command_name, args):
                             break
             worktree_map = _prefetch_worktree_map(wt_path)
 
-    prompt = (
+    return (
         f"Execute /{command_name} {args}.\n\n"
         f"Read the instructions: cat ~/.claude/commands/{command_name}.md\n\n"
         f"Do each phase INLINE — do NOT run slash commands or spawn subprocesses.\n"
@@ -961,7 +915,7 @@ def run(command_name, args):
         f"- NEVER re-read a file you already read earlier in this session\n"
         f"- When reading files, use offset+limit to read only the section you need (e.g., offset=50 limit=30)\n"
         f"- Do NOT read entire files over 100 lines — read the specific section you need\n"
-        f"- Do NOT fetch Jira issues or PR data that is already in the pre-fetched context below\n"
+        f"- Do NOT fetch issue/PR data that is already in the pre-fetched context below\n"
         f"- Prefer Grep to find specific code over Read to scan entire files\n"
         f"- Keep Bash command output concise: pipe through | head -50 or | tail -20 when appropriate\n\n"
         f"EFFICIENCY RULES:\n"
@@ -973,7 +927,28 @@ def run(command_name, args):
         f"{worktree_map}"
     )
 
-    env = build_env()
+
+def run(prompt: str, resolution: dict, label: str = "prompt",
+        timeout_seconds: int = 1800) -> tuple[str, int, int]:
+    """Execute a prompt via `claude --print` against the resolved model.
+
+    Args:
+        prompt: Full prompt text to send to the model.
+        resolution: Routing dict from load_model_routing.resolve_alias(). Used for
+            model id, base_url, and is_local selection.
+        label: Short identifier for progress output and timeout messages.
+        timeout_seconds: Hard wall-clock timeout for the subprocess.
+
+    Returns:
+        (output, minutes, seconds)
+    """
+    model_id = resolution.get("model") or LOCAL_MODEL_ALIAS_DEFAULT
+    # Claude Code rejects arbitrary non-Claude model IDs. If routing pointed at
+    # Ollama, swap in the canonical alias (Ollama resolves it back to the real model).
+    if resolution.get("is_local"):
+        model_id = LOCAL_MODEL_ALIAS_DEFAULT
+
+    env = build_env(resolution)
 
     # Build export block for bash -c
     exports = "\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items())
@@ -982,7 +957,7 @@ def run(command_name, args):
     dispatch_settings = os.path.join(os.path.dirname(__file__), "dispatch-settings.json")
     settings_flag = f" --settings {shlex.quote(dispatch_settings)}" if os.path.isfile(dispatch_settings) else ""
     claude_cmd = (
-        f"claude --model {shlex.quote(OLLAMA_MODEL)}"
+        f"claude --model {shlex.quote(model_id)}"
         f" --bare{settings_flag}"
         f" --print {shlex.quote(prompt)}"
         f" --allowedTools 'Bash,Read,Write,Edit,Glob,Grep,LSP'"
@@ -990,7 +965,7 @@ def run(command_name, args):
     )
 
     outfile = tempfile.NamedTemporaryFile(
-        mode="w", prefix="ollama-cmd-", suffix=".jsonl", delete=False
+        mode="w", prefix=f"dispatch-{label}-", suffix=".jsonl", delete=False
     )
     outpath = outfile.name
     outfile.close()
@@ -1058,9 +1033,11 @@ def run(command_name, args):
     start_time = time.time()
 
     try:
-        subprocess.run(cmd, timeout=1800)
+        subprocess.run(cmd, timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
-        text_parts.append(f"/{command_name} timed out after 30 minutes.")
+        text_parts.append(
+            f"{label} timed out after {timeout_seconds // 60} minutes."
+        )
     except Exception as e:
         text_parts.append(f"Error: {e}")
     finally:
@@ -1082,7 +1059,7 @@ def run(command_name, args):
         except OSError:
             pass
         # Debug copy
-        debug_path = os.path.expanduser("~/.claude/cache/last-ollama-dispatch.jsonl")
+        debug_path = os.path.expanduser("~/.claude/cache/last-dispatch.jsonl")
         try:
             os.makedirs(os.path.dirname(debug_path), exist_ok=True)
             shutil.copy2(outpath, debug_path)
@@ -1105,18 +1082,106 @@ def run(command_name, args):
     return output, mins, secs
 
 
+USAGE = """\
+Usage:
+  dispatch-local.py <command-name> [command-args...]
+      Enriched command mode. Reads ~/.claude/commands/<command-name>.md and routes
+      through model-routing.json to pick the target model.
+
+  dispatch-local.py --model <tier> [--prompt-stdin | --file <path> | -- <prompt>]
+      Raw-prompt mode. No enrichment. <tier> is a model-routing alias
+      (opus, sonnet, haiku, local, or any user-defined alias). Prompt is supplied
+      via stdin, a file, or the remaining argv after `--`.
+"""
+
+
+def _parse_raw_mode(argv: list[str]) -> tuple[str, str]:
+    """Parse argv for raw-prompt mode. Returns (tier, prompt)."""
+    try:
+        model_idx = argv.index("--model")
+        tier = argv[model_idx + 1]
+    except (ValueError, IndexError):
+        print("--model <tier> is required in raw-prompt mode.", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
+        sys.exit(2)
+
+    if "--prompt-stdin" in argv:
+        prompt = sys.stdin.read()
+    elif "--file" in argv:
+        fi = argv.index("--file")
+        try:
+            path = argv[fi + 1]
+        except IndexError:
+            print("--file requires a path argument.", file=sys.stderr)
+            sys.exit(2)
+        try:
+            with open(path) as f:
+                prompt = f.read()
+        except OSError as e:
+            print(f"Cannot read prompt file {path}: {e}", file=sys.stderr)
+            sys.exit(2)
+    elif "--" in argv:
+        di = argv.index("--")
+        prompt = " ".join(argv[di + 1:])
+    else:
+        # No source flag — consume stdin if it's not a tty.
+        if sys.stdin.isatty():
+            print("No prompt source. Use --prompt-stdin, --file, or -- <prompt>.",
+                  file=sys.stderr)
+            sys.exit(2)
+        prompt = sys.stdin.read()
+
+    if not prompt.strip():
+        print("Empty prompt.", file=sys.stderr)
+        sys.exit(2)
+
+    return tier, prompt
+
+
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: dispatch-local.py <command-name> [args...]", file=sys.stderr)
+    argv = sys.argv[1:]
+    if not argv:
+        print(USAGE, file=sys.stderr)
         sys.exit(1)
 
-    command_name = sys.argv[1]
-    args = " ".join(sys.argv[2:])
+    # Raw-prompt mode: --model appears anywhere in argv.
+    if "--model" in argv:
+        tier, prompt = _parse_raw_mode(argv)
+        try:
+            _dir = os.path.dirname(os.path.abspath(__file__))
+            if _dir not in sys.path:
+                sys.path.insert(0, _dir)
+            from load_model_routing import load_routing, resolve_alias
+            resolution = resolve_alias(load_routing(), tier)
+        except Exception:
+            # Fallback: treat tier as a literal model id.
+            resolution = {
+                "alias": tier,
+                "model": tier,
+                "provider": "unknown",
+                "provider_type": "unknown",
+                "base_url": None,
+                "is_local": tier == "local",
+                "api_key_env": None,
+            }
+        label = f"raw:{tier}"
+        progress(f"{label} → {resolution.get('model', tier)}")
+        output, _mins, _secs = run(prompt, resolution, label=label)
+        print(output)
+        return
 
-    progress(f"/{command_name} {args} → Ollama (local model)")
+    # Command mode.
+    command_name = argv[0]
+    args = " ".join(argv[1:])
+    resolution = _resolve_actual_model(command_name)
+    progress(
+        f"/{command_name} {args} → {resolution.get('model', '?')}"
+        f" ({resolution.get('provider', '?')})"
+    )
     progress("Running... (this may take several minutes)")
 
-    output, mins, secs = run(command_name, args)
+    prompt = _build_command_prompt(command_name, args)
+    output, _mins, _secs = run(prompt, resolution, label=f"cmd:{command_name}")
     print(output)
 
 
