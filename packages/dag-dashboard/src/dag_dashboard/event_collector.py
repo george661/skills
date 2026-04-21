@@ -1,4 +1,6 @@
 """Filesystem watcher for NDJSON event files."""
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -28,6 +30,7 @@ class EventCollector:
         loop: asyncio.AbstractEventLoop,
         slack_notifier: Optional[SlackNotifier] = None,
         dashboard_url: str = "http://127.0.0.1:8100",
+        node_log_line_cap: int = 50000,
     ) -> None:
         """
         Initialize event collector.
@@ -40,6 +43,7 @@ class EventCollector:
             slack_notifier: Optional Slack notifier. When set, lifecycle events
                 are forwarded to Slack with a card built by ``formatter``.
             dashboard_url: Base URL used in Slack card action links.
+            node_log_line_cap: Maximum log lines per (run_id, node_id). Default 50000.
         """
         self.events_dir = events_dir
         self.db_path = db_path
@@ -49,7 +53,10 @@ class EventCollector:
         self.dashboard_url = dashboard_url
         self.observer = Observer()
         self._file_positions: Dict[str, int] = {}
-        
+        self.node_log_line_cap = node_log_line_cap
+        self._node_log_counts: Dict[tuple[str, str], int] = {}  # (run_id, node_id) -> count
+        self._capped_nodes: set[tuple[str, str]] = set()  # Nodes that have exceeded cap
+
         # Create event handler
         handler = _EventFileHandler(self)
         self.observer.schedule(handler, str(events_dir), recursive=False)  # type: ignore[no-untyped-call]
@@ -97,28 +104,189 @@ class EventCollector:
                 f.seek(last_position)
                 new_lines = f.readlines()
                 new_position = f.tell()
-            
+
             # Update position
             self._file_positions[str(file_path)] = new_position
-            
-            # Process each line
+
+            # Fast path for bursty node_log_line streams: batch these and
+            # executemany in one connection, then fall through to the
+            # existing per-event path for all other event types. Preserves
+            # ordering within a single stream because each line is handled
+            # once by exactly one path.
+            batched_log_events: list[Dict[str, Any]] = []
+            other_events: list[Dict[str, Any]] = []
             for line in new_lines:
                 line = line.strip()
                 if not line:
                     continue
-                
                 try:
                     event_data = json.loads(line)
-                    self._persist_and_broadcast(run_id, event_data)
                 except json.JSONDecodeError as e:
                     logger.warning(f"Skipping malformed JSON in {file_path}: {e}")
                     continue
+                if event_data.get("event_type") == "node_log_line":
+                    batched_log_events.append(event_data)
+                else:
+                    other_events.append(event_data)
+
+            if batched_log_events:
+                try:
+                    self._persist_node_log_batch(run_id, batched_log_events)
+                except Exception as e:
+                    logger.error(f"Error batching node_log_line events from {file_path}: {e}")
+
+            for event_data in other_events:
+                try:
+                    self._persist_and_broadcast(run_id, event_data)
                 except Exception as e:
                     logger.error(f"Error processing event from {file_path}: {e}")
                     continue
-        
+
         except Exception as e:
             logger.error(f"Error reading file {file_path}: {e}")
+
+    def _persist_node_log_batch(self, run_id: str, events: list[Dict[str, Any]]) -> None:
+        """Batch-persist node_log_line events in a single connection + transaction.
+
+        Enforces the per-(run_id, node_id) cap and emits a single
+        ``node_log_cap_exceeded`` event the first time a node crosses the cap.
+        Malformed events are logged and skipped.
+        """
+        # Ensure workflow_runs row exists (first event for this run may arrive
+        # before workflow_started is processed).
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO workflow_runs (id, workflow_name, status, started_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (run_id, "unknown", "running", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")),
+            )
+
+            rows_to_insert: list[tuple[str, str, str, int, str, str]] = []
+            warning_rows: list[tuple[str, str, str, str]] = []
+
+            for event_data in events:
+                log_node_id = event_data.get("node_id")
+                metadata = event_data.get("metadata", {})
+                stream = metadata.get("stream")
+                sequence = metadata.get("sequence")
+                line = metadata.get("line")
+                created_at = (
+                    event_data.get("timestamp")
+                    or event_data.get("created_at")
+                    or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                )
+
+                if not isinstance(log_node_id, str) or not stream or sequence is None or line is None:
+                    logger.warning(
+                        f"Malformed node_log_line event for run {run_id}: missing required fields"
+                    )
+                    continue
+
+                node_key = (run_id, log_node_id)
+
+                # Skip silently for nodes already capped
+                if node_key in self._capped_nodes:
+                    continue
+
+                # Prime count from DB on first sighting for this node
+                if node_key not in self._node_log_counts:
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM node_logs WHERE run_id = ? AND node_id = ?",
+                        (run_id, log_node_id),
+                    )
+                    self._node_log_counts[node_key] = cursor.fetchone()[0]
+
+                current_count = self._node_log_counts[node_key]
+
+                if current_count >= self.node_log_line_cap:
+                    # Crossed the cap in-flight or pre-seeded at cap — emit warning once and stop
+                    self._capped_nodes.add(node_key)
+                    warning_payload = json.dumps(
+                        {
+                            "run_id": run_id,
+                            "node_id": log_node_id,
+                            "cap": self.node_log_line_cap,
+                            "dropped_at_sequence": sequence,
+                        }
+                    )
+                    warning_rows.append((run_id, "node_log_cap_exceeded", warning_payload, created_at))
+                    continue
+
+                rows_to_insert.append((run_id, log_node_id, stream, sequence, line, created_at))
+                self._node_log_counts[node_key] = current_count + 1
+
+                # Just crossed the cap after this insert? Emit warning once.
+                if self._node_log_counts[node_key] >= self.node_log_line_cap:
+                    self._capped_nodes.add(node_key)
+                    warning_payload = json.dumps(
+                        {
+                            "run_id": run_id,
+                            "node_id": log_node_id,
+                            "cap": self.node_log_line_cap,
+                            "dropped_at_sequence": sequence + 1,
+                        }
+                    )
+                    warning_rows.append((run_id, "node_log_cap_exceeded", warning_payload, created_at))
+
+            if rows_to_insert:
+                cursor.executemany(
+                    """
+                    INSERT INTO node_logs (run_id, node_id, stream, sequence, line, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    rows_to_insert,
+                )
+
+            # Record parent events rows for every processed node_log_line
+            event_rows = [
+                (run_id, "node_log_line", json.dumps(e), (e.get("timestamp") or e.get("created_at") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")))
+                for e in events
+            ]
+            cursor.executemany(
+                """
+                INSERT INTO events (run_id, event_type, payload, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                event_rows,
+            )
+
+            if warning_rows:
+                cursor.executemany(
+                    """
+                    INSERT INTO events (run_id, event_type, payload, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    warning_rows,
+                )
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Broadcast each event individually (keeps SSE / Slack contract)
+        for event_data in events:
+            event_type = event_data.get("event_type", "node_log_line")
+            payload = json.dumps(event_data)
+            created_at = (
+                event_data.get("timestamp")
+                or event_data.get("created_at")
+                or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            )
+            broadcast_event = {
+                "event_type": event_type,
+                "payload": payload,
+                "created_at": created_at,
+            }
+            asyncio.run_coroutine_threadsafe(
+                self.broadcaster.publish(run_id, broadcast_event),
+                self.loop,
+            )
 
     def _persist_and_broadcast(self, run_id: str, event_data: Dict[str, Any]) -> None:
         """
