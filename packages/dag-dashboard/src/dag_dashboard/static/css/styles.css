@@ -2281,7 +2281,7 @@ select.form-control {
     background: var(--bg-card);
 }
 
-.chat-message-user {
+.chat-message-operator {
     background: var(--bg);
 }
 
@@ -2353,6 +2353,15 @@ select.form-control {
     display: flex;
     gap: 0.5rem;
     align-items: flex-end;
+    flex-wrap: wrap;
+}
+
+.chat-input-hint {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 0.25rem;
+    margin-bottom: 0;
+    width: 100%;
 }
 
 .chat-input {

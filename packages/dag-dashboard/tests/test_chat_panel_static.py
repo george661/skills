@@ -36,20 +36,37 @@ def test_marked_vendor_js_served(client: TestClient):
     assert "marked" in response.text.lower() or "markdown" in response.text.lower()
 
 
+def test_dompurify_vendor_js_served(client: TestClient):
+    """Test that dompurify.min.js vendor library is served."""
+    response = client.get("/js/vendor/dompurify.min.js")
+    assert response.status_code == 200
+    # DOMPurify should have its signature
+    assert "DOMPurify" in response.text or "purify" in response.text.lower()
+
+
 def test_index_includes_chat_scripts(client: TestClient):
     """Test that index.html includes chat scripts in correct order."""
     response = client.get("/")
     assert response.status_code == 200
     html = response.text
-    
-    # Check both scripts are present
+
+    # Check all scripts are present
+    assert "/js/vendor/dompurify.min.js" in html
     assert "/js/vendor/marked.min.js" in html
     assert "/js/chat-panel.js" in html
-    
-    # Verify order: marked before chat-panel, chat-panel before app.js
+
+    # Verify order: dompurify before marked, marked before chat-panel, chat-panel before app.js
+    dompurify_pos = html.find("/js/vendor/dompurify.min.js")
     marked_pos = html.find("/js/vendor/marked.min.js")
     chat_panel_pos = html.find("/js/chat-panel.js")
     app_js_pos = html.find("/js/app.js")
-    
-    assert marked_pos < chat_panel_pos < app_js_pos, \
-        "Scripts must be in order: marked.min.js, chat-panel.js, app.js"
+
+    assert dompurify_pos < marked_pos < chat_panel_pos < app_js_pos, \
+        "Scripts must be in order: dompurify.min.js, marked.min.js, chat-panel.js, app.js"
+
+
+def test_chat_panel_has_loadhistory(client: TestClient):
+    """Test that chat-panel.js includes _loadHistory method."""
+    response = client.get("/js/chat-panel.js")
+    assert response.status_code == 200
+    assert "_loadHistory" in response.text

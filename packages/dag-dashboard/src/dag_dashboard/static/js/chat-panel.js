@@ -28,13 +28,14 @@ class ChatPanel {
           <div class="chat-empty-state">No messages yet</div>
         </div>
         <form class="chat-input-form" id="chat-form-${this.runId}">
-          <textarea 
-            class="chat-input" 
+          <textarea
+            class="chat-input"
             id="chat-input-${this.runId}"
             placeholder="Type a message... (Cmd/Ctrl+Enter to send)"
             rows="3"
           ></textarea>
           <button type="submit" class="chat-send-btn">Send</button>
+          <p class="chat-input-hint">Limit: 10 messages per minute</p>
         </form>
       </div>
     `;
@@ -45,6 +46,34 @@ class ChatPanel {
 
     this._attachEventListeners();
     this._setupScrollTracking();
+    this._loadHistory();
+  }
+
+  /**
+   * Load chat history from backend
+   */
+  async _loadHistory() {
+    try {
+      const response = await fetch(`/api/workflows/${this.runId}/chat/history?limit=50`);
+      if (!response.ok) {
+        console.error('Failed to load chat history:', response.status);
+        return;
+      }
+
+      const data = await response.json();
+      const messages = data.messages || [];
+
+      // Render messages in chronological order
+      for (const msg of messages) {
+        // Store in messages map for dedupe
+        if (msg.id) {
+          this.messages.set(msg.id, msg);
+        }
+        this.renderMessage(msg);
+      }
+    } catch (error) {
+      console.error('Failed to load chat history:', error);
+    }
   }
 
   /**
@@ -130,12 +159,25 @@ class ChatPanel {
    * Send a message to the backend
    */
   async sendMessage(content) {
-    const response = await fetch(`/api/runs/${this.runId}/chat`, {
+    // Get or prompt for operator username
+    let operatorUsername = localStorage.getItem('chat_operator_username');
+    if (!operatorUsername) {
+      operatorUsername = prompt('Enter your username for chat:');
+      if (!operatorUsername) {
+        throw new Error('Username is required to send messages');
+      }
+      localStorage.setItem('chat_operator_username', operatorUsername);
+    }
+
+    const response = await fetch(`/api/workflows/${this.runId}/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content,
+        operator_username: operatorUsername
+      }),
     });
 
     if (!response.ok) {
@@ -178,13 +220,18 @@ class ChatPanel {
     const messageDiv = document.createElement('div');
     messageDiv.className = `chat-message chat-message-${this._escapeHtml(msg.role)}`;
     
-    const timestamp = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : '';
+    const timestamp = msg.created_at ? new Date(msg.created_at).toLocaleTimeString() : '';
     const timestampHtml = timestamp ? `<span class="chat-message-time">${this._escapeHtml(timestamp)}</span>` : '';
     
-    // Use escapeHtml for non-markdown fields, marked.parse() for agent message content
-    const contentHtml = msg.role === 'agent' && typeof marked !== 'undefined'
-      ? marked.parse(msg.content)
-      : this._escapeHtml(msg.content);
+    // Sanitize all content - markdown for agent, plain text for operator
+    let contentHtml;
+    if (msg.role === 'agent' && typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+      contentHtml = DOMPurify.sanitize(marked.parse(msg.content));
+    } else if (msg.role === 'operator' && typeof DOMPurify !== 'undefined') {
+      contentHtml = DOMPurify.sanitize(this._escapeHtml(msg.content));
+    } else {
+      contentHtml = this._escapeHtml(msg.content);
+    }
 
     messageDiv.innerHTML = `
       <div class="chat-message-header">
