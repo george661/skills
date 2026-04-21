@@ -30,6 +30,7 @@ class EventType(str, Enum):
     CONDITION_EVALUATED = "condition_evaluated"
     CHANNEL_UPDATED = "channel_updated"
     CHANNEL_CONFLICT = "channel_conflict"
+    ARTIFACT_CREATED = "artifact_created"
 
 
 class StreamMode(str, Enum):
