@@ -204,7 +204,11 @@ class EventCollector:
 
             # Handle workflow_cancelled event: mark run and in-flight nodes as cancelled
             if event_type == "workflow_cancelled":
-                cancelled_by = event_data.get("cancelled_by", "unknown")
+                cancelled_by = (
+                    event_data.get("metadata", {}).get("cancelled_by")
+                    or event_data.get("cancelled_by")
+                    or "unknown"
+                )
                 finished_at = created_at
 
                 # Update workflow_runs to cancelled status
