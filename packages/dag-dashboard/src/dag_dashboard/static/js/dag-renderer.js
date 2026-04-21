@@ -84,7 +84,8 @@ class DAGRenderer {
         const isResumed = node.cache_hit === 1 && node.status === 'completed';
         const statusClass = isResumed ? 'node-status-resumed' : `node-status-${node.status.replace(/[^a-z-]/g, '')}`;
         const failureClass = node.failure_path ? ' node-status-failure-path' : '';
-        rect.setAttribute('class', statusClass + failureClass);
+        const skippedDownstreamClass = (node.failure_path && node.status === 'skipped') ? ' node-status-skipped-downstream' : '';
+        rect.setAttribute('class', statusClass + failureClass + skippedDownstreamClass);
         nodeGroup.appendChild(rect);
 
         // Node name
@@ -166,6 +167,11 @@ class DAGRenderer {
         path.setAttribute('data-source', edge.source);
         path.setAttribute('data-target', edge.target);
         path.setAttribute('data-edge-id', edge.edge_id || `${edge.source}-${edge.target}`);
+
+        // Add failure path class
+        if (edge.failure_path) {
+            path.classList.add('edge-failure-path');
+        }
 
         // Add tooltip with condition info
         if (edge.condition || edge.default) {

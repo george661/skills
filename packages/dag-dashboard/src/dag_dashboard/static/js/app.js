@@ -472,6 +472,39 @@ function renderTotals(totals) {
     `;
 }
 
+function renderFailureBanner(run, nodes) {
+    const container = document.getElementById('totals-container');
+    if (!container) return;
+
+    // Find the first failed node
+    const failedNode = nodes.find(n => n.status === 'failed');
+    if (!failedNode) return;
+
+    // Get error message excerpt (first 100 chars)
+    const errorExcerpt = failedNode.error
+        ? (failedNode.error.length > 100
+            ? failedNode.error.substring(0, 97) + '...'
+            : failedNode.error)
+        : 'No error message available';
+
+    const banner = document.createElement('div');
+    banner.className = 'workflow-failure-banner';
+    banner.innerHTML = `
+        <div class="workflow-failure-banner-icon">!</div>
+        <div class="workflow-failure-banner-content">
+            <div class="workflow-failure-banner-title">
+                Workflow Failed at ${escapeHtml(failedNode.node_name)}
+            </div>
+            <div class="workflow-failure-banner-message">
+                ${escapeHtml(errorExcerpt)}
+            </div>
+        </div>
+    `;
+
+    // Insert before totals
+    container.parentNode.insertBefore(banner, container);
+}
+
 async function renderWorkflowDetail(runId) {
     const container = document.getElementById('route-container');
 
@@ -521,6 +554,11 @@ async function renderWorkflowDetail(runId) {
         // Render totals strip
         if (workflowData.totals) {
             renderTotals(workflowData.totals);
+        }
+
+        // Render failure banner if workflow failed
+        if (workflowData.run && workflowData.run.status === 'failed') {
+            renderFailureBanner(workflowData.run, layoutData.nodes);
         }
 
         // Render DAG
