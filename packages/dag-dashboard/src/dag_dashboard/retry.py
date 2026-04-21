@@ -69,7 +69,7 @@ def create_retry_router(settings: Settings, db_path: Path) -> APIRouter:
 
             current_status = row["status"]
             workflow_name = row["workflow_name"]
-            workflow_definition = row["workflow_definition"]
+            # workflow_definition is in DB but not needed for retry
 
             # Only allow retry for failed runs
             if current_status != "failed":

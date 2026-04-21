@@ -7,7 +7,6 @@ import pytest
 from fastapi.testclient import TestClient
 from dag_dashboard.server import create_app
 from dag_dashboard.database import init_db
-from dag_dashboard.models import RunStatus
 
 
 @pytest.fixture
