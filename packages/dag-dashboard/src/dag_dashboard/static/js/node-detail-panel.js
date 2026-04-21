@@ -50,6 +50,7 @@ class NodeDetailPanel {
                     ${isInterrupted ? '<button class="tab-btn active" data-tab="approval">Approval</button>' : ''}
                     <button class="tab-btn ${!isInterrupted ? 'active' : ''}" data-tab="config">Config</button>
                     <button class="tab-btn" data-tab="logs">Logs</button>
+                    <button class="tab-btn" data-tab="chat">Chat</button>
                     <button class="tab-btn" data-tab="output">Output</button>
                     <button class="tab-btn" data-tab="artifacts">Artifacts</button>
                     ${node.content_hash ? '<button class="tab-btn" data-tab="checkpoint">Checkpoint</button>' : ''}
@@ -67,6 +68,9 @@ class NodeDetailPanel {
                     </div>
                     <div class="tab-content" data-tab="logs">
                         ${this.renderLogs(node)}
+                    </div>
+                    <div class="tab-content" data-tab="chat">
+                        ${this.renderChat(node)}
                     </div>
                     <div class="tab-content" data-tab="output">
                         ${this.renderOutput(node)}
@@ -155,6 +159,20 @@ class NodeDetailPanel {
             }, 1000);
         }
 
+        // Setup chat send button listener
+        const chatSendBtn = this.panel.querySelector(`#node-chat-send-${node.id}`);
+        const chatInput = this.panel.querySelector(`#node-chat-input-${node.id}`);
+        if (chatSendBtn && chatInput) {
+            chatSendBtn.addEventListener('click', () => this.handleSendNodeMessage(node));
+            // Also send on Enter (but not Shift+Enter for multi-line)
+            chatInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this.handleSendNodeMessage(node);
+                }
+            });
+        }
+
         // Click outside to close
         this.panel.addEventListener('click', (e) => {
             if (e.target === this.panel) {
@@ -236,6 +254,63 @@ class NodeDetailPanel {
                         <div class="log-content">${this.escapeHtml(msg.content)}</div>
                     </div>
                 `).join('')}
+            </div>
+        `;
+    }
+
+    renderChat(node) {
+        // Clear chat messages Map on node switch to prevent cross-node id collisions
+        this.chatMessages = new Map();
+
+        // Populate the Map from node.chat_messages
+        if (node.chat_messages && node.chat_messages.length > 0) {
+            node.chat_messages.forEach(msg => {
+                if (msg.id) {
+                    this.chatMessages.set(msg.id, msg);
+                }
+            });
+        }
+
+        const isRunning = node.status === 'running';
+        const modelName = node.model || 'Unknown Model';
+
+        const messagesHtml = node.chat_messages && node.chat_messages.length > 0
+            ? node.chat_messages.map(msg => `
+                <div class="node-chat-message node-chat-message-${this.escapeHtml(msg.role)}">
+                    <div class="node-chat-message-role">${this.escapeHtml(msg.role)}</div>
+                    <div class="node-chat-message-content">${this.escapeHtml(msg.content)}</div>
+                    <div class="node-chat-message-timestamp">${new Date(msg.created_at).toLocaleString()}</div>
+                </div>
+            `).join('')
+            : '<p class="empty-state">No chat messages yet</p>';
+
+        return `
+            <div class="node-chat-container">
+                <div class="node-chat-model">${this.escapeHtml(modelName)}</div>
+                <div class="node-chat-messages" id="node-chat-messages-${node.id}">
+                    ${messagesHtml}
+                </div>
+                <div class="node-chat-typing-indicator" id="node-chat-typing-${node.id}" style="display: none;">
+                    Agent is typing...
+                </div>
+                ${isRunning ? `
+                    <div class="node-chat-input-container">
+                        <textarea
+                            id="node-chat-input-${node.id}"
+                            class="node-chat-input"
+                            placeholder="Type a message..."
+                            rows="3"
+                        ></textarea>
+                        <button
+                            id="node-chat-send-${node.id}"
+                            class="node-chat-send-btn"
+                        >Send</button>
+                    </div>
+                ` : `
+                    <div class="node-chat-readonly-notice">
+                        Chat is read-only (node ${this.escapeHtml(node.status)})
+                    </div>
+                `}
             </div>
         `;
     }
@@ -751,6 +826,156 @@ class NodeDetailPanel {
         } catch (error) {
             stateViewer.innerHTML = `<div class="error">Error loading state: ${error.message}</div>`;
         }
+    }
+
+    async handleSendNodeMessage(node) {
+        const chatInput = this.panel.querySelector(`#node-chat-input-${node.id}`);
+        const typingIndicator = this.panel.querySelector(`#node-chat-typing-${node.id}`);
+        const chatSendBtn = this.panel.querySelector(`#node-chat-send-${node.id}`);
+
+        if (!chatInput || !chatInput.value.trim()) {
+            return;
+        }
+
+        const content = chatInput.value.trim();
+
+        // Get username from localStorage with fallback chain
+        const username = localStorage.getItem('chat_operator_username')
+            || localStorage.getItem('dag_username')
+            || 'operator';
+
+        // Disable input while sending
+        chatInput.disabled = true;
+        if (chatSendBtn) chatSendBtn.disabled = true;
+
+        try {
+            const response = await fetch(`/api/workflows/${node.run_id}/nodes/${node.id}/chat`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    content: content,
+                    operator_username: username,
+                }),
+            });
+
+            if (!response.ok) {
+                if (response.status === 409) {
+                    throw new Error('Node is not running');
+                } else if (response.status === 429) {
+                    throw new Error('Rate limit exceeded');
+                } else {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Failed to send message');
+                }
+            }
+
+            const message = await response.json();
+
+            // Save username to localStorage (share identity with workflow chat)
+            localStorage.setItem('chat_operator_username', username);
+
+            // Clear input
+            chatInput.value = '';
+
+            // Add message to local Map (optimistic UI)
+            if (message.id) {
+                this.chatMessages.set(message.id, message);
+            }
+
+            // Show typing indicator with 30s timeout
+            if (typingIndicator) {
+                typingIndicator.style.display = 'block';
+                // Auto-hide after 30s if no agent response
+                if (this.typingTimeout) clearTimeout(this.typingTimeout);
+                this.typingTimeout = setTimeout(() => {
+                    if (typingIndicator) typingIndicator.style.display = 'none';
+                }, 30000);
+            }
+
+            // Do NOT append to DOM here — let SSE echo render it (matches workflow chat pattern)
+            // This avoids the double-render bug since SSE payload lacks 'id' field for dedupe
+
+        } catch (error) {
+            // Show error inline (no modal interruptions)
+            this.showNodeChatError(node, error.message);
+        } finally {
+            // Re-enable input
+            chatInput.disabled = false;
+            if (chatSendBtn) chatSendBtn.disabled = false;
+            chatInput.focus();
+        }
+    }
+
+    appendChatMessage(payload) {
+        // Dedupe check - skip if we already have this message
+        if (!this.chatMessages || this.chatMessages.has(payload.id)) {
+            return;
+        }
+
+        // Add to Map
+        this.chatMessages.set(payload.id, payload);
+
+        // Append to DOM
+        if (this.currentNode) {
+            this.appendChatMessageToDOM(this.currentNode, payload);
+        }
+
+        // Hide typing indicator and clear timeout
+        const typingIndicator = this.panel?.querySelector(`#node-chat-typing-${this.currentNode.id}`);
+        if (typingIndicator) {
+            typingIndicator.style.display = 'none';
+            if (this.typingTimeout) {
+                clearTimeout(this.typingTimeout);
+                this.typingTimeout = null;
+            }
+        }
+    }
+
+    appendChatMessageToDOM(node, message) {
+        const messagesContainer = this.panel?.querySelector(`#node-chat-messages-${node.id}`);
+        if (!messagesContainer) {
+            return;
+        }
+
+        // Remove empty state if it exists
+        const emptyState = messagesContainer.querySelector('.empty-state');
+        if (emptyState) {
+            emptyState.remove();
+        }
+
+        // Create message element
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `node-chat-message node-chat-message-${this.escapeHtml(message.role)}`;
+        messageDiv.innerHTML = `
+            <div class="node-chat-message-role">${this.escapeHtml(message.role)}</div>
+            <div class="node-chat-message-content">${this.escapeHtml(message.content)}</div>
+            <div class="node-chat-message-timestamp">${new Date(message.created_at).toLocaleString()}</div>
+        `;
+
+        messagesContainer.appendChild(messageDiv);
+
+        // Scroll to bottom
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    showNodeChatError(node, message) {
+        const chatContainer = this.panel?.querySelector(`#node-chat-messages-${node.id}`);
+        if (!chatContainer) return;
+
+        // Remove any existing error
+        const existingError = this.panel.querySelector('.node-chat-error');
+        if (existingError) existingError.remove();
+
+        // Create and insert error div
+        const errorDiv = document.createElement('div');
+        errorDiv.className = 'node-chat-error';
+        errorDiv.textContent = `Error: ${message}`;
+        chatContainer.insertAdjacentElement('afterend', errorDiv);
+
+        // Auto-remove after 5 seconds
+        setTimeout(() => errorDiv.remove(), 5000);
     }
 
     switchTab(tabName) {

@@ -563,6 +563,59 @@ body {
     filter: drop-shadow(0 0 8px rgba(239, 68, 68, 0.6));
 }
 
+/* Skipped downstream nodes (dimmed) */
+.node-status-skipped-downstream {
+    opacity: 0.45;
+}
+
+/* Failure path edges (dashed red) */
+.dag-edge.edge-failure-path {
+    stroke-dasharray: 6 4;
+    stroke: #ef4444;
+    opacity: 0.7;
+}
+
+/* Workflow failure banner */
+.workflow-failure-banner {
+    background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+    border: 2px solid #ef4444;
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.workflow-failure-banner-icon {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    background: #ef4444;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 16px;
+}
+
+.workflow-failure-banner-content {
+    flex: 1;
+}
+
+.workflow-failure-banner-title {
+    font-weight: 600;
+    color: #991b1b;
+    margin-bottom: 0.25rem;
+}
+
+.workflow-failure-banner-message {
+    font-size: 0.875rem;
+    color: #7f1d1d;
+}
+
 /* Workflow totals strip */
 .workflow-totals {
     background: var(--bg-primary);
@@ -2117,6 +2170,133 @@ select.form-control {
     .retry-history-item .retry-error {
         font-size: 12px;
     }
+}
+
+/* Node chat styles (scoped within .node-detail-panel) */
+.node-detail-panel .node-chat-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    gap: 1rem;
+}
+
+.node-detail-panel .node-chat-model {
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    font-weight: 500;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.node-detail-panel .node-chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+}
+
+.node-detail-panel .node-chat-message {
+    padding: 0.75rem;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    border-left: 3px solid var(--border);
+}
+
+.node-detail-panel .node-chat-message-operator {
+    border-left-color: var(--primary);
+}
+
+.node-detail-panel .node-chat-message-agent {
+    border-left-color: #10b981;
+}
+
+.node-detail-panel .node-chat-message-role {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    margin-bottom: 0.25rem;
+}
+
+.node-detail-panel .node-chat-message-content {
+    font-size: 14px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    color: var(--text-primary);
+}
+
+.node-detail-panel .node-chat-message-timestamp {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 0.5rem;
+}
+
+.node-detail-panel .node-chat-typing-indicator {
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.node-detail-panel .node-chat-input-container {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-end;
+}
+
+.node-detail-panel .node-chat-input {
+    flex: 1;
+    padding: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 60px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.node-detail-panel .node-chat-input:focus {
+    outline: none;
+    border-color: var(--primary);
+}
+
+.node-detail-panel .node-chat-send-btn {
+    padding: 0.75rem 1.5rem;
+    background: var(--primary);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s ease;
+    white-space: nowrap;
+}
+
+.node-detail-panel .node-chat-send-btn:hover:not(:disabled) {
+    background: var(--primary-hover);
+}
+
+.node-detail-panel .node-chat-send-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.node-detail-panel .node-chat-readonly-notice {
+    padding: 0.75rem;
+    background: var(--bg-secondary);
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    text-align: center;
+    font-size: 14px;
+    color: var(--text-secondary);
 }
 
 /* Trigger source badge */

@@ -472,6 +472,39 @@ function renderTotals(totals) {
     `;
 }
 
+function renderFailureBanner(run, nodes) {
+    const container = document.getElementById('totals-container');
+    if (!container) return;
+
+    // Find the first failed node
+    const failedNode = nodes.find(n => n.status === 'failed');
+    if (!failedNode) return;
+
+    // Get error message excerpt (first 100 chars)
+    const errorExcerpt = failedNode.error
+        ? (failedNode.error.length > 100
+            ? failedNode.error.substring(0, 97) + '...'
+            : failedNode.error)
+        : 'No error message available';
+
+    const banner = document.createElement('div');
+    banner.className = 'workflow-failure-banner';
+    banner.innerHTML = `
+        <div class="workflow-failure-banner-icon">!</div>
+        <div class="workflow-failure-banner-content">
+            <div class="workflow-failure-banner-title">
+                Workflow Failed at ${escapeHtml(failedNode.node_name)}
+            </div>
+            <div class="workflow-failure-banner-message">
+                ${escapeHtml(errorExcerpt)}
+            </div>
+        </div>
+    `;
+
+    // Insert before totals
+    container.parentNode.insertBefore(banner, container);
+}
+
 async function renderWorkflowDetail(runId) {
     const container = document.getElementById('route-container');
 
@@ -521,6 +554,11 @@ async function renderWorkflowDetail(runId) {
         // Render totals strip
         if (workflowData.totals) {
             renderTotals(workflowData.totals);
+        }
+
+        // Render failure banner if workflow failed
+        if (workflowData.run && workflowData.run.status === 'failed') {
+            renderFailureBanner(workflowData.run, layoutData.nodes);
         }
 
         // Render DAG
@@ -607,9 +645,15 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel) {
             const payload = isPersisted ? JSON.parse(evt.payload) : evt;
             const eventType = isPersisted ? evt.event_type : evt.type;
 
-            // Route chat_message events to chat panel
-            if (eventType === 'chat_message' && chatPanel) {
-                chatPanel.handleSSEMessage(payload);
+            // Route chat_message events to appropriate panel
+            if (eventType === 'chat_message') {
+                // If payload has node_id and node detail panel is open for that node, route to node panel
+                if (payload.node_id && window.nodeDetailPanel?.currentNode?.id === payload.node_id) {
+                    window.nodeDetailPanel.appendChatMessage(payload);
+                } else if (chatPanel) {
+                    // Otherwise route to workflow chat panel
+                    chatPanel.handleSSEMessage(payload);
+                }
             } else if (eventType === 'node_progress' && payload.metadata && payload.metadata.attempt != null) {
                 // This is a retry event (not a token-stream event)
                 const nodeName = payload.node_id;
