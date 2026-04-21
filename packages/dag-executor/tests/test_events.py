@@ -456,3 +456,35 @@ class TestEventEmitter:
         parsed = WorkflowEvent.model_validate_json(json_str)
         assert parsed.metadata["content_hash"] == "a" * 64
         assert parsed.metadata["input_versions"] == {"channel_1": 1, "channel_2": 3}
+
+    def test_node_log_line_event_with_stream_metadata(self) -> None:
+        """Test NODE_LOG_LINE event includes stream tag and sequence number."""
+        event = WorkflowEvent(
+            event_type=EventType.NODE_LOG_LINE,
+            workflow_id="wf-456",
+            node_id="bash-1",
+            metadata={
+                "sequence": 0,
+                "stream": "stdout",
+                "line": "Hello from bash script"
+            },
+            timestamp=datetime(2026, 4, 21, 10, 0, 0)
+        )
+
+        # Verify metadata structure
+        assert event.event_type == EventType.NODE_LOG_LINE
+        assert event.metadata["sequence"] == 0
+        assert event.metadata["stream"] == "stdout"
+        assert event.metadata["line"] == "Hello from bash script"
+
+        # Verify serialization
+        json_str = event.model_dump_json()
+        assert "node_log_line" in json_str
+        assert "stdout" in json_str
+        assert "Hello from bash script" in json_str
+
+        # Verify deserialization preserves metadata
+        parsed = WorkflowEvent.model_validate_json(json_str)
+        assert parsed.metadata["sequence"] == 0
+        assert parsed.metadata["stream"] == "stdout"
+        assert parsed.metadata["line"] == "Hello from bash script"
