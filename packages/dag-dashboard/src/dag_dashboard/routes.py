@@ -29,8 +29,9 @@ router = APIRouter(prefix="/api")
 def get_db_path(request: Request) -> Path:
     """Extract database path from app state."""
     # Try to use db_path directly if available (used when db_path passed to create_app)
-    if hasattr(request.app.state, 'db_path') and request.app.state.db_path:
-        return request.app.state.db_path
+    db_path_attr = getattr(request.app.state, 'db_path', None)
+    if db_path_attr:
+        return Path(db_path_attr)
     # Fall back to db_dir / "dashboard.db" (used when db_dir passed to create_app)
     db_dir: Path = request.app.state.db_dir
     return db_dir / "dashboard.db"
