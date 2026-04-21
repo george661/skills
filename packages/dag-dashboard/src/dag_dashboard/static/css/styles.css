@@ -563,6 +563,59 @@ body {
     filter: drop-shadow(0 0 8px rgba(239, 68, 68, 0.6));
 }
 
+/* Skipped downstream nodes (dimmed) */
+.node-status-skipped-downstream {
+    opacity: 0.45;
+}
+
+/* Failure path edges (dashed red) */
+.dag-edge.edge-failure-path {
+    stroke-dasharray: 6 4;
+    stroke: #ef4444;
+    opacity: 0.7;
+}
+
+/* Workflow failure banner */
+.workflow-failure-banner {
+    background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+    border: 2px solid #ef4444;
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.workflow-failure-banner-icon {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    background: #ef4444;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 16px;
+}
+
+.workflow-failure-banner-content {
+    flex: 1;
+}
+
+.workflow-failure-banner-title {
+    font-weight: 600;
+    color: #991b1b;
+    margin-bottom: 0.25rem;
+}
+
+.workflow-failure-banner-message {
+    font-size: 0.875rem;
+    color: #7f1d1d;
+}
+
 /* Workflow totals strip */
 .workflow-totals {
     background: var(--bg-primary);
