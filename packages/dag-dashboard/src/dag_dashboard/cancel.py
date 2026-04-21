@@ -1,7 +1,7 @@
 """Cancel API routes for workflow cancellation."""
 import sqlite3
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -16,11 +16,13 @@ class CancelResponse(BaseModel):
     message: Optional[str] = None
 
 
-def create_cancel_router(settings, db_path: Path) -> APIRouter:
+def create_cancel_router(settings: Any, db_path: Path) -> APIRouter:
     """Create cancel API router.
 
     Args:
-        settings: Dashboard settings with events_dir
+        settings: Dashboard Settings instance with events_dir attribute.
+            Typed as Any to avoid a dag_dashboard.config import cycle at module
+            load time; the only attribute read is ``events_dir``.
         db_path: Path to SQLite database
 
     Returns:

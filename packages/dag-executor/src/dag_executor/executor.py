@@ -40,19 +40,19 @@ class SubprocessRegistry:
     terminate them gracefully (SIGTERM -> SIGKILL) on cancel.
     """
 
-    def __init__(self):
-        self._processes: Set[subprocess.Popen] = set()
+    def __init__(self) -> None:
+        self._processes: Set["subprocess.Popen[Any]"] = set()
         self._lock = asyncio.Lock()
 
-    def register(self, proc: subprocess.Popen) -> None:
+    def register(self, proc: "subprocess.Popen[Any]") -> None:
         """Register a subprocess."""
         self._processes.add(proc)
 
-    def deregister(self, proc: subprocess.Popen) -> None:
+    def deregister(self, proc: "subprocess.Popen[Any]") -> None:
         """Deregister a subprocess."""
         self._processes.discard(proc)
 
-    def list(self) -> List[subprocess.Popen]:
+    def list(self) -> List["subprocess.Popen[Any]"]:
         """Return list of registered processes."""
         return list(self._processes)
 
@@ -271,7 +271,7 @@ class WorkflowExecutor:
         )
 
         # Spawn cancel-marker polling task if events_dir is provided
-        cancel_poll_task: Optional[asyncio.Task] = None
+        cancel_poll_task: Optional["asyncio.Task[None]"] = None
         if events_dir is not None:
             cancel_poll_task = asyncio.create_task(
                 self._poll_cancel_marker(ctx, Path(events_dir), run_id)
