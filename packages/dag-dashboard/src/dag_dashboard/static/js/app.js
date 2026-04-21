@@ -513,6 +513,7 @@ async function renderWorkflowDetail(runId) {
             <a href="#/" style="color: var(--primary); text-decoration: none; display: inline-block; margin-bottom: 1rem;">
                 ← Back to Dashboard
             </a>
+            <div id="cancel-button-container" class="cancel-button-container"></div>
             <h2 style="margin-bottom: 1.5rem;">Workflow Detail</h2>
             <div id="executing-banner" class="executing-banner" style="display: none;">
                 <div class="executing-content">
@@ -551,6 +552,12 @@ async function renderWorkflowDetail(runId) {
 
         const workflowData = await workflowResp.json();
         const layoutData = await layoutResp.json();
+
+        // Render cancel button if workflow is running
+        const cancelButtonContainer = document.getElementById('cancel-button-container');
+        if (cancelButtonContainer && window.renderCancelButton) {
+            window.renderCancelButton(cancelButtonContainer, runId, workflowData.run?.status);
+        }
 
         // Render totals strip
         if (workflowData.totals) {
@@ -694,6 +701,12 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel) {
                 const nodeName = payload.node_id;
                 if (dagRenderer.clearRetryProgress) {
                     dagRenderer.clearRetryProgress(nodeName);
+                }
+            } else if (eventType === 'workflow_completed' || eventType === 'workflow_failed' || eventType === 'workflow_cancelled') {
+                // Hide cancel button when workflow reaches terminal state
+                const cancelButtonContainer = document.getElementById('cancel-button-container');
+                if (cancelButtonContainer && window.hideCancelButton) {
+                    window.hideCancelButton(cancelButtonContainer);
                 }
             }
         } catch (error) {
