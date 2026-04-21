@@ -2,7 +2,10 @@
 import argparse
 import json
 import shutil
+import sqlite3
+import subprocess
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,7 +27,7 @@ from dag_executor import (
 from dag_executor.replay import execute_replay
 from dag_executor.validator import WorkflowValidator
 
-SUBCOMMANDS = {"replay", "history", "inspect"}
+SUBCOMMANDS = {"replay", "history", "inspect", "rerun"}
 
 
 def _build_list_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -252,6 +255,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--progress",
         action="store_true",
         help="Show progress bar during execution",
+    )
+
+    parser.add_argument(
+        "--parent-run-id",
+        help="Parent run ID (for rerun operations)",
     )
 
     return parser.parse_args(argv)
@@ -496,6 +504,113 @@ def run_inspect(argv: List[str]) -> None:
         print(json.dumps(output, indent=2))
 
 
+def run_rerun(argv: List[str]) -> None:
+    """Run the ``rerun`` subcommand.
+
+    ``dag-exec rerun RUN_ID --workflow WORKFLOW_PATH [--db-path DB_PATH] [--remote URL]``
+    """
+    parser = argparse.ArgumentParser(prog="dag-exec rerun")
+    parser.add_argument("run_id", help="Prior run ID to rerun")
+    parser.add_argument("--workflow", help="Path to workflow file (required for local mode)")
+    parser.add_argument("--db-path", default=str(Path.home() / ".dag-dashboard" / "dashboard.db"),
+                        help="Path to dashboard database (default: ~/.dag-dashboard/dashboard.db)")
+    parser.add_argument("--remote", help="Remote dashboard URL (for remote mode)")
+
+    args = parser.parse_args(argv)
+
+    # Remote mode: POST to API
+    if args.remote:
+        try:
+            import requests
+            url = f"{args.remote.rstrip('/')}/api/workflows/{args.run_id}/rerun"
+            response = requests.post(url, json={})
+            response.raise_for_status()
+            result = response.json()
+            print(f"Rerun started: {result['run_id']}")
+            sys.exit(0)
+        except Exception as e:
+            print(f"Error calling remote API: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Local mode: Read DB and spawn subprocess
+    if not args.workflow:
+        print("Error: --workflow is required for local mode", file=sys.stderr)
+        sys.exit(1)
+
+    db_path = Path(args.db_path)
+    if not db_path.exists():
+        print(f"Database not found: {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Load prior run from DB
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT workflow_name, inputs FROM workflow_runs WHERE id = ?",
+            (args.run_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            print(f"Run not found: {args.run_id}", file=sys.stderr)
+            sys.exit(1)
+
+        workflow_name = row[0]
+        prior_inputs = json.loads(row[1]) if row[1] else {}
+
+    except Exception as e:
+        print(f"Error reading database: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Generate new run ID and timestamp
+    new_run_id = str(uuid.uuid4())
+    started_at = datetime.now(timezone.utc).isoformat()
+
+    # Insert new run row with parent_run_id BEFORE spawning subprocess
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            INSERT INTO workflow_runs (id, workflow_name, status, started_at, inputs, parent_run_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (new_run_id, workflow_name, "running", started_at, json.dumps(prior_inputs), args.run_id)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error inserting run record: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Build subprocess command
+    workflow_path = Path(args.workflow)
+    if not workflow_path.exists():
+        print(f"Workflow file not found: {workflow_path}", file=sys.stderr)
+        sys.exit(1)
+
+    cmd = ["dag-exec", str(workflow_path)]
+    for k, v in prior_inputs.items():
+        if isinstance(v, (dict, list)):
+            cmd.append(f"{k}={json.dumps(v)}")
+        else:
+            cmd.append(f"{k}={v}")
+    cmd.extend(["--parent-run-id", args.run_id])
+
+    # Spawn subprocess
+    try:
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"Rerun started: {new_run_id}")
+    except Exception as e:
+        print(f"Error spawning subprocess: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def run_replay(argv: List[str]) -> None:
     """Run the ``replay`` subcommand.
 
@@ -580,6 +695,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 return run_inspect(argv[1:])
             elif subcmd == "replay":
                 return run_replay(argv[1:])
+            elif subcmd == "rerun":
+                return run_rerun(argv[1:])
 
         args = parse_args(argv)
 

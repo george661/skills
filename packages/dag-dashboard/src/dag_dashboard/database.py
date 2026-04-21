@@ -207,6 +207,11 @@ def init_db(db_path: Path) -> None:
             pass
 
         try:
+            cursor.execute("ALTER TABLE workflow_runs ADD COLUMN parent_run_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
             cursor.execute("ALTER TABLE node_executions ADD COLUMN content_hash TEXT")
         except sqlite3.OperationalError:
             pass
