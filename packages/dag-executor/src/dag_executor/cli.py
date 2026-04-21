@@ -625,13 +625,17 @@ def main(argv: Optional[List[str]] = None) -> None:
         if argv and argv[0] in SUBCOMMANDS:
             subcmd = argv[0]
             if subcmd == "history":
-                return run_history(argv[1:])
+                run_history(argv[1:])
+                return
             elif subcmd == "inspect":
-                return run_inspect(argv[1:])
+                run_inspect(argv[1:])
+                return
             elif subcmd == "replay":
-                return run_replay(argv[1:])
+                run_replay(argv[1:])
+                return
             elif subcmd == "cancel":
-                return run_cancel(argv[1:])
+                run_cancel(argv[1:])
+                return
 
         args = parse_args(argv)
 
