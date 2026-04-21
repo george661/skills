@@ -259,10 +259,8 @@ class NodeDetailPanel {
     }
 
     renderChat(node) {
-        // Initialize chat messages Map for dedupe (will be populated in show())
-        if (!this.chatMessages) {
-            this.chatMessages = new Map();
-        }
+        // Clear chat messages Map on node switch to prevent cross-node id collisions
+        this.chatMessages = new Map();
 
         // Populate the Map from node.chat_messages
         if (node.chat_messages && node.chat_messages.length > 0) {
@@ -281,7 +279,7 @@ class NodeDetailPanel {
                 <div class="node-chat-message node-chat-message-${this.escapeHtml(msg.role)}">
                     <div class="node-chat-message-role">${this.escapeHtml(msg.role)}</div>
                     <div class="node-chat-message-content">${this.escapeHtml(msg.content)}</div>
-                    <div class="node-chat-message-timestamp">${new Date(msg.timestamp).toLocaleString()}</div>
+                    <div class="node-chat-message-timestamp">${new Date(msg.created_at).toLocaleString()}</div>
                 </div>
             `).join('')
             : '<p class="empty-state">No chat messages yet</p>';
@@ -852,17 +850,22 @@ class NodeDetailPanel {
                 this.chatMessages.set(message.id, message);
             }
 
-            // Show typing indicator
+            // Show typing indicator with 30s timeout
             if (typingIndicator) {
                 typingIndicator.style.display = 'block';
+                // Auto-hide after 30s if no agent response
+                if (this.typingTimeout) clearTimeout(this.typingTimeout);
+                this.typingTimeout = setTimeout(() => {
+                    if (typingIndicator) typingIndicator.style.display = 'none';
+                }, 30000);
             }
 
-            // Append message to DOM immediately
-            this.appendChatMessageToDOM(node, message);
+            // Do NOT append to DOM here — let SSE echo render it (matches workflow chat pattern)
+            // This avoids the double-render bug since SSE payload lacks 'id' field for dedupe
 
         } catch (error) {
-            // Show error inline
-            alert(`Error: ${error.message}`);
+            // Show error inline (no modal interruptions)
+            this.showNodeChatError(node, error.message);
         } finally {
             // Re-enable input
             chatInput.disabled = false;
@@ -885,10 +888,14 @@ class NodeDetailPanel {
             this.appendChatMessageToDOM(this.currentNode, payload);
         }
 
-        // Hide typing indicator
+        // Hide typing indicator and clear timeout
         const typingIndicator = this.panel?.querySelector(`#node-chat-typing-${this.currentNode.id}`);
         if (typingIndicator) {
             typingIndicator.style.display = 'none';
+            if (this.typingTimeout) {
+                clearTimeout(this.typingTimeout);
+                this.typingTimeout = null;
+            }
         }
     }
 
@@ -910,13 +917,31 @@ class NodeDetailPanel {
         messageDiv.innerHTML = `
             <div class="node-chat-message-role">${this.escapeHtml(message.role)}</div>
             <div class="node-chat-message-content">${this.escapeHtml(message.content)}</div>
-            <div class="node-chat-message-timestamp">${new Date(message.timestamp).toLocaleString()}</div>
+            <div class="node-chat-message-timestamp">${new Date(message.created_at).toLocaleString()}</div>
         `;
 
         messagesContainer.appendChild(messageDiv);
 
         // Scroll to bottom
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    showNodeChatError(node, message) {
+        const chatContainer = this.panel?.querySelector(`#node-chat-messages-${node.id}`);
+        if (!chatContainer) return;
+
+        // Remove any existing error
+        const existingError = this.panel.querySelector('.node-chat-error');
+        if (existingError) existingError.remove();
+
+        // Create and insert error div
+        const errorDiv = document.createElement('div');
+        errorDiv.className = 'node-chat-error';
+        errorDiv.textContent = `Error: ${message}`;
+        chatContainer.insertAdjacentElement('afterend', errorDiv);
+
+        // Auto-remove after 5 seconds
+        setTimeout(() => errorDiv.remove(), 5000);
     }
 
     switchTab(tabName) {
