@@ -16,6 +16,7 @@ from .queries import (
     insert_gate_decision, update_node, get_pending_gates, count_pending_gates,
     get_interrupt_checkpoint,
     get_state_diff_timeline, get_checkpoint_comparison,
+    list_run_artifacts,
     get_nodes_by_names,
 )
 from .layout import compute_layout
@@ -195,6 +196,19 @@ async def get_workflow_channels(request: Request, run_id: str) -> Dict[str, Any]
     channels = get_channel_states(db_path, run_id)
 
     return {"channels": channels}
+
+
+@router.get("/workflows/{run_id}/artifacts")
+async def get_workflow_artifacts(request: Request, run_id: str) -> Dict[str, Any]:
+    """List all artifacts produced by a workflow run, grouped with node context."""
+    db_path = get_db_path(request)
+
+    run = get_run(db_path, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    artifacts = list_run_artifacts(db_path, run_id)
+    return {"artifacts": artifacts}
 
 
 async def event_generator() -> AsyncIterator[str]:

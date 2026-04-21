@@ -31,6 +31,10 @@ class TestEventType:
         assert EventType.NODE_STREAM_TOKEN == "node_stream_token"
         assert EventType.NODE_PROGRESS == "node_progress"
 
+    def test_artifact_created_event_type(self) -> None:
+        """Verify ARTIFACT_CREATED event type is defined."""
+        assert EventType.ARTIFACT_CREATED == "artifact_created"
+
 
 class TestStreamMode:
     """Test StreamMode enum."""

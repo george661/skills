@@ -4,12 +4,16 @@ import copy
 import hashlib
 import json
 import random
+import signal
+import subprocess
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Union
 
 from simpleeval import SimpleEval  # type: ignore
 
@@ -27,6 +31,71 @@ from dag_executor.variables import resolve_variables
 if TYPE_CHECKING:
     from dag_executor.checkpoint import CheckpointStore
     from dag_executor.channels import ChannelStore
+
+
+class SubprocessRegistry:
+    """Thread-safe registry of running subprocesses for cancellation.
+
+    Allows the executor to track all in-flight subprocesses and
+    terminate them gracefully (SIGTERM -> SIGKILL) on cancel.
+
+    Accepts both subprocess.Popen and asyncio.subprocess.Process.
+    """
+
+    def __init__(self) -> None:
+        # Set operations are atomic under the GIL, so no explicit lock is
+        # needed for add/discard/iteration. An asyncio.Lock here would break
+        # Python 3.9 where Lock() requires a running event loop at
+        # construction time.
+        self._processes: Set[Union["subprocess.Popen[Any]", "asyncio.subprocess.Process"]] = set()
+
+    def register(self, proc: Union["subprocess.Popen[Any]", "asyncio.subprocess.Process"]) -> None:
+        """Register a subprocess."""
+        self._processes.add(proc)
+
+    def deregister(self, proc: Union["subprocess.Popen[Any]", "asyncio.subprocess.Process"]) -> None:
+        """Deregister a subprocess."""
+        self._processes.discard(proc)
+
+    def list(self) -> List[Union["subprocess.Popen[Any]", "asyncio.subprocess.Process"]]:
+        """Return list of registered processes."""
+        return list(self._processes)
+
+    def terminate_all(self, timeout: float = 5.0) -> None:
+        """Terminate all registered processes.
+
+        Sends SIGTERM first, waits up to timeout seconds,
+        then sends SIGKILL to any remaining processes.
+
+        Args:
+            timeout: Grace period in seconds before escalating to SIGKILL
+        """
+        if not self._processes:
+            return
+
+        # Send SIGTERM to all
+        for proc in self._processes:
+            try:
+                if proc.poll() is None:  # Still running
+                    proc.terminate()
+            except Exception:
+                pass  # Process may have already exited
+
+        # Wait for graceful termination
+        start = time.time()
+        while time.time() - start < timeout:
+            alive = [p for p in self._processes if p.poll() is None]
+            if not alive:
+                return
+            time.sleep(0.1)
+
+        # Escalate to SIGKILL for remaining processes
+        for proc in self._processes:
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+            except Exception:
+                pass
 
 
 @dataclass
@@ -63,9 +132,12 @@ class ExecutionContext:
     concurrency_limit: int = 10
     stopped: bool = False
     interrupted: bool = False
+    cancelled: bool = False
+    cancelled_by: Optional[str] = None
     skipped_nodes: Set[str] = field(default_factory=set)
     pool: Optional[ThreadPoolExecutor] = field(default=None, repr=False)
     semaphore: Optional[asyncio.Semaphore] = field(default=None, repr=False)
+    subprocess_registry: Optional[SubprocessRegistry] = field(default=None, repr=False)
 
     @property
     def workflow_state(self) -> Dict[str, Any]:
@@ -142,7 +214,8 @@ class WorkflowExecutor:
         event_emitter: Optional["EventEmitter"] = None,
         checkpoint_store: Optional["CheckpointStore"] = None,
         run_id: Optional[str] = None,
-        channel_store: Optional["ChannelStore"] = None
+        channel_store: Optional["ChannelStore"] = None,
+        events_dir: Optional["Path"] = None,
     ) -> WorkflowResult:
         """Execute workflow from start to completion.
 
@@ -154,6 +227,9 @@ class WorkflowExecutor:
             checkpoint_store: Optional checkpoint store for state persistence
             run_id: Optional run identifier (generated if not provided)
             channel_store: Optional channel store for version-based checkpoint optimization
+            events_dir: Optional directory for cancel marker files. When provided,
+                a background task polls {events_dir}/{run_id}.cancel every 1s and
+                triggers SIGTERM/SIGKILL termination on marker detection.
 
         Returns:
             WorkflowResult with execution status and node results
@@ -196,7 +272,15 @@ class WorkflowExecutor:
             concurrency_limit=concurrency_limit,
             pool=pool,
             semaphore=asyncio.Semaphore(concurrency_limit),
+            subprocess_registry=SubprocessRegistry(),
         )
+
+        # Spawn cancel-marker polling task if events_dir is provided
+        cancel_poll_task: Optional["asyncio.Task[None]"] = None
+        if events_dir is not None:
+            cancel_poll_task = asyncio.create_task(
+                self._poll_cancel_marker(ctx, Path(events_dir), run_id)
+            )
 
         # Create channel event emitter callback that wraps EventEmitter
         # The callback signature expected by Channel.write is: (event_type: str, payload: Dict)
@@ -231,6 +315,10 @@ class WorkflowExecutor:
 
         # Execute layers sequentially, nodes within layer in parallel
         for layer in layers:
+            if ctx.cancelled:
+                # Fast exit — polling task detected cancel marker.
+                break
+
             if ctx.stopped:
                 # Mark remaining nodes as skipped
                 for node_id in layer:
@@ -263,15 +351,28 @@ class WorkflowExecutor:
             if ctx.channel_store is not None:
                 ctx.channel_store.reset_all()
 
-            # Check if any node triggered a stop or interrupt
-            if ctx.stopped or ctx.interrupted:
+            # Check if any node triggered a stop, interrupt, or cancellation
+            if ctx.stopped or ctx.interrupted or ctx.cancelled:
                 break
 
-        # Mark any remaining PENDING nodes as SKIPPED (when stopped or interrupted)
-        if ctx.stopped or ctx.interrupted:
+        # Stop the cancel-marker polling task now that layer execution is done.
+        if cancel_poll_task is not None:
+            cancel_poll_task.cancel()
+            try:
+                await cancel_poll_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        # Mark any remaining PENDING nodes as SKIPPED (when stopped, interrupted, or cancelled)
+        if ctx.stopped or ctx.interrupted or ctx.cancelled:
             for node_id, status in list(ctx.node_statuses.items()):
                 if status == NodeStatus.PENDING:
-                    error_msg = "Workflow interrupted" if ctx.interrupted else "Workflow stopped due to upstream failure"
+                    if ctx.cancelled:
+                        error_msg = "Workflow cancelled"
+                    elif ctx.interrupted:
+                        error_msg = "Workflow interrupted"
+                    else:
+                        error_msg = "Workflow stopped due to upstream failure"
                     ctx.node_results[node_id] = NodeResult(
                         status=NodeStatus.SKIPPED,
                         error=error_msg
@@ -301,9 +402,18 @@ class WorkflowExecutor:
         workflow_completed_at = datetime.now(timezone.utc)
         workflow_duration_ms = int((workflow_completed_at - workflow_started_at).total_seconds() * 1000)
 
-        # Emit WORKFLOW_COMPLETED, WORKFLOW_FAILED, or WORKFLOW_INTERRUPTED event
+        # Emit terminal lifecycle event
         if event_emitter:
-            if final_status == WorkflowStatus.PAUSED:
+            if final_status == WorkflowStatus.CANCELLED:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.WORKFLOW_CANCELLED,
+                    workflow_id=workflow_def.name,
+                    status=final_status,
+                    duration_ms=workflow_duration_ms,
+                    metadata={"cancelled_by": ctx.cancelled_by or "unknown"},
+                    timestamp=workflow_completed_at
+                ))
+            elif final_status == WorkflowStatus.PAUSED:
                 event_emitter.emit(WorkflowEvent(
                     event_type=EventType.WORKFLOW_INTERRUPTED,
                     workflow_id=workflow_def.name,
@@ -353,7 +463,47 @@ class WorkflowExecutor:
             run_id=run_id,
             node_statuses=ctx.node_statuses
         )
-    
+
+    async def _poll_cancel_marker(
+        self,
+        ctx: ExecutionContext,
+        events_dir: "Path",
+        run_id: str,
+        poll_interval: float = 1.0,
+    ) -> None:
+        """Poll for a cancel marker file and trigger termination when detected.
+
+        Watches {events_dir}/{run_id}.cancel. On detection, reads the JSON
+        payload to extract cancelled_by, sets ctx.cancelled, and sends
+        SIGTERM -> SIGKILL to all registered subprocesses.
+
+        Runs as an asyncio background task; cancelled by the main execute()
+        coroutine when the layer loop exits.
+        """
+        marker = events_dir / f"{run_id}.cancel"
+        while True:
+            try:
+                if marker.exists():
+                    try:
+                        payload = json.loads(marker.read_text())
+                        cancelled_by = payload.get("cancelled_by", "unknown")
+                    except (json.JSONDecodeError, OSError):
+                        cancelled_by = "unknown"
+                    ctx.cancelled = True
+                    ctx.cancelled_by = cancelled_by
+                    # Terminate in-flight subprocesses. terminate_all is
+                    # synchronous and blocking (up to 5s) — run it in the
+                    # default executor so we don't block the event loop.
+                    if ctx.subprocess_registry is not None:
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(
+                            None, ctx.subprocess_registry.terminate_all, 5.0
+                        )
+                    return
+                await asyncio.sleep(poll_interval)
+            except asyncio.CancelledError:
+                raise
+
     async def _execute_layer(
         self,
         layer_node_ids: List[str],
@@ -639,7 +789,8 @@ class WorkflowExecutor:
                 workflow_id=workflow_def.name,
                 max_output_bytes=10 * 1024 * 1024,
                 progress_callback=progress_callback,
-                event_emitter=event_emitter
+                event_emitter=event_emitter,
+                subprocess_registry=ctx.subprocess_registry,
             )
             
             # Get timeout for this node
@@ -1411,6 +1562,10 @@ class WorkflowExecutor:
         Returns:
             Final workflow status
         """
+        # Cancellation is terminal and takes priority over everything else
+        if ctx.cancelled:
+            return WorkflowStatus.CANCELLED
+
         statuses = ctx.node_statuses.values()
 
         # Check for interrupted nodes first (PAUSED takes priority)
