@@ -332,7 +332,7 @@ class EventCollector:
                     """
                     UPDATE workflow_runs
                     SET workflow_definition = ?, status = ?, started_at = ?
-                    WHERE id = ? AND workflow_definition IS NULL
+                    WHERE id = ? AND (workflow_definition IS NULL OR status = 'resuming')
                     """,
                     (workflow_definition, "running", created_at, run_id)
                 )

@@ -622,3 +622,62 @@ nodes:
 
     finally:
         collector.stop()
+
+@pytest.mark.asyncio
+async def test_workflow_started_transitions_resuming_to_running(
+    test_db: Path,
+    events_dir: Path,
+    broadcaster: Broadcaster
+) -> None:
+    """Test that workflow_started transitions resuming to running."""
+    run_id = "test-resuming-run"
+    workflow_name = "test-workflow"
+    workflow_definition = '{"nodes": [{"id": "task1"}], "edges": []}'
+    
+    # Create run with status='resuming' and populated workflow_definition
+    conn = sqlite3.connect(test_db)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute(
+        """
+        INSERT INTO workflow_runs (id, workflow_name, status, started_at, workflow_definition)
+        VALUES (?, ?, ?, datetime('now'), ?)
+        """,
+        (run_id, workflow_name, "resuming", workflow_definition)
+    )
+    conn.commit()
+    conn.close()
+    
+    # Write workflow_started event
+    event_file = events_dir / f"{run_id}.ndjson"
+    event = {
+        "event_type": "workflow_started",
+        "created_at": "2024-01-01T12:00:00Z",
+        "payload": json.dumps({
+            "run_id": run_id,
+            "workflow_name": workflow_name,
+            "workflow_definition": workflow_definition
+        })
+    }
+    event_file.write_text(json.dumps(event) + "\n")
+    
+    # Process event via collector
+    loop = asyncio.get_event_loop()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop
+    )
+
+    collector._process_file(event_file)  # Synchronous call
+
+    # Verify status transitioned to running
+    conn = sqlite3.connect(test_db)
+    cursor = conn.cursor()
+    cursor.execute("SELECT status FROM workflow_runs WHERE id = ?", (run_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    assert row is not None
+    assert row[0] == "running", f"Expected status 'running', got '{row[0]}'"
