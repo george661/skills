@@ -107,3 +107,33 @@ def test_cancel_api_default_cancelled_by_dashboard_ui(test_app):
         marker_data = json.load(f)
     
     assert marker_data["cancelled_by"] == "dashboard-ui"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for review feedback (C1 — API path traversal)
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_api_rejects_malformed_run_id(test_app):
+    """Malformed run_id must return 400 and NOT write a marker."""
+    client, events_dir = test_app
+
+    # FastAPI strips leading/trailing slashes and rejects encoded slashes
+    # in path params, so use a run_id that smuggles "." past routing.
+    # validate_run_id requires ^[a-zA-Z0-9-]+$ so any "." is rejected.
+    response = client.post("/api/workflows/..etc..passwd/cancel")
+
+    assert response.status_code == 400
+    assert "Invalid run_id" in response.json().get("detail", "")
+
+    # No marker was written anywhere in events_dir.
+    assert not list(events_dir.glob("*.cancel"))
+
+
+def test_cancel_api_rejects_run_id_with_dot(test_app):
+    """A single dot in run_id must be rejected."""
+    client, events_dir = test_app
+
+    response = client.post("/api/workflows/foo.bar/cancel")
+    assert response.status_code == 400
+    assert not list(events_dir.glob("*.cancel"))

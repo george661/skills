@@ -55,7 +55,7 @@ class SkillRunner(BaseRunner):
             )
 
             # Register with subprocess registry if available
-            if ctx.subprocess_registry:
+            if ctx.subprocess_registry is not None:
                 ctx.subprocess_registry.register(proc)
 
             try:
@@ -63,35 +63,26 @@ class SkillRunner(BaseRunner):
                     input=json.dumps(params),
                     timeout=ctx.node_def.timeout or 300
                 )
-                result_returncode = proc.returncode
+                returncode = proc.returncode
             finally:
                 # Deregister from registry
-                if ctx.subprocess_registry:
+                if ctx.subprocess_registry is not None:
                     ctx.subprocess_registry.deregister(proc)
 
-            # Create result object compatible with subprocess.run
-            class CompletedProcess:
-                def __init__(self, returncode, stdout, stderr):
-                    self.returncode = returncode
-                    self.stdout = stdout
-                    self.stderr = stderr
-
-            result = CompletedProcess(result_returncode, stdout, stderr)
-            
             # Parse output
-            if result.returncode != 0:
+            if returncode != 0:
                 return NodeResult(
                     status=NodeStatus.FAILED,
-                    error=result.stderr or f"Skill exited with code {result.returncode}"
+                    error=stderr or f"Skill exited with code {returncode}"
                 )
-            
+
             # Try to parse JSON output
             try:
-                output = json.loads(result.stdout)
+                output = json.loads(stdout)
             except json.JSONDecodeError:
                 # Non-JSON output, return as raw text
-                output = {"stdout": result.stdout}
-            
+                output = {"stdout": stdout}
+
             return NodeResult(
                 status=NodeStatus.COMPLETED,
                 output=output

@@ -209,7 +209,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     
     parser.add_argument(
         "--run-id",
-        help="Run ID to resume (required with --resume)",
+        help=(
+            "Run ID. Required with --resume. For normal execution, when set, "
+            "the executor uses this run_id instead of generating a new UUID; "
+            "this is how the dashboard trigger endpoint keeps its database "
+            "run_id in sync with the NDJSON filename and cancel marker path."
+        ),
     )
     
     parser.add_argument(
@@ -580,8 +585,7 @@ def run_cancel(argv: List[str]) -> int:
 
     Writes atomic cancel marker to {events_dir}/{run_id}.cancel
     """
-    import tempfile
-    from datetime import datetime, timezone
+    from dag_executor.cancel import InvalidRunIdError, write_cancel_marker
 
     parser = argparse.ArgumentParser(prog="dag-exec cancel")
     parser.add_argument("run_id", help="Run ID to cancel")
@@ -597,27 +601,11 @@ def run_cancel(argv: List[str]) -> int:
     else:
         events_dir = Path(".dag-events")
 
-    events_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create marker payload
-    marker_data = {
-        "cancelled_by": args.cancelled_by,
-        "cancelled_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    # Write atomically: temp file -> rename
-    marker_path = events_dir / f"{args.run_id}.cancel"
-    with tempfile.NamedTemporaryFile(
-        mode='w',
-        dir=events_dir,
-        delete=False,
-        suffix='.tmp'
-    ) as tmp_file:
-        json.dump(marker_data, tmp_file)
-        tmp_path = Path(tmp_file.name)
-
-    # Atomic rename (POSIX guarantees atomicity on same filesystem)
-    tmp_path.rename(marker_path)
+    try:
+        write_cancel_marker(events_dir, args.run_id, args.cancelled_by)
+    except InvalidRunIdError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
 
     return 0
 
@@ -683,9 +671,20 @@ def main(argv: Optional[List[str]] = None) -> None:
             events_dir = Path(events_dir_str)
             events_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate run_id early so we can name the NDJSON log file.
+        # Resolve run_id. When the caller (e.g. dashboard trigger) supplies one
+        # via --run-id, use it so the NDJSON filename, cancel marker path, and
+        # the caller's database row all agree. Otherwise generate a fresh UUID.
         import uuid
-        run_id = str(uuid.uuid4())
+        from dag_executor.cancel import InvalidRunIdError, validate_run_id
+        if args.run_id and not args.resume:
+            try:
+                validate_run_id(args.run_id)
+            except InvalidRunIdError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(2)
+            run_id = args.run_id
+        else:
+            run_id = str(uuid.uuid4())
 
         # Setup event emitter if streaming, progress, notifications, or events_dir configured.
         # events_dir forces event logging so the dashboard collector can tail runs.
