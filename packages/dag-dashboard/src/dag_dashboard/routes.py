@@ -17,6 +17,7 @@ from .queries import (
     get_interrupt_checkpoint,
     get_state_diff_timeline, get_checkpoint_comparison,
     list_run_artifacts,
+    get_nodes_by_names,
 )
 from .layout import compute_layout
 
@@ -105,10 +106,35 @@ async def get_workflow_node(
     artifacts = get_artifacts(db_path, node_id)
     chat_messages = get_chat_messages(db_path, node_id)
 
+    # Enrich with upstream context if node has dependencies
+    upstream_context = []
+    depends_on_raw = node.get("depends_on")
+    if depends_on_raw:
+        try:
+            depends_on = json.loads(depends_on_raw) if isinstance(depends_on_raw, str) else depends_on_raw
+            if depends_on and isinstance(depends_on, list):
+                # Batch-resolve upstream nodes
+                upstream_nodes = get_nodes_by_names(db_path, run_id, depends_on)
+
+                # Build upstream context with artifacts for each upstream
+                for upstream_name in depends_on:
+                    if upstream_name in upstream_nodes:
+                        upstream_node = upstream_nodes[upstream_name]
+                        upstream_artifacts = get_artifacts(db_path, upstream_node["id"])
+                        upstream_context.append({
+                            "node_id": upstream_node["id"],
+                            "node_name": upstream_node["node_name"],
+                            "status": upstream_node["status"],
+                            "artifacts": upstream_artifacts,
+                        })
+        except (json.JSONDecodeError, TypeError):
+            pass  # If depends_on is malformed, leave upstream_context empty
+
     return {
         **node,
         "artifacts": artifacts,
         "chat_messages": chat_messages,
+        "upstream_context": upstream_context,
     }
 
 
