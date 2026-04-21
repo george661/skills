@@ -1,5 +1,6 @@
 """DAG executor public API."""
 import asyncio
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # Runtime models (execution tracking)
@@ -167,6 +168,7 @@ def execute_workflow(
     run_id: Optional[str] = None,
     event_emitter: Optional[EventEmitter] = None,
     channel_store: Optional["ChannelStore"] = None,
+    events_dir: Optional["Path"] = None,
 ) -> WorkflowResult:
     """Execute a workflow from start to completion.
 
@@ -178,6 +180,9 @@ def execute_workflow(
         run_id: Optional run identifier (generated if not provided)
         event_emitter: Optional event emitter for streaming execution events
         channel_store: Optional channel store for version-based checkpoint optimization
+        events_dir: Optional directory for cancel marker files. When provided,
+            the executor polls {events_dir}/{run_id}.cancel every 1s and
+            triggers SIGTERM/SIGKILL on marker detection.
 
     Returns:
         WorkflowResult with execution status and node results
@@ -190,7 +195,7 @@ def execute_workflow(
         executor.execute(
             workflow_def, inputs or {}, concurrency_limit,
             event_emitter=event_emitter, checkpoint_store=checkpoint_store, run_id=run_id,
-            channel_store=channel_store
+            channel_store=channel_store, events_dir=events_dir,
         )
     )
 

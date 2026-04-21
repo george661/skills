@@ -25,6 +25,7 @@ class WorkflowStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED = "paused"
+    CANCELLED = "cancelled"
 
 
 class NodeResult(BaseModel):

@@ -32,38 +32,47 @@ class BashRunner(BaseRunner):
         for key, value in ctx.resolved_inputs.items():
             env[f"DAG_{key.upper()}"] = str(value)
         
-        # Execute bash script
+        # Execute bash script using Popen for subprocess registry support
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 ["bash", "-c", script],
                 env=env,
-                capture_output=True,
-                text=True,
-                timeout=ctx.node_def.timeout or 300  # Default 5 min timeout
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
             )
-            
+
+            # Register with subprocess registry if available
+            if ctx.subprocess_registry is not None:
+                ctx.subprocess_registry.register(proc)
+
+            try:
+                stdout, stderr = proc.communicate(timeout=ctx.node_def.timeout or 300)
+                returncode = proc.returncode
+            finally:
+                # Deregister from registry
+                if ctx.subprocess_registry is not None:
+                    ctx.subprocess_registry.deregister(proc)
+
             # Check output size limit
-            total_output_size = len(result.stdout) + len(result.stderr)
+            total_output_size = len(stdout) + len(stderr)
             if total_output_size > ctx.max_output_bytes:
                 return NodeResult(
                     status=NodeStatus.FAILED,
                     error=f"Output size limit exceeded: {total_output_size} bytes > {ctx.max_output_bytes} bytes"
                 )
-            
+
             # Check exit code
-            if result.returncode != 0:
+            if returncode != 0:
                 return NodeResult(
                     status=NodeStatus.FAILED,
-                    error=result.stderr or f"Script exited with code {result.returncode}",
-                    output={"stdout": result.stdout, "stderr": result.stderr}
+                    error=stderr or f"Script exited with code {returncode}",
+                    output={"stdout": stdout, "stderr": stderr}
                 )
-            
+
             return NodeResult(
                 status=NodeStatus.COMPLETED,
-                output={
-                    "stdout": result.stdout,
-                    "stderr": result.stderr
-                }
+                output={"stdout": stdout, "stderr": stderr}
             )
             
         except subprocess.TimeoutExpired:

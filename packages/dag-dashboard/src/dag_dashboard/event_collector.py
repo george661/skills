@@ -202,6 +202,35 @@ class EventCollector:
                     (run_id, workflow_name, "running", created_at)
                 )
 
+            # Handle workflow_cancelled event: mark run and in-flight nodes as cancelled
+            if event_type == "workflow_cancelled":
+                cancelled_by = (
+                    event_data.get("metadata", {}).get("cancelled_by")
+                    or event_data.get("cancelled_by")
+                    or "unknown"
+                )
+                finished_at = created_at
+
+                # Update workflow_runs to cancelled status
+                cursor.execute(
+                    """
+                    UPDATE workflow_runs
+                    SET status = ?, finished_at = ?, cancelled_by = ?
+                    WHERE id = ?
+                    """,
+                    ("cancelled", finished_at, cancelled_by, run_id)
+                )
+
+                # Mark all running/pending nodes as cancelled
+                cursor.execute(
+                    """
+                    UPDATE node_executions
+                    SET status = ?, finished_at = ?
+                    WHERE run_id = ? AND status IN ('running', 'pending')
+                    """,
+                    ("cancelled", finished_at, run_id)
+                )
+
             # Insert event
             cursor.execute(
                 """

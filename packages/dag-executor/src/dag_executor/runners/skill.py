@@ -44,30 +44,45 @@ class SkillRunner(BaseRunner):
                 error=str(e)
             )
         
-        # Execute skill via subprocess
+        # Execute skill via subprocess using Popen for subprocess registry support
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 ["python3", str(resolved_path)],
-                input=json.dumps(params),
-                capture_output=True,
-                text=True,
-                timeout=ctx.node_def.timeout or 300  # Default 5 min timeout
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
             )
-            
+
+            # Register with subprocess registry if available
+            if ctx.subprocess_registry is not None:
+                ctx.subprocess_registry.register(proc)
+
+            try:
+                stdout, stderr = proc.communicate(
+                    input=json.dumps(params),
+                    timeout=ctx.node_def.timeout or 300
+                )
+                returncode = proc.returncode
+            finally:
+                # Deregister from registry
+                if ctx.subprocess_registry is not None:
+                    ctx.subprocess_registry.deregister(proc)
+
             # Parse output
-            if result.returncode != 0:
+            if returncode != 0:
                 return NodeResult(
                     status=NodeStatus.FAILED,
-                    error=result.stderr or f"Skill exited with code {result.returncode}"
+                    error=stderr or f"Skill exited with code {returncode}"
                 )
-            
+
             # Try to parse JSON output
             try:
-                output = json.loads(result.stdout)
+                output = json.loads(stdout)
             except json.JSONDecodeError:
                 # Non-JSON output, return as raw text
-                output = {"stdout": result.stdout}
-            
+                output = {"stdout": stdout}
+
             return NodeResult(
                 status=NodeStatus.COMPLETED,
                 output=output

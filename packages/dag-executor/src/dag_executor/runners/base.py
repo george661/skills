@@ -8,6 +8,7 @@ from dag_executor.schema import NodeDef, NodeResult
 
 if TYPE_CHECKING:
     from dag_executor.events import EventEmitter
+    from dag_executor.executor import SubprocessRegistry
 
 
 @dataclass
@@ -24,6 +25,7 @@ class RunnerContext:
         max_output_bytes: Maximum output size limit (default 10MB)
         progress_callback: Optional callback for emitting progress events during execution
         event_emitter: Optional event emitter for streaming token events
+        subprocess_registry: Optional registry for tracking subprocesses (for cancellation)
     """
     node_def: NodeDef
     resolved_inputs: Dict[str, Any] = field(default_factory=dict)
@@ -34,6 +36,7 @@ class RunnerContext:
     max_output_bytes: int = 10 * 1024 * 1024  # 10MB
     progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
     event_emitter: Optional["EventEmitter"] = None
+    subprocess_registry: Optional["SubprocessRegistry"] = None
 
 
 class BaseRunner(ABC):

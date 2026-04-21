@@ -43,6 +43,7 @@ class PromptRunner(BaseRunner):
             cmd.extend(["--file", node.prompt_file])
         
         # Execute CLI with streaming support
+        process = None
         try:
             # Use Popen for line-by-line streaming
             process = subprocess.Popen(
@@ -52,6 +53,10 @@ class PromptRunner(BaseRunner):
                 stderr=subprocess.PIPE,
                 text=True
             )
+
+            # Register with subprocess registry so cancel can SIGTERM it
+            if ctx.subprocess_registry is not None:
+                ctx.subprocess_registry.register(process)
 
             # Write input if provided
             if prompt_input and process.stdin:
@@ -112,3 +117,7 @@ class PromptRunner(BaseRunner):
                 status=NodeStatus.FAILED,
                 error=f"Prompt execution failed: {str(e)}"
             )
+        finally:
+            # Always deregister from subprocess registry, even on exception
+            if process is not None and ctx.subprocess_registry is not None:
+                ctx.subprocess_registry.deregister(process)
