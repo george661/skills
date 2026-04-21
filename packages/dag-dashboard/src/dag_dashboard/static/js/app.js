@@ -514,6 +514,7 @@ async function renderWorkflowDetail(runId) {
                 ← Back to Dashboard
             </a>
             <div id="cancel-button-container" class="cancel-button-container"></div>
+            <div id="retry-button-container" class="retry-button-container"></div>
             <h2 style="margin-bottom: 1.5rem;">Workflow Detail</h2>
             <div id="executing-banner" class="executing-banner" style="display: none;">
                 <div class="executing-content">
@@ -557,6 +558,12 @@ async function renderWorkflowDetail(runId) {
         const cancelButtonContainer = document.getElementById('cancel-button-container');
         if (cancelButtonContainer && window.renderCancelButton) {
             window.renderCancelButton(cancelButtonContainer, runId, workflowData.run?.status);
+        }
+
+        // Render retry button if workflow is failed
+        const retryButtonContainer = document.getElementById('retry-button-container');
+        if (retryButtonContainer && window.renderRetryButton) {
+            window.renderRetryButton(retryButtonContainer, runId, workflowData.run?.status);
         }
 
         // Render totals strip
@@ -707,6 +714,14 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel) {
                 const cancelButtonContainer = document.getElementById('cancel-button-container');
                 if (cancelButtonContainer && window.hideCancelButton) {
                     window.hideCancelButton(cancelButtonContainer);
+                }
+
+                // Show retry button if workflow failed
+                if (eventType === 'workflow_failed') {
+                    const retryButtonContainer = document.getElementById('retry-button-container');
+                    if (retryButtonContainer && window.renderRetryButton) {
+                        window.renderRetryButton(retryButtonContainer, runId, 'failed');
+                    }
                 }
             }
         } catch (error) {
