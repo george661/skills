@@ -53,8 +53,6 @@ def test_cli_rerun_loads_prior_run_from_db():
             assert mock_popen.called
             call_args = mock_popen.call_args[0][0]
             assert "dag-exec" in call_args[0]
-            assert "--parent-run-id" in call_args
-            assert "prior-run-123" in call_args
 
 
 def test_cli_rerun_db_path_defaults():
@@ -169,10 +167,62 @@ def test_cli_rerun_remote_mode_posts_to_api():
             assert "/api/workflows/prior-run-123/rerun" in call_url
 
 
-def test_cli_parent_run_id_flag_exists():
-    """Test that main dag-exec CLI accepts --parent-run-id flag."""
-    from dag_executor.cli import parse_args
-    
-    args = parse_args(["workflow.yml", '{"inputs": "test"}', "--parent-run-id", "parent-123"])
-    
-    assert args.parent_run_id == "parent-123"
+def test_cli_rerun_passes_run_id_to_subprocess():
+    """Test that cli rerun passes --run-id to spawned dag-exec subprocess matching pre-inserted row."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "dashboard.db"
+        workflow_path = Path(tmpdir) / "workflow.yml"
+        workflow_path.write_text("nodes: []")
+
+        # Create a mock dashboard DB with a prior run
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE workflow_runs (
+                id TEXT PRIMARY KEY,
+                workflow_name TEXT,
+                inputs TEXT,
+                status TEXT,
+                parent_run_id TEXT,
+                started_at TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO workflow_runs (id, workflow_name, inputs, status) VALUES (?, ?, ?, ?)",
+            ("prior-run-123", "test-workflow", json.dumps({"key": "value"}), "completed"),
+        )
+        conn.commit()
+        conn.close()
+
+        from dag_executor.cli import main
+
+        with patch("subprocess.Popen") as mock_popen, \
+             patch("sys.argv", [
+                 "dag-exec", "rerun", "prior-run-123",
+                 "--workflow", str(workflow_path),
+                 "--db-path", str(db_path)
+             ]):
+
+            # Run CLI
+            try:
+                main()
+            except SystemExit:
+                pass
+
+            # Verify subprocess was spawned with --run-id matching the pre-inserted row
+            assert mock_popen.called, "subprocess.Popen should have been called"
+            call_args = mock_popen.call_args[0][0]
+
+            # Find --run-id in command args
+            assert "--run-id" in call_args, "subprocess should receive --run-id flag"
+            run_id_index = call_args.index("--run-id")
+            subprocess_run_id = call_args[run_id_index + 1]
+
+            # Verify the run_id matches the pre-inserted row
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM workflow_runs WHERE parent_run_id = ?", ("prior-run-123",))
+            pre_inserted_run_id = cursor.fetchone()[0]
+            conn.close()
+
+            assert subprocess_run_id == pre_inserted_run_id, \
+                f"subprocess --run-id {subprocess_run_id} should match pre-inserted row {pre_inserted_run_id}"

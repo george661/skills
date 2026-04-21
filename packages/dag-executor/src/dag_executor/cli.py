@@ -264,11 +264,6 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--parent-run-id",
-        help="Parent run ID (for rerun operations)",
-    )
-
-    parser.add_argument(
         "--events-dir",
         help=(
             "Directory for NDJSON event logs and cancel markers. "
@@ -612,7 +607,7 @@ def run_rerun(argv: List[str]) -> None:
             cmd.append(f"{k}={json.dumps(v)}")
         else:
             cmd.append(f"{k}={v}")
-    cmd.extend(["--parent-run-id", args.run_id])
+    cmd.extend(["--run-id", new_run_id])
 
     # Spawn subprocess
     try:

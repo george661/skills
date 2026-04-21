@@ -14,13 +14,26 @@ def tmp_client(tmp_path: Path):
     """Create test client with initialized database."""
     db_path = tmp_path / "test.db"
     init_db(db_path)
-    
+
     events_dir = tmp_path / "dag-events"
     events_dir.mkdir(exist_ok=True)
-    
+
+    # Create workflows directory and test workflow file
+    workflows_dir = tmp_path / "workflows"
+    workflows_dir.mkdir(exist_ok=True)
+    workflow_file = workflows_dir / "test-workflow.yaml"
+    workflow_file.write_text("nodes: []")
+
     app = create_app(db_path=db_path, events_dir=events_dir)
+    app.state.workflows_dir = workflows_dir
     with TestClient(app) as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def mock_subprocess(mocker):
+    """Mock asyncio.create_subprocess_exec to prevent real subprocess spawns in all tests."""
+    return mocker.patch("dag_dashboard.routes.asyncio.create_subprocess_exec")
 
 
 def test_rerun_endpoint_loads_prior_inputs(tmp_client, tmp_path):
@@ -117,34 +130,36 @@ def test_rerun_endpoint_nonexistent_run(tmp_client):
     assert response.status_code == 404
 
 
-def test_rerun_endpoint_creates_subprocess(tmp_client, tmp_path, mocker):
-    """Test that rerun endpoint spawns dag-exec subprocess."""
+def test_rerun_endpoint_creates_subprocess(tmp_client, tmp_path, mock_subprocess):
+    """Test that rerun endpoint spawns dag-exec subprocess with --run-id matching pre-inserted row."""
     now = datetime.now(timezone.utc).isoformat()
     db_path = tmp_path / "test.db"
-    
-    # Mock subprocess creation
-    mock_subprocess = mocker.patch("dag_dashboard.routes.asyncio.create_subprocess_exec")
-    
+
     # Create a prior run
     prior_run_id = "prior-run-subprocess"
     insert_run(
         db_path, prior_run_id, "test-workflow", "completed", now,
         inputs={"key": "value"}
     )
-    
+
     # Call rerun endpoint
     response = tmp_client.post(
         f"/api/workflows/{prior_run_id}/rerun",
         json={},
     )
-    
+
     assert response.status_code == 200
-    
-    # Verify subprocess was spawned
+    data = response.json()
+    new_run_id = data["run_id"]
+
+    # Verify subprocess was spawned with --run-id matching the pre-inserted row
     assert mock_subprocess.called
     call_args = mock_subprocess.call_args[0]
     assert "dag-exec" in call_args[0]
-    assert "--parent-run-id" in call_args
+    assert "--run-id" in call_args, "subprocess should receive --run-id flag"
+    run_id_index = call_args.index("--run-id")
+    subprocess_run_id = call_args[run_id_index + 1]
+    assert subprocess_run_id == new_run_id, f"subprocess --run-id should match pre-inserted row"
 
 
 def test_rerun_maintains_parent_child_chain(tmp_client, tmp_path):

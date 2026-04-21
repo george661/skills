@@ -131,7 +131,14 @@ async def rerun_workflow(request: Request, run_id: str, body: RerunRequest = Rer
 
     # Spawn dag-exec subprocess
     workflows_dir = getattr(request.app.state, 'workflows_dir', Path("workflows"))
-    workflow_file = workflows_dir / f"{workflow_name}.yml"
+    workflow_file = workflows_dir / f"{workflow_name}.yaml"
+
+    # Check file exists before spawning
+    if not workflow_file.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Workflow file not found: {workflow_name}.yaml"
+        )
 
     # Build input args for subprocess
     input_args = []
@@ -146,7 +153,7 @@ async def rerun_workflow(request: Request, run_id: str, body: RerunRequest = Rer
         "dag-exec",
         str(workflow_file),
         *input_args,
-        "--parent-run-id", run_id,
+        "--run-id", new_run_id,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
