@@ -2732,3 +2732,12 @@ select.form-control {
         min-width: unset;
     }
 }
+
+/* Cancel button container */
+.cancel-button-container {
+    margin-bottom: 1rem;
+}
+
+.cancel-run-btn {
+    margin-top: 0.5rem;
+}
