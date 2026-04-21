@@ -1,5 +1,6 @@
 """CLI entry point for DAG executor."""
 import argparse
+import os
 import json
 import shutil
 import sys
@@ -24,7 +25,7 @@ from dag_executor import (
 from dag_executor.replay import execute_replay
 from dag_executor.validator import WorkflowValidator
 
-SUBCOMMANDS = {"replay", "history", "inspect"}
+SUBCOMMANDS = {"replay", "history", "inspect", "cancel"}
 
 
 def _build_list_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -562,6 +563,55 @@ def run_replay(argv: List[str]) -> None:
     print(json.dumps(summary, indent=2))
 
 
+def run_cancel(argv: List[str]) -> int:
+    """Run the ``cancel`` subcommand.
+
+    ``dag-exec cancel RUN_ID [--events-dir DIR] [--cancelled-by USER]``
+
+    Writes atomic cancel marker to {events_dir}/{run_id}.cancel
+    """
+    import tempfile
+    from datetime import datetime, timezone
+
+    parser = argparse.ArgumentParser(prog="dag-exec cancel")
+    parser.add_argument("run_id", help="Run ID to cancel")
+    parser.add_argument("--events-dir", help="Events directory (default: $DAG_EVENTS_DIR or .dag-events)")
+    parser.add_argument("--cancelled-by", default="cli", help="User or system that initiated cancel")
+    args = parser.parse_args(argv)
+
+    # Determine events_dir: flag > env var > default
+    if args.events_dir:
+        events_dir = Path(args.events_dir)
+    elif "DAG_EVENTS_DIR" in os.environ:
+        events_dir = Path(os.environ["DAG_EVENTS_DIR"])
+    else:
+        events_dir = Path(".dag-events")
+
+    events_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create marker payload
+    marker_data = {
+        "cancelled_by": args.cancelled_by,
+        "cancelled_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Write atomically: temp file -> rename
+    marker_path = events_dir / f"{args.run_id}.cancel"
+    with tempfile.NamedTemporaryFile(
+        mode='w',
+        dir=events_dir,
+        delete=False,
+        suffix='.tmp'
+    ) as tmp_file:
+        json.dump(marker_data, tmp_file)
+        tmp_path = Path(tmp_file.name)
+
+    # Atomic rename (POSIX guarantees atomicity on same filesystem)
+    tmp_path.rename(marker_path)
+
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     """Main CLI entry point.
 
@@ -580,6 +630,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 return run_inspect(argv[1:])
             elif subcmd == "replay":
                 return run_replay(argv[1:])
+            elif subcmd == "cancel":
+                return run_cancel(argv[1:])
 
         args = parse_args(argv)
 

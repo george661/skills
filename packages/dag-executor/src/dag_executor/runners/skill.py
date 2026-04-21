@@ -44,15 +44,39 @@ class SkillRunner(BaseRunner):
                 error=str(e)
             )
         
-        # Execute skill via subprocess
+        # Execute skill via subprocess using Popen for subprocess registry support
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 ["python3", str(resolved_path)],
-                input=json.dumps(params),
-                capture_output=True,
-                text=True,
-                timeout=ctx.node_def.timeout or 300  # Default 5 min timeout
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
             )
+
+            # Register with subprocess registry if available
+            if ctx.subprocess_registry:
+                ctx.subprocess_registry.register(proc)
+
+            try:
+                stdout, stderr = proc.communicate(
+                    input=json.dumps(params),
+                    timeout=ctx.node_def.timeout or 300
+                )
+                result_returncode = proc.returncode
+            finally:
+                # Deregister from registry
+                if ctx.subprocess_registry:
+                    ctx.subprocess_registry.deregister(proc)
+
+            # Create result object compatible with subprocess.run
+            class CompletedProcess:
+                def __init__(self, returncode, stdout, stderr):
+                    self.returncode = returncode
+                    self.stdout = stdout
+                    self.stderr = stderr
+
+            result = CompletedProcess(result_returncode, stdout, stderr)
             
             # Parse output
             if result.returncode != 0:

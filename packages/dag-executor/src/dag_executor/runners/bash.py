@@ -32,15 +32,36 @@ class BashRunner(BaseRunner):
         for key, value in ctx.resolved_inputs.items():
             env[f"DAG_{key.upper()}"] = str(value)
         
-        # Execute bash script
+        # Execute bash script using Popen for subprocess registry support
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 ["bash", "-c", script],
                 env=env,
-                capture_output=True,
-                text=True,
-                timeout=ctx.node_def.timeout or 300  # Default 5 min timeout
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
             )
+
+            # Register with subprocess registry if available
+            if ctx.subprocess_registry:
+                ctx.subprocess_registry.register(proc)
+
+            try:
+                stdout, stderr = proc.communicate(timeout=ctx.node_def.timeout or 300)
+                result_returncode = proc.returncode
+            finally:
+                # Deregister from registry
+                if ctx.subprocess_registry:
+                    ctx.subprocess_registry.deregister(proc)
+
+            # Create result object compatible with subprocess.run
+            class CompletedProcess:
+                def __init__(self, returncode, stdout, stderr):
+                    self.returncode = returncode
+                    self.stdout = stdout
+                    self.stderr = stderr
+
+            result = CompletedProcess(result_returncode, stdout, stderr)
             
             # Check output size limit
             total_output_size = len(result.stdout) + len(result.stderr)

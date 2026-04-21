@@ -4,6 +4,9 @@ import copy
 import hashlib
 import json
 import random
+import signal
+import subprocess
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -27,6 +30,66 @@ from dag_executor.variables import resolve_variables
 if TYPE_CHECKING:
     from dag_executor.checkpoint import CheckpointStore
     from dag_executor.channels import ChannelStore
+
+
+class SubprocessRegistry:
+    """Thread-safe registry of running subprocesses for cancellation.
+
+    Allows the executor to track all in-flight subprocesses and
+    terminate them gracefully (SIGTERM -> SIGKILL) on cancel.
+    """
+
+    def __init__(self):
+        self._processes: Set[subprocess.Popen] = set()
+        self._lock = asyncio.Lock()
+
+    def register(self, proc: subprocess.Popen) -> None:
+        """Register a subprocess."""
+        self._processes.add(proc)
+
+    def deregister(self, proc: subprocess.Popen) -> None:
+        """Deregister a subprocess."""
+        self._processes.discard(proc)
+
+    def list(self) -> List[subprocess.Popen]:
+        """Return list of registered processes."""
+        return list(self._processes)
+
+    def terminate_all(self, timeout: float = 5.0) -> None:
+        """Terminate all registered processes.
+
+        Sends SIGTERM first, waits up to timeout seconds,
+        then sends SIGKILL to any remaining processes.
+
+        Args:
+            timeout: Grace period in seconds before escalating to SIGKILL
+        """
+        if not self._processes:
+            return
+
+        # Send SIGTERM to all
+        for proc in self._processes:
+            try:
+                if proc.poll() is None:  # Still running
+                    proc.terminate()
+            except Exception:
+                pass  # Process may have already exited
+
+        # Wait for graceful termination
+        start = time.time()
+        while time.time() - start < timeout:
+            alive = [p for p in self._processes if p.poll() is None]
+            if not alive:
+                return
+            time.sleep(0.1)
+
+        # Escalate to SIGKILL for remaining processes
+        for proc in self._processes:
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+            except Exception:
+                pass
 
 
 @dataclass
