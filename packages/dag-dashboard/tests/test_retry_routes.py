@@ -334,19 +334,23 @@ def test_retry_lifecycle_transition(test_app):
         from dag_dashboard.event_collector import EventCollector
         from dag_dashboard.broadcast import Broadcaster
         import asyncio
-        
+
         broadcaster = Broadcaster()
-        collector = EventCollector(db_path, events_dir, broadcaster)
-        try:
-            collector._process_file(event_file)  # Synchronous processing
-            
-            # Verify status transitioned to running
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT status FROM workflow_runs WHERE id = ?", ("test-run-failed",))
-            status = cursor.fetchone()[0]
-            conn.close()
-            
-            assert status == "running", f"Expected 'running', got '{status}'"
-        finally:
-            collector.stop()
+        loop = asyncio.get_event_loop()
+        collector = EventCollector(
+            events_dir=events_dir,
+            db_path=db_path,
+            broadcaster=broadcaster,
+            loop=loop
+        )
+
+        collector._process_file(event_file)  # Synchronous processing
+
+        # Verify status transitioned to running
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM workflow_runs WHERE id = ?", ("test-run-failed",))
+        status = cursor.fetchone()[0]
+        conn.close()
+
+        assert status == "running", f"Expected 'running', got '{status}'"
