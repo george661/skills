@@ -607,9 +607,15 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel) {
             const payload = isPersisted ? JSON.parse(evt.payload) : evt;
             const eventType = isPersisted ? evt.event_type : evt.type;
 
-            // Route chat_message events to chat panel
-            if (eventType === 'chat_message' && chatPanel) {
-                chatPanel.handleSSEMessage(payload);
+            // Route chat_message events to appropriate panel
+            if (eventType === 'chat_message') {
+                // If payload has node_id and node detail panel is open for that node, route to node panel
+                if (payload.node_id && window.nodeDetailPanel?.currentNode?.id === payload.node_id) {
+                    window.nodeDetailPanel.appendChatMessage(payload);
+                } else if (chatPanel) {
+                    // Otherwise route to workflow chat panel
+                    chatPanel.handleSSEMessage(payload);
+                }
             } else if (eventType === 'node_progress' && payload.metadata && payload.metadata.attempt != null) {
                 // This is a retry event (not a token-stream event)
                 const nodeName = payload.node_id;
