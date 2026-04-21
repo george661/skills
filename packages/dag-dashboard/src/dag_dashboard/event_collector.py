@@ -309,6 +309,30 @@ class EventCollector:
                 except Exception as e:
                     logger.warning(f"Failed to persist checkpoint data for node {completed_node_id}: {e}")
 
+            # Handle artifact_created: persist into artifacts table.
+            # Key by execution_id = {run_id}:{node_id} to match node row convention.
+            if event_type == "artifact_created":
+                try:
+                    raw_node_id = event_data.get("node_id")
+                    metadata_obj = event_data.get("metadata") or {}
+                    name = metadata_obj.get("name")
+                    artifact_type = metadata_obj.get("artifact_type")
+                    if raw_node_id and name and artifact_type:
+                        execution_id = f"{run_id}:{raw_node_id}"
+                        path = metadata_obj.get("path")
+                        url = metadata_obj.get("url")
+                        content = metadata_obj.get("content")
+                        cursor.execute(
+                            """
+                            INSERT INTO artifacts
+                            (execution_id, name, artifact_type, path, content, created_at, url)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (execution_id, name, artifact_type, path, content, created_at, url),
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to persist artifact_created event for run {run_id}: {e}")
+
             conn.commit()
         finally:
             conn.close()
