@@ -109,6 +109,18 @@ CREATE TABLE IF NOT EXISTS channel_states (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (run_id, channel_key)
 );
+
+-- 9. node_logs: Per-node execution logs (stdout/stderr)
+CREATE TABLE IF NOT EXISTS node_logs (
+    run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL,
+    stream TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    line TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_node_logs_run_node_seq
+    ON node_logs(run_id, node_id, sequence);
 """
 
 

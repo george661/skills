@@ -28,6 +28,7 @@ class EventCollector:
         loop: asyncio.AbstractEventLoop,
         slack_notifier: Optional[SlackNotifier] = None,
         dashboard_url: str = "http://127.0.0.1:8100",
+        node_log_line_cap: int = 50000,
     ) -> None:
         """
         Initialize event collector.
@@ -40,6 +41,7 @@ class EventCollector:
             slack_notifier: Optional Slack notifier. When set, lifecycle events
                 are forwarded to Slack with a card built by ``formatter``.
             dashboard_url: Base URL used in Slack card action links.
+            node_log_line_cap: Maximum log lines per (run_id, node_id). Default 50000.
         """
         self.events_dir = events_dir
         self.db_path = db_path
@@ -49,7 +51,10 @@ class EventCollector:
         self.dashboard_url = dashboard_url
         self.observer = Observer()
         self._file_positions: Dict[str, int] = {}
-        
+        self.node_log_line_cap = node_log_line_cap
+        self._node_log_counts: Dict[tuple[str, str], int] = {}  # (run_id, node_id) -> count
+        self._capped_nodes: set[tuple[str, str]] = set()  # Nodes that have exceeded cap
+
         # Create event handler
         handler = _EventFileHandler(self)
         self.observer.schedule(handler, str(events_dir), recursive=False)  # type: ignore[no-untyped-call]
@@ -361,6 +366,84 @@ class EventCollector:
                         )
                 except Exception as e:
                     logger.warning(f"Failed to persist artifact_created event for run {run_id}: {e}")
+
+            # Handle node_log_line: persist to node_logs table with per-node cap enforcement
+            if event_type == "node_log_line":
+                try:
+                    metadata = event_data.get("metadata", {})
+                    node_id = metadata.get("node_id")
+                    stream = metadata.get("stream")
+                    sequence = metadata.get("sequence")
+                    line = metadata.get("line")
+
+                    if not all([node_id, stream, sequence is not None, line is not None]):
+                        logger.warning(f"Malformed node_log_line event for run {run_id}: missing required fields")
+                    else:
+                        node_key = (run_id, node_id)
+
+                        # Check if this node is already capped
+                        if node_key in self._capped_nodes:
+                            # Already capped, drop silently
+                            return
+
+                        # Get current count for this node (prime from DB if not in memory)
+                        if node_key not in self._node_log_counts:
+                            cursor.execute(
+                                "SELECT COUNT(*) FROM node_logs WHERE run_id = ? AND node_id = ?",
+                                (run_id, node_id)
+                            )
+                            self._node_log_counts[node_key] = cursor.fetchone()[0]
+
+                        current_count = self._node_log_counts[node_key]
+
+                        if current_count < self.node_log_line_cap:
+                            # Under cap, insert the log line
+                            cursor.execute(
+                                """
+                                INSERT INTO node_logs (run_id, node_id, stream, sequence, line, created_at)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                                """,
+                                (run_id, node_id, stream, sequence, line, created_at)
+                            )
+                            self._node_log_counts[node_key] = current_count + 1
+
+                            # Check if we just hit the cap
+                            if self._node_log_counts[node_key] >= self.node_log_line_cap:
+                                # Emit warning event
+                                self._capped_nodes.add(node_key)
+                                warning_payload = json.dumps({
+                                    "run_id": run_id,
+                                    "node_id": node_id,
+                                    "cap": self.node_log_line_cap,
+                                    "dropped_at_sequence": sequence + 1
+                                })
+                                cursor.execute(
+                                    """
+                                    INSERT INTO events (run_id, event_type, payload, created_at)
+                                    VALUES (?, ?, ?, ?)
+                                    """,
+                                    (run_id, "node_log_cap_exceeded", warning_payload, created_at)
+                                )
+                        else:
+                            # Already at cap, drop and mark as capped
+                            self._capped_nodes.add(node_key)
+                            if current_count == self.node_log_line_cap:
+                                # First drop, emit warning
+                                warning_payload = json.dumps({
+                                    "run_id": run_id,
+                                    "node_id": node_id,
+                                    "cap": self.node_log_line_cap,
+                                    "dropped_at_sequence": sequence
+                                })
+                                cursor.execute(
+                                    """
+                                    INSERT INTO events (run_id, event_type, payload, created_at)
+                                    VALUES (?, ?, ?, ?)
+                                    """,
+                                    (run_id, "node_log_cap_exceeded", warning_payload, created_at)
+                                )
+                except Exception as e:
+                    logger.warning(f"Failed to persist node_log_line event for run {run_id}: {e}")
 
             conn.commit()
         finally:

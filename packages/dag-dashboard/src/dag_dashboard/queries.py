@@ -1000,3 +1000,41 @@ def list_run_artifacts(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+def get_node_logs(
+    db_path: Path,
+    run_id: str,
+    node_id: str,
+    limit: int = 1000,
+    offset: int = 0
+) -> List[Dict[str, Any]]:
+    """
+    Retrieve log lines for a specific node in a workflow run.
+
+    Args:
+        db_path: Path to SQLite database
+        run_id: Workflow run ID
+        node_id: Node ID
+        limit: Maximum number of log lines to return (default 1000)
+        offset: Number of log lines to skip (default 0)
+
+    Returns:
+        List of log line dicts with keys: run_id, node_id, stream, sequence, line, created_at
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT run_id, node_id, stream, sequence, line, created_at
+            FROM node_logs
+            WHERE run_id = ? AND node_id = ?
+            ORDER BY sequence
+            LIMIT ? OFFSET ?
+            """,
+            (run_id, node_id, limit, offset)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
