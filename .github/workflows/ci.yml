@@ -38,16 +38,21 @@ jobs:
           set -e
           # Sort packages for deterministic ordering across runs
           pkgs=$(printf '%s\n' "${{ steps.packages.outputs.list }}" | sort -u | sed '/^$/d')
-          # Phase 1: install all packages editable with [dev] extras, so that
-          # cross-package imports (e.g. dag_executor → dag_dashboard.notifier)
-          # resolve during mypy regardless of check order.
+          # Phase 1: install every package editable in a single pip call, so pip
+          # resolves the inter-package dependency graph (dag-dashboard depends on
+          # dag-executor, which is not on PyPI — only editable installs satisfy
+          # that). Dev extras are added per-package.
+          install_args=()
           while IFS= read -r pkg; do
             [ -z "$pkg" ] && continue
-            echo "::group::install $pkg"
-            pip install -e "$pkg[dev]"
-            echo "::endgroup::"
+            install_args+=(-e "$pkg[dev]")
           done <<< "$pkgs"
-          # Phase 2: test and type-check each package
+          echo "::group::install all packages (editable)"
+          pip install "${install_args[@]}"
+          echo "::endgroup::"
+          # Phase 2: test and type-check each package. With every package already
+          # editable-installed, mypy can resolve cross-package imports (e.g.
+          # dag_executor → dag_dashboard.notifier) regardless of check order.
           while IFS= read -r pkg; do
             [ -z "$pkg" ] && continue
             echo "::group::check $pkg"
