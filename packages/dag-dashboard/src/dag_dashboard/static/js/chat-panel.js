@@ -60,16 +60,21 @@ class ChatPanel {
         return;
       }
 
-      const data = await response.json();
-      const messages = data.messages || [];
+      // Backend returns bare JSON array (List[Dict]), not wrapped object
+      const messages = await response.json();
 
       // Render messages in chronological order
       for (const msg of messages) {
         // Store in messages map for dedupe
         if (msg.id) {
-          this.messages.set(msg.id, msg);
+          // Only render if not already displayed
+          if (!this.messages.has(msg.id)) {
+            this.messages.set(msg.id, msg);
+            this.renderMessage(msg);
+          }
+        } else {
+          this.renderMessage(msg);
         }
-        this.renderMessage(msg);
       }
     } catch (error) {
       console.error('Failed to load chat history:', error);
