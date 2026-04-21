@@ -41,8 +41,11 @@ class SubprocessRegistry:
     """
 
     def __init__(self) -> None:
+        # Set operations are atomic under the GIL, so no explicit lock is
+        # needed for add/discard/iteration. An asyncio.Lock here would break
+        # Python 3.9 where Lock() requires a running event loop at
+        # construction time.
         self._processes: Set["subprocess.Popen[Any]"] = set()
-        self._lock = asyncio.Lock()
 
     def register(self, proc: "subprocess.Popen[Any]") -> None:
         """Register a subprocess."""
