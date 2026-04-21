@@ -3,6 +3,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dag_executor.artifacts import detect_artifacts
+from dag_executor.events import EventType, WorkflowEvent
 from dag_executor.schema import NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 
@@ -106,6 +108,17 @@ class PromptRunner(BaseRunner):
 
             # Combine all output lines
             full_output = "".join(output_lines)
+
+            # Emit artifact events for successful completion
+            if ctx.event_emitter is not None:
+                for artifact in detect_artifacts(full_output):
+                    ctx.event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.ARTIFACT_CREATED,
+                        workflow_id=ctx.workflow_id,
+                        node_id=ctx.node_def.id,
+                        metadata=artifact,
+                        timestamp=datetime.now(timezone.utc),
+                    ))
 
             return NodeResult(
                 status=NodeStatus.COMPLETED,

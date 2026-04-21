@@ -1,7 +1,10 @@
 """Bash runner for executing bash script nodes."""
 import os
 import subprocess
+from datetime import datetime, timezone
 
+from dag_executor.artifacts import detect_artifacts
+from dag_executor.events import EventType, WorkflowEvent
 from dag_executor.schema import NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 
@@ -69,6 +72,17 @@ class BashRunner(BaseRunner):
                     error=stderr or f"Script exited with code {returncode}",
                     output={"stdout": stdout, "stderr": stderr}
                 )
+
+            # Emit artifact events for successful completion
+            if ctx.event_emitter is not None:
+                for artifact in detect_artifacts(stdout + "\n" + stderr):
+                    ctx.event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.ARTIFACT_CREATED,
+                        workflow_id=ctx.workflow_id,
+                        node_id=ctx.node_def.id,
+                        metadata=artifact,
+                        timestamp=datetime.now(timezone.utc),
+                    ))
 
             return NodeResult(
                 status=NodeStatus.COMPLETED,
