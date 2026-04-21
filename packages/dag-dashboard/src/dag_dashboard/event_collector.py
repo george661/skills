@@ -1,4 +1,6 @@
 """Filesystem watcher for NDJSON event files."""
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -370,8 +372,10 @@ class EventCollector:
             # Handle node_log_line: persist to node_logs table with per-node cap enforcement
             if event_type == "node_log_line":
                 try:
+                    # node_id is at top level (WorkflowEvent.node_id)
+                    node_id = event_data.get("node_id")
+                    # stream, sequence, line are in metadata
                     metadata = event_data.get("metadata", {})
-                    node_id = metadata.get("node_id")
                     stream = metadata.get("stream")
                     sequence = metadata.get("sequence")
                     line = metadata.get("line")
@@ -381,67 +385,65 @@ class EventCollector:
                     else:
                         node_key = (run_id, node_id)
 
-                        # Check if this node is already capped
-                        if node_key in self._capped_nodes:
-                            # Already capped, drop silently
-                            return
+                        # Check if this node is already capped - if so, skip insertion but don't return
+                        # (we still need to commit the parent events row INSERT)
+                        if node_key not in self._capped_nodes:
+                            # Get current count for this node (prime from DB if not in memory)
+                            if node_key not in self._node_log_counts:
+                                cursor.execute(
+                                    "SELECT COUNT(*) FROM node_logs WHERE run_id = ? AND node_id = ?",
+                                    (run_id, node_id)
+                                )
+                                self._node_log_counts[node_key] = cursor.fetchone()[0]
 
-                        # Get current count for this node (prime from DB if not in memory)
-                        if node_key not in self._node_log_counts:
-                            cursor.execute(
-                                "SELECT COUNT(*) FROM node_logs WHERE run_id = ? AND node_id = ?",
-                                (run_id, node_id)
-                            )
-                            self._node_log_counts[node_key] = cursor.fetchone()[0]
+                            current_count = self._node_log_counts[node_key]
 
-                        current_count = self._node_log_counts[node_key]
+                            if current_count < self.node_log_line_cap:
+                                # Under cap, insert the log line
+                                cursor.execute(
+                                    """
+                                    INSERT INTO node_logs (run_id, node_id, stream, sequence, line, created_at)
+                                    VALUES (?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (run_id, node_id, stream, sequence, line, created_at)
+                                )
+                                self._node_log_counts[node_key] = current_count + 1
 
-                        if current_count < self.node_log_line_cap:
-                            # Under cap, insert the log line
-                            cursor.execute(
-                                """
-                                INSERT INTO node_logs (run_id, node_id, stream, sequence, line, created_at)
-                                VALUES (?, ?, ?, ?, ?, ?)
-                                """,
-                                (run_id, node_id, stream, sequence, line, created_at)
-                            )
-                            self._node_log_counts[node_key] = current_count + 1
-
-                            # Check if we just hit the cap
-                            if self._node_log_counts[node_key] >= self.node_log_line_cap:
-                                # Emit warning event
+                                # Check if we just hit the cap
+                                if self._node_log_counts[node_key] >= self.node_log_line_cap:
+                                    # Emit warning event
+                                    self._capped_nodes.add(node_key)
+                                    warning_payload = json.dumps({
+                                        "run_id": run_id,
+                                        "node_id": node_id,
+                                        "cap": self.node_log_line_cap,
+                                        "dropped_at_sequence": sequence + 1
+                                    })
+                                    cursor.execute(
+                                        """
+                                        INSERT INTO events (run_id, event_type, payload, created_at)
+                                        VALUES (?, ?, ?, ?)
+                                        """,
+                                        (run_id, "node_log_cap_exceeded", warning_payload, created_at)
+                                    )
+                            else:
+                                # Already at cap, drop and mark as capped
                                 self._capped_nodes.add(node_key)
-                                warning_payload = json.dumps({
-                                    "run_id": run_id,
-                                    "node_id": node_id,
-                                    "cap": self.node_log_line_cap,
-                                    "dropped_at_sequence": sequence + 1
-                                })
-                                cursor.execute(
-                                    """
-                                    INSERT INTO events (run_id, event_type, payload, created_at)
-                                    VALUES (?, ?, ?, ?)
-                                    """,
-                                    (run_id, "node_log_cap_exceeded", warning_payload, created_at)
-                                )
-                        else:
-                            # Already at cap, drop and mark as capped
-                            self._capped_nodes.add(node_key)
-                            if current_count == self.node_log_line_cap:
-                                # First drop, emit warning
-                                warning_payload = json.dumps({
-                                    "run_id": run_id,
-                                    "node_id": node_id,
-                                    "cap": self.node_log_line_cap,
-                                    "dropped_at_sequence": sequence
-                                })
-                                cursor.execute(
-                                    """
-                                    INSERT INTO events (run_id, event_type, payload, created_at)
-                                    VALUES (?, ?, ?, ?)
-                                    """,
-                                    (run_id, "node_log_cap_exceeded", warning_payload, created_at)
-                                )
+                                if current_count == self.node_log_line_cap:
+                                    # First drop, emit warning
+                                    warning_payload = json.dumps({
+                                        "run_id": run_id,
+                                        "node_id": node_id,
+                                        "cap": self.node_log_line_cap,
+                                        "dropped_at_sequence": sequence
+                                    })
+                                    cursor.execute(
+                                        """
+                                        INSERT INTO events (run_id, event_type, payload, created_at)
+                                        VALUES (?, ?, ?, ?)
+                                        """,
+                                        (run_id, "node_log_cap_exceeded", warning_payload, created_at)
+                                    )
                 except Exception as e:
                     logger.warning(f"Failed to persist node_log_line event for run {run_id}: {e}")
 

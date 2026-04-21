@@ -52,9 +52,9 @@ def test_1000_lines_per_second_sustained():
             events.append({
                 "event_type": "node_log_line",
                 "run_id": run_id,
+                "node_id": "throughput-node",
                 "created_at": f"2026-04-21T12:00:{i:05d}Z",
                 "metadata": {
-                    "node_id": "throughput-node",
                     "stream": "stdout",
                     "sequence": i,
                     "line": f"Log line {i}"

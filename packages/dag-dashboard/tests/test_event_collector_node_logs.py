@@ -72,9 +72,9 @@ def test_node_log_line_inserts_row(setup_db, setup_events_dir):
     event = {
         "event_type": "node_log_line",
         "run_id": run_id,
+        "node_id": "node-1",
         "created_at": "2026-04-21T12:00:01Z",
         "metadata": {
-            "node_id": "node-1",
             "stream": "stdout",
             "sequence": 1,
             "line": "Hello, World!"
@@ -150,9 +150,9 @@ def test_cap_emits_warning_event_and_stops_persisting(setup_db, setup_events_dir
             event = {
                 "event_type": "node_log_line",
                 "run_id": run_id,
+                "node_id": "node-1",
                 "created_at": f"2026-04-21T12:00:0{i}Z",
                 "metadata": {
-                    "node_id": "node-1",
                     "stream": "stdout",
                     "sequence": i,
                     "line": f"Line {i}"
@@ -224,24 +224,24 @@ def test_cap_is_per_node_not_per_run(setup_db, setup_events_dir):
             event = {
                 "event_type": "node_log_line",
                 "run_id": run_id,
+                "node_id": "node-1",
                 "created_at": f"2026-04-21T12:00:0{i}Z",
                 "metadata": {
-                    "node_id": "node-1",
                     "stream": "stdout",
                     "sequence": i,
                     "line": f"Node1 Line {i}"
                 }
             }
             f.write(json.dumps(event) + "\n")
-        
+
         # Node 2: 2 lines (should not be capped)
         for i in range(1, 3):
             event = {
                 "event_type": "node_log_line",
                 "run_id": run_id,
+                "node_id": "node-2",
                 "created_at": f"2026-04-21T12:01:0{i}Z",
                 "metadata": {
-                    "node_id": "node-2",
                     "stream": "stdout",
                     "sequence": i,
                     "line": f"Node2 Line {i}"
@@ -312,9 +312,9 @@ def test_cap_persists_across_collector_restart(setup_db, setup_events_dir):
         event = {
             "event_type": "node_log_line",
             "run_id": run_id,
+            "node_id": "node-1",
             "created_at": "2026-04-21T12:00:04Z",
             "metadata": {
-                "node_id": "node-1",
                 "stream": "stdout",
                 "sequence": 4,
                 "line": "Line 4"
@@ -370,9 +370,9 @@ def test_missing_metadata_fields_warn_and_skip(setup_db, setup_events_dir):
         event = {
             "event_type": "node_log_line",
             "run_id": run_id,
+            "node_id": "node-1",
             "created_at": "2026-04-21T12:00:01Z",
             "metadata": {
-                "node_id": "node-1",
                 "stream": "stdout",
                 "sequence": 1
                 # Missing 'line' field
