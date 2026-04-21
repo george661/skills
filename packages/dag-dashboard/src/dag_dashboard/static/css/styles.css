@@ -954,9 +954,9 @@ body {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 24px;
-    min-height: 24px;
-    padding: 4px 8px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 8px 12px;
     margin-left: 12px;
     background: var(--error);
     color: white;
@@ -1132,6 +1132,121 @@ body {
 
 .gate-feedback.hidden {
     display: none;
+}
+
+/* Gate Description */
+.gate-description {
+    margin: 1rem 0;
+    padding: 1rem;
+    background: var(--bg-secondary);
+    border-left: 3px solid var(--primary);
+    border-radius: var(--radius);
+}
+
+.gate-description h5 {
+    margin: 0 0 0.5rem 0;
+    font-size: 0.875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.gate-description p {
+    margin: 0;
+    color: var(--text);
+    line-height: 1.5;
+}
+
+/* Gate Upstream Context */
+.gate-upstream-context {
+    margin: 1rem 0;
+    padding: 1rem;
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+}
+
+.gate-upstream-context h5 {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.gate-upstream-node {
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.gate-upstream-node:last-child {
+    margin-bottom: 0;
+}
+
+.gate-upstream-node strong {
+    display: inline-block;
+    margin-right: 0.5rem;
+    color: var(--text);
+}
+
+.gate-upstream-node .upstream-status {
+    display: inline-block;
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.gate-upstream-node .status-completed {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.gate-upstream-node .status-running {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.gate-upstream-node .status-failed {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.gate-upstream-node .status-pending {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.upstream-artifacts {
+    margin: 0.5rem 0 0 0;
+    padding-left: 1.25rem;
+    list-style: none;
+}
+
+.upstream-artifacts li {
+    margin: 0.25rem 0;
+    font-size: 0.875rem;
+}
+
+.upstream-artifacts .artifact-name {
+    color: var(--text);
+    font-weight: 500;
+}
+
+.upstream-artifacts .artifact-type {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    margin-left: 0.25rem;
+}
+
+.gate-upstream-node .no-artifacts {
+    margin: 0.5rem 0 0 0;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    font-style: italic;
 }
 
 /* Interrupt Resume Panel */
