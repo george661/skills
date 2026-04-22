@@ -246,6 +246,9 @@ async function renderHistory() {
     const currentSort = urlParams.get('sort') || 'started_at';
     const currentStartDate = urlParams.get('start_date') || '';
     const currentEndDate = urlParams.get('end_date') || '';
+    const groupByParent = urlParams.get('group') === 'parent';
+    const expandedParam = urlParams.get('expanded') || '';
+    const expandedSet = new Set(expandedParam ? expandedParam.split(',').filter(Boolean) : []);
     const limit = 20;
     const offset = currentPage * limit;
 
@@ -259,6 +262,7 @@ async function renderHistory() {
     if (currentName) apiParams.set('name', currentName);
     if (currentStartDate) apiParams.set('started_after', currentStartDate);
     if (currentEndDate) apiParams.set('started_before', currentEndDate);
+    if (groupByParent) apiParams.set('group_by', 'parent');
 
     // Fetch workflows
     let workflows = [];
@@ -313,28 +317,66 @@ async function renderHistory() {
                     <option value="duration" ${currentSort === 'duration' ? 'selected' : ''}>Duration</option>
                 </select>
             </div>
+            <div class="filter-group">
+                <label class="group-toggle">
+                    <input type="checkbox" id="group-toggle" ${groupByParent ? 'checked' : ''}>
+                    Group by parent
+                </label>
+            </div>
         </div>
     `;
 
     // Render table
     let tableHTML = '';
     if (workflows.length > 0) {
-        const rows = workflows.map(wf => {
+        // renderRow builds a single tr. For grouped mode the parent row gets a
+        // chevron + child count and its children render immediately after it
+        // (indented) when the parent is in the expanded set.
+        const renderRow = (wf, opts = {}) => {
+            const { isChild = false, childCount = 0, hasChildren = false, expanded = false } = opts;
             const startTime = wf.started_at ? new Date(wf.started_at).toLocaleString() : 'N/A';
             const duration = wf.finished_at && wf.started_at
                 ? Math.round((new Date(wf.finished_at) - new Date(wf.started_at)) / 1000) + 's'
                 : 'N/A';
             const source = wf.trigger_source || 'manual';
+            const displayStatus = !isChild && wf.aggregate_status ? wf.aggregate_status : wf.status;
+            const chevron = hasChildren
+                ? `<span class="chevron ${expanded ? 'expanded' : ''}" data-parent-id="${escapeHtml(wf.id)}">▶</span>`
+                : '';
+            const countBadge = hasChildren
+                ? `<span class="child-count-badge">${childCount}</span>`
+                : '';
+            const rowClass = isChild ? 'history-row child-row' : 'history-row';
             return `
-                <tr class="history-row" data-run-id="${escapeHtml(wf.id)}">
-                    <td class="history-cell">${escapeHtml(wf.workflow_name)}</td>
-                    <td class="history-cell"><span class="workflow-status ${escapeHtml(wf.status)}">${escapeHtml(wf.status)}</span></td>
+                <tr class="${rowClass}" data-run-id="${escapeHtml(wf.id)}">
+                    <td class="history-cell">${chevron}${escapeHtml(wf.workflow_name)}${countBadge}</td>
+                    <td class="history-cell"><span class="workflow-status ${escapeHtml(displayStatus)}">${escapeHtml(displayStatus)}</span></td>
                     <td class="history-cell">${startTime}</td>
                     <td class="history-cell">${duration}</td>
                     <td class="history-cell"><span class="trigger-source-badge">${escapeHtml(source)}</span></td>
                 </tr>
             `;
-        }).join('');
+        };
+
+        let rows;
+        if (groupByParent) {
+            rows = workflows.map(wf => {
+                const children = wf.children || [];
+                const expanded = expandedSet.has(wf.id);
+                const parentRow = renderRow(wf, {
+                    hasChildren: children.length > 0,
+                    childCount: children.length,
+                    expanded,
+                });
+                if (expanded && children.length > 0) {
+                    const childRows = children.map(c => renderRow(c, { isChild: true })).join('');
+                    return parentRow + childRows;
+                }
+                return parentRow;
+            }).join('');
+        } else {
+            rows = workflows.map(wf => renderRow(wf)).join('');
+        }
 
         tableHTML = `
             <table class="history-table">
@@ -384,6 +426,8 @@ async function renderHistory() {
     const endDateFilter = document.getElementById('end-date-filter');
     const sortFilter = document.getElementById('sort-filter');
 
+    const groupToggle = document.getElementById('group-toggle');
+
     const applyFilters = () => {
         const params = new URLSearchParams();
         if (statusFilter.value) params.set('status', statusFilter.value);
@@ -391,6 +435,12 @@ async function renderHistory() {
         if (startDateFilter.value) params.set('start_date', startDateFilter.value);
         if (endDateFilter.value) params.set('end_date', endDateFilter.value);
         if (sortFilter.value !== 'started_at') params.set('sort', sortFilter.value);
+        if (groupToggle && groupToggle.checked) {
+            params.set('group', 'parent');
+            if (expandedSet.size > 0) {
+                params.set('expanded', Array.from(expandedSet).join(','));
+            }
+        }
         params.set('page', '0');
         window.location.hash = `/history?${params}`;
     };
@@ -399,12 +449,44 @@ async function renderHistory() {
     startDateFilter.addEventListener('change', applyFilters);
     endDateFilter.addEventListener('change', applyFilters);
     sortFilter.addEventListener('change', applyFilters);
+    if (groupToggle) {
+        groupToggle.addEventListener('change', () => {
+            // Clear expanded state when toggling off to keep URL tidy.
+            if (!groupToggle.checked) {
+                expandedSet.clear();
+            }
+            applyFilters();
+        });
+    }
 
     // Debounce name filter input
     let nameFilterTimeout;
     nameFilter.addEventListener('input', () => {
         clearTimeout(nameFilterTimeout);
         nameFilterTimeout = setTimeout(applyFilters, 500);
+    });
+
+    // Chevron click toggles the parent's id in the expanded set and updates URL.
+    // Stops propagation so clicking a chevron doesn't also trigger the row-click
+    // navigation handler below.
+    document.querySelectorAll('.chevron').forEach(chevron => {
+        chevron.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const parentId = chevron.dataset.parentId;
+            if (!parentId) return;
+            if (expandedSet.has(parentId)) {
+                expandedSet.delete(parentId);
+            } else {
+                expandedSet.add(parentId);
+            }
+            const params = new URLSearchParams(urlParams);
+            if (expandedSet.size > 0) {
+                params.set('expanded', Array.from(expandedSet).join(','));
+            } else {
+                params.delete('expanded');
+            }
+            window.location.hash = `/history?${params}`;
+        });
     });
 
     // Pagination handlers

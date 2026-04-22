@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from .models import SortBy, RunStatus, StatusSummary, GateDecisionRequest, InterruptResumeRequest, NodeStateDiff, RerunRequest
 from .queries import (
-    get_run, list_runs, get_node, list_nodes, get_status_counts,
+    get_run, list_runs, list_runs_grouped, get_node, list_nodes, get_status_counts,
     get_artifacts, get_chat_messages, get_workflow_totals,
     insert_gate_decision, update_node, get_pending_gates, count_pending_gates,
     get_interrupt_checkpoint,
@@ -61,10 +61,27 @@ async def get_workflows(
     name: Optional[str] = None,
     started_after: Optional[str] = None,
     started_before: Optional[str] = None,
+    group_by: Optional[str] = Query(default=None, pattern="^parent$"),
 ) -> Dict[str, Any]:
-    """List workflow runs with pagination and filtering."""
+    """List workflow runs with pagination and filtering.
+
+    When ``group_by=parent``, runs are nested under their root run via the
+    ``parent_run_id`` column. Each top-level item gains a ``children`` array
+    and an ``aggregate_status`` reflecting the worst status in its subtree.
+    """
     db_path = get_db_path(request)
-    result = list_runs(
+    if group_by == "parent":
+        return list_runs_grouped(
+            db_path,
+            limit=limit,
+            offset=offset,
+            status=status,
+            sort_by=sort_by,
+            name=name,
+            started_after=started_after,
+            started_before=started_before,
+        )
+    return list_runs(
         db_path,
         limit=limit,
         offset=offset,
@@ -74,7 +91,6 @@ async def get_workflows(
         started_after=started_after,
         started_before=started_before,
     )
-    return result
 
 
 @router.get("/workflows/{run_id}")

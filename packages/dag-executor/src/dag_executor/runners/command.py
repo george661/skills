@@ -1,7 +1,9 @@
 """Command runner for recursive workflow execution nodes."""
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict
 
-from dag_executor.schema import NodeResult, NodeStatus
+from dag_executor.schema import NodeResult, NodeStatus, WorkflowStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 from dag_executor.parser import load_workflow
 
@@ -73,7 +75,31 @@ class CommandRunner(BaseRunner):
         
         # Add resolved inputs
         sub_workflow_inputs.update(ctx.resolved_inputs)
-        
+
+        # Emit WORKFLOW_STARTED for the sub-DAG so downstream consumers
+        # (event_collector) can persist a workflow_runs row carrying
+        # parent_run_id lineage. Guarded: only emits when the executor
+        # supplied both an emitter and a parent run_id.
+        #
+        # Note: _execute_workflow_stub still returns a dummy result; sub-DAG
+        # terminal status is not yet emitted here. Replacing the stub with
+        # real sub-DAG execution is tracked separately.
+        if ctx.event_emitter is not None and ctx.parent_run_id is not None:
+            from dag_executor.events import EventType, WorkflowEvent
+            sub_run_id = str(uuid.uuid4())
+            sub_workflow_name = getattr(workflow_def, "name", command)
+            ctx.event_emitter.emit(WorkflowEvent(
+                event_type=EventType.WORKFLOW_STARTED,
+                workflow_id=sub_workflow_name,
+                status=WorkflowStatus.RUNNING,
+                timestamp=datetime.now(timezone.utc),
+                metadata={
+                    "parent_run_id": ctx.parent_run_id,
+                    "workflow_name": sub_workflow_name,
+                    "run_id": sub_run_id,
+                },
+            ))
+
         # Execute sub-workflow with incremented depth
         # TODO: When execute_workflow is fully implemented, pass depth via context
         try:

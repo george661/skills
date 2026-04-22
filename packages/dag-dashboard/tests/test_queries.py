@@ -829,3 +829,93 @@ def test_get_nodes_by_names_empty_list_returns_empty_dict(db_path: Path):
     result = get_nodes_by_names(db_path, "run-1", [])
 
     assert result == {}
+
+
+# --- GW-5197: run grouping by parent_run_id -------------------------------------
+
+
+def _insert_run_raw(db_path: Path, run_id: str, parent: "str | None", status: str, started_at: str) -> None:
+    """Insert a run with explicit parent_run_id (bypass insert_run's workflow_name validation)."""
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO workflow_runs (id, workflow_name, status, started_at, parent_run_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (run_id, "wf", status, started_at, parent),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_list_runs_grouped_returns_parents_with_children(db_path: Path):
+    """Top-level items are root runs; children are nested under them."""
+    from dag_dashboard.queries import list_runs_grouped
+
+    _insert_run_raw(db_path, "root-a", None, "completed", "2026-04-22T10:00:00Z")
+    _insert_run_raw(db_path, "child-1", "root-a", "completed", "2026-04-22T10:01:00Z")
+    _insert_run_raw(db_path, "child-2", "root-a", "completed", "2026-04-22T10:02:00Z")
+
+    result = list_runs_grouped(db_path)
+
+    assert result["total"] == 1  # 1 root
+    assert len(result["items"]) == 1
+    root = result["items"][0]
+    assert root["id"] == "root-a"
+    assert "children" in root
+    child_ids = {c["id"] for c in root["children"]}
+    assert child_ids == {"child-1", "child-2"}
+    # Children sorted by started_at ascending
+    assert [c["id"] for c in root["children"]] == ["child-1", "child-2"]
+
+
+def test_list_runs_grouped_aggregate_status_worst_wins(db_path: Path):
+    """aggregate_status uses worst-of semantics across root + descendants."""
+    from dag_dashboard.queries import list_runs_grouped
+
+    _insert_run_raw(db_path, "root", None, "completed", "2026-04-22T10:00:00Z")
+    _insert_run_raw(db_path, "child-ok", "root", "completed", "2026-04-22T10:01:00Z")
+    _insert_run_raw(db_path, "child-bad", "root", "failed", "2026-04-22T10:02:00Z")
+
+    result = list_runs_grouped(db_path)
+    root = result["items"][0]
+    assert root["aggregate_status"] == "failed"
+
+
+def test_list_runs_grouped_rerun_chain_groups_under_root(db_path: Path):
+    """Transitive rerun chain a→b→c: c appears under a, not as top-level."""
+    from dag_dashboard.queries import list_runs_grouped
+
+    _insert_run_raw(db_path, "a", None, "completed", "2026-04-22T10:00:00Z")
+    _insert_run_raw(db_path, "b", "a", "completed", "2026-04-22T10:01:00Z")
+    _insert_run_raw(db_path, "c", "b", "completed", "2026-04-22T10:02:00Z")
+
+    result = list_runs_grouped(db_path)
+    assert result["total"] == 1
+    root = result["items"][0]
+    assert root["id"] == "a"
+    descendant_ids = {d["id"] for d in root["children"]}
+    assert descendant_ids == {"b", "c"}
+
+
+def test_list_runs_grouped_cycle_detection(db_path: Path, caplog):
+    """Cycle in parent_run_id chain completes without infinite loop."""
+    import logging
+
+    from dag_dashboard.queries import list_runs_grouped
+
+    # Forge a cycle: a.parent=b, b.parent=a
+    _insert_run_raw(db_path, "a", "b", "running", "2026-04-22T10:00:00Z")
+    _insert_run_raw(db_path, "b", "a", "running", "2026-04-22T10:01:00Z")
+
+    with caplog.at_level(logging.WARNING):
+        result = list_runs_grouped(db_path)
+
+    # Does not infinite-loop. Both rows surfaced (both detected as roots when
+    # cycle is broken) — behavior is don't-crash, not precise grouping.
+    assert isinstance(result["items"], list)
+    assert any("cycle" in r.message.lower() for r in caplog.records)
