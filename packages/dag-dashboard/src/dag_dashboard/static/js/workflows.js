@@ -35,16 +35,37 @@ async function renderWorkflowsList() {
         } else {
             Object.entries(grouped).forEach(([sourceDir, workflows]) => {
                 html += `<div class="workflow-group">
-                    <h2 class="source-dir-header">${sourceDir}</h2>
+                    <h2 class="source-dir-header">${escapeHtml(sourceDir)}</h2>
                     <div class="workflow-cards">`;
                 
                 workflows.forEach(wf => {
                     const hasCollision = wf.collisions && wf.collisions.length > 0;
+                    const description = escapeHtml(wf.description || '');
+                    const inputsCount = Object.keys(wf.inputs || {}).length;
+                    const requiredInputs = Object.entries(wf.inputs || {})
+                        .filter(([_, spec]) => spec.required)
+                        .map(([name, _]) => escapeHtml(name));
+                    const inputsSummary = inputsCount > 0
+                        ? `${inputsCount} input${inputsCount > 1 ? 's' : ''}${requiredInputs.length > 0 ? ` (required: ${requiredInputs.join(', ')})` : ''}`
+                        : 'No inputs';
+
+                    let lastRunBadge = '';
+                    if (wf.last_run) {
+                        const statusClass = wf.last_run.status === 'success' ? 'badge-success'
+                            : wf.last_run.status === 'failed' ? 'badge-error'
+                            : wf.last_run.status === 'running' ? 'badge-running'
+                            : 'badge-pending';
+                        lastRunBadge = `<span class="status-badge ${statusClass}">${escapeHtml(wf.last_run.status)}</span>`;
+                    }
+
                     html += `
                         <div class="workflow-card ${hasCollision ? 'has-collision' : ''}">
-                            <h3><a href="#/workflows/${wf.name}">${wf.name}</a></h3>
-                            ${hasCollision ? `<span class="collision-badge" title="Also exists in: ${wf.collisions.join(', ')}">⚠️ Shadowed</span>` : ''}
-                            <p class="workflow-path">${wf.path}</p>
+                            <h3><a href="#/workflows/${escapeHtml(wf.name)}">${escapeHtml(wf.name)}</a></h3>
+                            ${hasCollision ? `<span class="collision-badge" title="Also exists in: ${wf.collisions.map(c => escapeHtml(c)).join(', ')}">⚠️ Shadowed</span>` : ''}
+                            ${description ? `<p class="workflow-description">${description}</p>` : ''}
+                            <p class="workflow-meta">${inputsSummary}</p>
+                            ${lastRunBadge}
+                            <p class="workflow-path">${escapeHtml(wf.path)}</p>
                         </div>`;
                 });
                 
@@ -83,17 +104,17 @@ async function renderWorkflowDetail(name) {
         
         let html = `
             <div class="workflow-detail-header">
-                <h1>${definition.name}</h1>
+                <h1>${escapeHtml(definition.name)}</h1>
                 <a href="#/workflows" class="back-link">← Back to workflows</a>
             </div>
-            
+
             <section class="workflow-yaml">
                 <h2>YAML Source</h2>
                 <pre><code>${escapeHtml(definition.yaml_source)}</code></pre>
             </section>
-            
+
             <section class="workflow-actions">
-                <button onclick="triggerWorkflow('${name}')" class="button-primary">Run Workflow</button>
+                <button onclick="triggerWorkflow('${escapeHtml(name)}')" class="button-primary">Run Workflow</button>
             </section>
         `;
 
@@ -106,11 +127,87 @@ async function renderWorkflowDetail(name) {
                 </section>`;
         }
 
+        // Add Input Schema table
+        if (definition.parsed && definition.parsed.inputs) {
+            const inputs = definition.parsed.inputs;
+            const inputEntries = Object.entries(inputs);
+            if (inputEntries.length > 0) {
+                html += `
+                    <section class="workflow-inputs">
+                        <h2>Input Schema</h2>
+                        <table class="inputs-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Default</th>
+                                    <th>Pattern</th>
+                                </tr>
+                            </thead>
+                            <tbody>`;
+                inputEntries.forEach(([inputName, spec]) => {
+                    html += `
+                                <tr>
+                                    <td>${escapeHtml(inputName)}</td>
+                                    <td>${escapeHtml(spec.type || 'string')}</td>
+                                    <td>${spec.required ? 'Yes' : 'No'}</td>
+                                    <td>${spec.default !== undefined ? escapeHtml(String(spec.default)) : '—'}</td>
+                                    <td>${spec.pattern ? escapeHtml(spec.pattern) : '—'}</td>
+                                </tr>`;
+                });
+                html += `
+                            </tbody>
+                        </table>
+                    </section>`;
+            }
+        }
+
         mainContent.innerHTML = `<div class="workflow-detail-container">${html}</div>`;
-        
+
         // Render DAG preview
         if (definition.parsed && definition.parsed.nodes) {
-            renderDAGPreview(definition.parsed.nodes);
+            renderDAGPreview(definition.layout);
+        }
+
+        // Fetch and render recent runs
+        try {
+            const runsResponse = await fetch(`/api/workflows?name=${encodeURIComponent(name)}&limit=10`);
+            if (runsResponse.ok) {
+                const runs = await runsResponse.json();
+                if (runs.length > 0) {
+                    let runsHtml = `
+                        <section class="workflow-recent-runs">
+                            <h2>Recent Runs</h2>
+                            <div class="runs-list">`;
+                    runs.forEach(run => {
+                        const statusClass = run.status === 'success' ? 'badge-success'
+                            : run.status === 'failed' ? 'badge-error'
+                            : run.status === 'running' ? 'badge-running'
+                            : 'badge-pending';
+                        const startedAt = run.started_at ? new Date(run.started_at).toLocaleString() : 'N/A';
+                        runsHtml += `
+                                <div class="run-card">
+                                    <span class="status-badge ${statusClass}">${run.status}</span>
+                                    <span class="run-time">${startedAt}</span>
+                                    <a href="#/workflow/${run.run_id}" class="run-link">View run →</a>
+                                </div>`;
+                    });
+                    runsHtml += `
+                            </div>
+                        </section>`;
+
+                    // Append to the container
+                    const container = document.querySelector('.workflow-detail-container');
+                    if (container) {
+                        const section = document.createElement('div');
+                        section.innerHTML = runsHtml;
+                        container.appendChild(section.firstElementChild);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Failed to fetch recent runs:', error);
         }
         
     } catch (error) {
@@ -123,100 +220,25 @@ async function renderWorkflowDetail(name) {
     }
 }
 
-function renderDAGPreview(nodes) {
+function renderDAGPreview(layout) {
     // Use existing DAGRenderer to show the graph
     const container = document.getElementById('dag-preview-container');
     if (!container || typeof DAGRenderer === 'undefined') return;
-    
-    // Transform nodes to the format DAGRenderer expects
-    const nodeData = nodes.map(node => ({
-        id: node.id,
-        type: node.type || 'command',
-        status: 'pending',  // Preview mode - no status
-        depends_on: node.depends_on || [],
-        ...node
-    }));
-    
-    // Compute simple layout
-    const layout = computeSimpleLayout(nodeData);
-    
+
+    // Layout is already computed server-side
+    if (!layout || !layout.nodes || !layout.edges) {
+        container.innerHTML = '<p>No DAG preview available</p>';
+        return;
+    }
+
     // Render with DAGRenderer
     const renderer = new DAGRenderer(container, { interactive: false });
     renderer.render(layout.nodes, layout.edges);
 }
 
-function computeSimpleLayout(nodes) {
-    // Simple layered layout - group by dependency depth
-    const layers = [];
-    const visited = new Set();
-    const nodeMap = new Map(nodes.map(n => [n.id, n]));
-    
-    function getLayer(node) {
-        if (visited.has(node.id)) return 0;
-        visited.add(node.id);
-        
-        if (!node.depends_on || node.depends_on.length === 0) {
-            return 0;
-        }
-        
-        const depthLayers = node.depends_on.map(depId => {
-            const depNode = nodeMap.get(depId);
-            return depNode ? getLayer(depNode) + 1 : 0;
-        });
-        
-        return Math.max(...depthLayers);
-    }
-    
-    nodes.forEach(node => {
-        const layer = getLayer(node);
-        if (!layers[layer]) layers[layer] = [];
-        layers[layer].push(node);
-    });
-    
-    // Position nodes
-    const layoutNodes = [];
-    const nodeWidth = 180;
-    const nodeHeight = 60;
-    const layerGap = 150;
-    const nodeGap = 20;
-    
-    layers.forEach((layerNodes, layerIdx) => {
-        const layerY = layerIdx * layerGap;
-        layerNodes.forEach((node, idx) => {
-            const layerX = idx * (nodeWidth + nodeGap);
-            layoutNodes.push({
-                ...node,
-                x: layerX,
-                y: layerY,
-                width: nodeWidth,
-                height: nodeHeight
-            });
-        });
-    });
-    
-    // Build edges
-    const edges = [];
-    nodes.forEach(node => {
-        if (node.depends_on) {
-            node.depends_on.forEach(depId => {
-                edges.push({ from: depId, to: node.id });
-            });
-        }
-    });
-    
-    return { nodes: layoutNodes, edges };
-}
 
 function triggerWorkflow(name) {
-    // For now, just navigate to workflows page
-    // In the future, could show a trigger form
-    alert(`Trigger form for workflow "${name}" not yet implemented`);
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    window.location.hash = "#/workflow-trigger/" + name;
 }
 
 // Export for route registration

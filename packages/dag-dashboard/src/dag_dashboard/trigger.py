@@ -122,7 +122,7 @@ def validate_workflow_path(workflow: str, workflows_dirs: List[Path]) -> Path:
     else:
         # Not found in any directory
         raise HTTPException(
-            status_code=404,
+            status_code=400,
             detail=f"Workflow '{workflow}' not found in configured directories"
         )
 

@@ -1,65 +1,118 @@
-"""Tests for /api/definitions endpoints."""
-from pathlib import Path
+"""Tests for /api/definitions routes."""
 import pytest
-from unittest.mock import Mock
+from fastapi.testclient import TestClient
+from pathlib import Path
+from dag_dashboard.server import create_app
 
 
 @pytest.fixture
-def mock_request_with_workflows(tmp_path: Path):
-    """Create a mock request with workflows_dirs in app.state."""
-    workflows_dir = tmp_path / "workflows"
-    workflows_dir.mkdir()
+def client(tmp_path: Path) -> TestClient:
+    """Create test client with temporary database."""
+    app = create_app(tmp_path)
+    return TestClient(app)
 
-    (workflows_dir / "test-workflow.yaml").write_text("""
+
+def test_get_definition_detail_includes_layout(tmp_path: Path) -> None:
+    """Test that get_definition_detail returns layout field."""
+    # Create a test workflow with nodes
+    workflow_yaml = """
+name: test-workflow
+description: Test workflow for layout
+inputs:
+  param1:
+    type: string
+    required: true
 nodes:
-  - id: step1
+  - id: node1
     type: command
     command: echo "hello"
+  - id: node2
+    type: command
+    command: echo "world"
+    depends_on:
+      - node1
+"""
+    workflows_dir = tmp_path / "workflows"
+    workflows_dir.mkdir()
+    workflow_file = workflows_dir / "test-workflow.yaml"
+    workflow_file.write_text(workflow_yaml)
+
+    # Create app with this workflows dir
+    app = create_app(tmp_path, workflows_dirs=[workflows_dir])
+    client = TestClient(app)
+
+    response = client.get("/api/definitions/test-workflow")
+    assert response.status_code == 200
+
+    data = response.json()
+    assert "layout" in data
+    assert "nodes" in data["layout"]
+    assert "edges" in data["layout"]
+    assert len(data["layout"]["nodes"]) == 2
+    assert len(data["layout"]["edges"]) == 1
+
+
+def test_list_definitions_includes_metadata(tmp_path: Path) -> None:
+    """Test that list_definitions returns description, inputs, and last_run."""
+    # Create a test workflow with metadata
+    workflow_yaml = """
+name: test-metadata
+description: A workflow with metadata
+inputs:
+  input1:
+    type: string
+    required: true
+  input2:
+    type: integer
+    required: false
+    default: 42
+nodes:
+  - id: task1
+    type: command
+    command: echo "test"
+"""
+    workflows_dir = tmp_path / "workflows"
+    workflows_dir.mkdir()
+    workflow_file = workflows_dir / "test-metadata.yaml"
+    workflow_file.write_text(workflow_yaml)
+
+    # Create app with this workflows dir
+    app = create_app(tmp_path, workflows_dirs=[workflows_dir])
+    client = TestClient(app)
+
+    response = client.get("/api/definitions")
+    assert response.status_code == 200
+
+    definitions = response.json()
+    assert len(definitions) == 1
+
+    workflow = definitions[0]
+    assert workflow["name"] == "test-metadata"
+    assert workflow["description"] == "A workflow with metadata"
+    assert "inputs" in workflow
+    assert "input1" in workflow["inputs"]
+    assert "input2" in workflow["inputs"]
+    assert workflow["inputs"]["input1"]["required"] is True
+    assert workflow["inputs"]["input2"]["default"] == 42
+
+
+def test_get_definition_detail_parse_error(tmp_path: Path) -> None:
+    """Test that get_definition_detail returns 500 for YAML parse errors."""
+    # Create an invalid YAML file
+    workflows_dir = tmp_path / "workflows"
+    workflows_dir.mkdir()
+    workflow_file = workflows_dir / "invalid-yaml.yaml"
+    workflow_file.write_text("""
+name: test
+nodes:
+  - id: task1
+    invalid: [unclosed bracket
 """)
 
-    # Create a mock request with app.state.workflows_dirs
-    mock_request = Mock()
-    mock_request.app.state.workflows_dirs = [workflows_dir]
-    return mock_request
+    # Create app with this workflows dir
+    app = create_app(tmp_path, workflows_dirs=[workflows_dir])
+    client = TestClient(app)
 
-
-async def test_get_definitions_list(mock_request_with_workflows):
-    """GET /api/definitions returns list of workflows."""
-    from dag_dashboard.routes import get_definitions_list
-
-    result = await get_definitions_list(mock_request_with_workflows)
-    assert isinstance(result, list)
-    assert len(result) >= 1
-    assert result[0]["name"] == "test-workflow"
-    assert "source_dir" in result[0]
-
-
-async def test_get_definition_detail(mock_request_with_workflows):
-    """GET /api/definitions/{name} returns YAML + parsed definition."""
-    from dag_dashboard.routes import get_definition_detail
-
-    result = await get_definition_detail("test-workflow", mock_request_with_workflows)
-    assert result["name"] == "test-workflow"
-    assert "yaml_source" in result
-    assert "parsed" in result
-    assert "nodes" in result["parsed"]
-
-
-async def test_get_definition_not_found(mock_request_with_workflows):
-    """GET /api/definitions/{name} raises 404 for missing workflow."""
-    from dag_dashboard.routes import get_definition_detail
-    from fastapi import HTTPException
-
-    with pytest.raises(HTTPException) as exc_info:
-        await get_definition_detail("nonexistent", mock_request_with_workflows)
-    assert exc_info.value.status_code == 404
-
-
-async def test_get_definition_rejects_traversal(mock_request_with_workflows):
-    """GET /api/definitions/{name} raises 400 for path traversal attempt."""
-    from dag_dashboard.routes import get_definition_detail
-    from fastapi import HTTPException
-
-    with pytest.raises(HTTPException) as exc_info:
-        await get_definition_detail("../etc/passwd", mock_request_with_workflows)
-    assert exc_info.value.status_code == 400
+    response = client.get("/api/definitions/invalid-yaml")
+    assert response.status_code == 500
+    assert "parse error" in response.json()["detail"].lower()

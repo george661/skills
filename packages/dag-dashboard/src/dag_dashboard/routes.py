@@ -615,45 +615,71 @@ async def get_state_diff_timeline_route(request: Request, run_id: str) -> list[N
 async def get_definitions_list(request: Request) -> list[dict[str, Any]]:
     """
     List all workflow definitions across configured workflows directories.
-    
+
+
     Returns:
-        List of workflow definitions with name, source_dir, and collision info.
+        List of workflow definitions with name, source_dir, metadata, and collision info.
     """
     from .definitions import list_definitions
-    
+
     workflows_dirs = request.app.state.workflows_dirs
-    return list_definitions(workflows_dirs)
+    db_path = request.app.state.db_path
+    return list_definitions(workflows_dirs, db_path=db_path)
 
 
 @router.get("/definitions/{name}")
 async def get_definition_detail(name: str, request: Request) -> dict[str, Any]:
     """
     Get workflow definition details including YAML source and parsed data.
-    
+
     Args:
         name: Workflow name (without .yaml extension).
-    
+
     Returns:
-        Definition dict with name, yaml_source, and parsed data.
-    
+        Definition dict with name, yaml_source, parsed data, and layout.
+
     Raises:
         HTTPException 400: If name contains invalid characters (traversal attempt).
         HTTPException 404: If workflow not found.
     """
-    from .definitions import get_definition
-    
+    from .definitions import get_definition, DefinitionParseError
+    from .layout import compute_layout
+
     workflows_dirs = request.app.state.workflows_dirs
-    
+
     try:
         definition = get_definition(workflows_dirs, name)
     except ValueError as e:
         # Invalid name (traversal attempt)
         raise HTTPException(status_code=400, detail=str(e))
-    
+    except DefinitionParseError as e:
+        # Workflow file exists but YAML is invalid
+        raise HTTPException(status_code=500, detail=f"Workflow YAML parse error: {str(e)}")
+
     if definition is None:
         raise HTTPException(
             status_code=404,
             detail=f"Workflow '{name}' not found in configured directories"
         )
-    
+
+    # Compute layout from parsed YAML
+    parsed = definition.get("parsed", {})
+    nodes_raw = parsed.get("nodes", [])
+
+    # Convert parsed nodes to the format compute_layout expects
+    nodes_for_layout = []
+    for node in nodes_raw:
+        node_dict = {
+            "node_name": node.get("id"),
+            "depends_on": node.get("depends_on", []),
+            "status": "pending",
+            "id": node.get("id"),
+            "run_id": "",
+        }
+        nodes_for_layout.append(node_dict)
+
+    # Compute layout
+    layout = compute_layout(nodes_for_layout)
+    definition["layout"] = layout
+
     return definition
