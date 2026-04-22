@@ -28,7 +28,7 @@ from dag_executor import (
 from dag_executor.replay import execute_replay
 from dag_executor.validator import WorkflowValidator
 
-SUBCOMMANDS = {"replay", "history", "inspect", "cancel", "search", "rerun"}
+SUBCOMMANDS = {"replay", "history", "inspect", "cancel", "search", "logs", "rerun"}
 
 
 def _build_list_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -752,6 +752,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             elif subcmd == "search":
                 run_search(argv[1:])
                 return
+            elif subcmd == "logs":
+                from dag_executor.logs import run_logs
+                sys.exit(run_logs(argv[1:]))
             elif subcmd == "rerun":
                 run_rerun(argv[1:])
                 return

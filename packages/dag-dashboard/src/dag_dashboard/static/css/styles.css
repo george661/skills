@@ -2758,6 +2758,156 @@ select.form-control {
     margin-top: 0.5rem;
 }
 
+/* Step Logs Component */
+.step-logs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #1e1e1e;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.step-logs-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #2d2d2d;
+  border-bottom: 1px solid #3e3e3e;
+}
+
+.step-logs-filters {
+  display: flex;
+  gap: 8px;
+}
+
+.filter-btn {
+  padding: 4px 12px;
+  font-size: 13px;
+  border: 1px solid #3e3e3e;
+  background: transparent;
+  color: #9ca3af;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.filter-btn:hover {
+  background: #3e3e3e;
+  color: #fff;
+}
+
+.filter-btn.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.step-logs-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: #9ca3af;
+}
+
+.follow-badge {
+  padding: 2px 8px;
+  background: #10b981;
+  color: #fff;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  animation: pulse-badge 2s infinite;
+}
+
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.resume-follow-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  background: #f59e0b;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.resume-follow-btn:hover {
+  background: #d97706;
+}
+
+.log-count {
+  font-weight: 500;
+}
+
+.step-logs-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  background: #1e1e1e;
+}
+
+.step-logs-empty {
+  color: #6b7280;
+  text-align: center;
+  padding: 24px;
+  font-style: italic;
+}
+
+.log-line {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-stream {
+  flex-shrink: 0;
+  font-weight: 600;
+  min-width: 60px;
+}
+
+.log-line-stdout .log-stream {
+  color: #10b981;
+}
+
+.log-line-stderr .log-stream {
+  color: #ef4444;
+}
+
+.log-text {
+  color: #e5e7eb;
+}
+
+/* Scrollbar styling for logs */
+.step-logs-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.step-logs-list::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+.step-logs-list::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 4px;
+}
+
+.step-logs-list::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
 /* ==================== Search Bar ==================== */
 
 .search-bar {
@@ -2847,5 +2997,184 @@ select.form-control {
     .search-bar {
         padding: 0.5rem;
         margin-bottom: 0.5rem;
+    }
+}
+
+/* ---------- Settings page (GW-5199) ---------- */
+
+.settings-page {
+    max-width: 720px;
+    padding: 1rem 0;
+}
+
+.settings-title {
+    margin: 0 0 1rem 0;
+}
+
+.settings-banner {
+    margin: 0.5rem 0 1rem 0;
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius);
+    font-size: 0.9rem;
+    min-height: 1.25rem;
+}
+.settings-banner:empty {
+    display: none;
+}
+.settings-banner-success {
+    background: var(--bg-card);
+    border: 1px solid var(--success, #2ecc71);
+    color: var(--success, #2ecc71);
+}
+.settings-banner-error {
+    background: var(--bg-card);
+    border: 1px solid var(--error, #e74c3c);
+    color: var(--error, #e74c3c);
+}
+
+.settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.settings-fieldset {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem 1.25rem;
+    background: var(--bg-card);
+}
+
+.settings-legend {
+    padding: 0 0.5rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.settings-field {
+    display: grid;
+    grid-template-columns: minmax(160px, 1fr) 2fr auto;
+    grid-template-rows: auto auto;
+    grid-template-areas:
+        "label control meta"
+        "error error error";
+    gap: 0.5rem 0.75rem;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+}
+.settings-field:last-child {
+    border-bottom: none;
+}
+
+.settings-label {
+    grid-area: label;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.settings-field-control {
+    grid-area: control;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.settings-input {
+    min-height: 44px;
+    font: inherit;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    color: var(--text-primary);
+}
+.settings-input-text,
+.settings-input-number {
+    flex: 1 1 200px;
+    min-width: 0;
+}
+.settings-input-masked {
+    font-family: "SF Mono", ui-monospace, monospace;
+    color: var(--text-secondary);
+    background: var(--bg-card);
+}
+.settings-input-checkbox {
+    width: 1.25rem;
+    height: 1.25rem;
+    min-height: 0;
+    padding: 0;
+}
+
+.settings-edit-btn {
+    min-height: 44px;
+}
+
+.settings-field-meta {
+    grid-area: meta;
+    display: flex;
+    align-items: center;
+}
+
+.settings-source {
+    display: inline-block;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+.settings-source-db {
+    color: var(--primary);
+    border-color: var(--primary);
+}
+
+.settings-error {
+    grid-area: error;
+    font-size: 0.85rem;
+    color: var(--error, #e74c3c);
+    min-height: 1rem;
+}
+.settings-error:empty {
+    display: none;
+}
+
+.settings-section-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px dashed var(--border);
+    flex-wrap: wrap;
+}
+
+.settings-test-result {
+    font-size: 0.875rem;
+}
+.settings-test-result-pending { color: var(--text-secondary); }
+.settings-test-result-ok      { color: var(--success, #2ecc71); }
+.settings-test-result-error   { color: var(--error, #e74c3c); }
+
+.settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+@media (max-width: 640px) {
+    .settings-field {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            "label"
+            "control"
+            "meta"
+            "error";
+    }
+    .settings-field-meta {
+        justify-content: flex-start;
     }
 }

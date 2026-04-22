@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ValidationError
 
+from .notifier import SlackNotifier, SlackNotifierConfigError
 from .settings_store import (
     WHITELISTED_KEYS,
     mask_secret,
@@ -219,5 +220,67 @@ def create_settings_router(settings: Any, db_path: Path) -> APIRouter:
             }
 
         return {"settings": result}
+
+    @router.post("/api/settings/slack/test")
+    async def test_slack_notification() -> Dict[str, Any]:
+        """Send a test Slack notification using the current merged settings.
+
+        Does NOT modify stored settings. Returns ``{ok: bool, error: str|None}``.
+        Uses the same ``SlackNotifier`` that runtime notifications use, so if
+        this endpoint succeeds, real notifications will too.
+        """
+        merged = merge_settings(settings, db_path)
+
+        def _val(key: str) -> Any:
+            entry = merged.get(key, {})
+            return entry.get("value") if isinstance(entry, dict) else None
+
+        if not _val("slack_enabled"):
+            return {"ok": False, "error": "Slack notifications are not enabled"}
+
+        webhook = _val("slack_webhook_url") or None
+        bot_token = _val("slack_bot_token") or None
+        channel_id = _val("slack_channel_id") or None
+
+        if not webhook and not bot_token:
+            return {"ok": False, "error": "No Slack webhook or bot token configured"}
+
+        card: Dict[str, Any] = {
+            "text": "DAG Dashboard test notification",
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "DAG Dashboard test notification"},
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            "This is a test message sent from the dashboard "
+                            "Settings page. If you can see it, your Slack "
+                            "configuration is working."
+                        ),
+                    },
+                },
+            ],
+        }
+
+        try:
+            notifier = SlackNotifier(
+                db_path=db_path,
+                webhook_url=webhook,
+                bot_token=bot_token,
+                channel_id=channel_id,
+            )
+        except SlackNotifierConfigError as exc:
+            return {"ok": False, "error": str(exc)}
+
+        try:
+            notifier.notify("settings-test", "settings_test", card)
+        except Exception as exc:  # pragma: no cover - defensive
+            return {"ok": False, "error": str(exc)}
+
+        return {"ok": True, "error": None}
 
     return router

@@ -880,6 +880,11 @@ router.register('/checkpoints', renderCheckpointWorkflows);
 router.register('/checkpoints/:wf', renderCheckpointRuns);
 router.register('/checkpoints/:wf/:runId', renderCheckpointRunDetail);
 router.register('/checkpoints/compare/:wf/:runIdA/:runIdB', renderCheckpointCompare);
+router.register('/settings', function () {
+    if (typeof window.renderSettings === 'function') {
+        window.renderSettings();
+    }
+});
 
 // Mobile menu toggle
 document.getElementById('mobile-menu-toggle')?.addEventListener('click', () => {
