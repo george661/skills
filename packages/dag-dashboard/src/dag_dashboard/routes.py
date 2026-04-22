@@ -557,7 +557,7 @@ async def resume_interrupt(
     body: InterruptResumeRequest,
 ) -> Dict[str, Any]:
     """Resume an interrupted workflow by injecting a resume value."""
-    from dag_executor.checkpoint import CheckpointStore  # type: ignore[import-untyped]
+    from dag_executor.checkpoint import CheckpointStore
     import yaml
 
     db_path = get_db_path(request)
