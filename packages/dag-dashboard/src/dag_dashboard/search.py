@@ -115,9 +115,12 @@ def build_search_router(
         # Query database
         db_path = db_path_provider()
         conn = sqlite3.connect(str(db_path))
-        
+
         try:
-            raw_results = search_all(conn, q=q, kinds=kinds_list, limit=limit)
+            raw_results = search_all(
+                conn, q=q, kinds=kinds_list, limit=limit,
+                use_fts=settings.fts5_enabled
+            )
             
             # Convert to pydantic models
             results = []

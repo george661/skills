@@ -49,7 +49,7 @@ def create_app(
             raise ValueError("Either db_dir or db_path must be provided")
         ensure_dir(db_dir)
         db_path = db_dir / "dashboard.db"
-    init_db(db_path)
+    init_db(db_path, fts5_enabled=settings.fts5_enabled if settings else False)
 
     # Ensure events directory exists
     ensure_dir(events_dir)
