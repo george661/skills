@@ -82,6 +82,17 @@ class Router {
         });
 
         // Handle parameterized routes
+        if (hash.startsWith('/workflows/')) {
+            const name = hash.split('/')[2];
+            if (name) {
+                this.currentRoute = '/workflows/:name';
+                if (this.routes['/workflows/:name']) {
+                    this.routes['/workflows/:name'](name);
+                }
+                return;
+            }
+        }
+
         if (hash.startsWith('/workflow/')) {
             const runId = hash.split('/')[2];
             this.currentRoute = '/workflow/:runId';
@@ -875,6 +886,8 @@ if (window.SearchBar) {
 const router = new Router();
 router.register('/', renderDashboard);
 router.register('/history', renderHistory);
+router.register('/workflows', window.renderWorkflowsList);
+router.register('/workflows/:name', window.renderWorkflowDetail);
 router.register('/workflow/:runId', renderWorkflowDetail);
 router.register('/checkpoints', renderCheckpointWorkflows);
 router.register('/checkpoints/:wf', renderCheckpointRuns);

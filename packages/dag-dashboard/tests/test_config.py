@@ -1,5 +1,6 @@
 """Tests for configuration settings."""
 from pathlib import Path
+import os
 import pytest
 from dag_dashboard.config import Settings
 
@@ -32,3 +33,32 @@ def test_warns_on_wildcard_bind(
     settings.validate_host()
     assert "WARNING" in caplog.text
     assert "0.0.0.0" in caplog.text
+
+
+def test_workflows_dirs_parses_colon_separated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DAG_DASHBOARD_WORKFLOWS_DIR should parse colon-separated paths."""
+    monkeypatch.setenv("DAG_DASHBOARD_WORKFLOWS_DIR", "workflows:/tmp/extra-workflows")
+    settings = Settings()
+    assert settings.workflows_dirs == [Path("workflows"), Path("/tmp/extra-workflows")]
+
+
+def test_workflows_dirs_single_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Single path should still work (backwards compat)."""
+    monkeypatch.setenv("DAG_DASHBOARD_WORKFLOWS_DIR", "workflows")
+    settings = Settings()
+    assert settings.workflows_dirs == [Path("workflows")]
+
+
+def test_workflows_dirs_default() -> None:
+    """Default should be [Path('workflows')]."""
+    settings = Settings()
+    assert settings.workflows_dirs == [Path("workflows")]
+
+
+def test_workflows_dir_property() -> None:
+    """workflows_dir should be string representation of first dir for backwards compat."""
+    settings = Settings()
+    assert settings.workflows_dir == "workflows"
+    assert settings.workflows_dirs[0] == Path("workflows")
