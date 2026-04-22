@@ -5,7 +5,7 @@ This stub allows tests to run before GW-5239 lands.
 """
 
 
-def list_drafts(wf_dir: str, name: str) -> list:
+def list_drafts(wf_dir: str, name: str) -> list[str]:
     """List all draft timestamps for a workflow."""
     raise NotImplementedError("drafts_fs.list_drafts not yet implemented (GW-5239)")
 
