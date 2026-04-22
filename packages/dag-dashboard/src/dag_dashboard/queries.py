@@ -39,6 +39,7 @@ def insert_run(
     inputs: Optional[Dict[str, Any]] = None,
     workflow_definition: Optional[str] = None,
     trigger_source: Optional[str] = None,
+    parent_run_id: Optional[str] = None,
 ) -> str:
     """Insert a new workflow run."""
     # Validate workflow_name at query level (defense in depth)
@@ -49,13 +50,34 @@ def insert_run(
     try:
         conn.execute(
             """
-            INSERT INTO workflow_runs (id, workflow_name, status, started_at, inputs, workflow_definition, trigger_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO workflow_runs (id, workflow_name, status, started_at, inputs, workflow_definition, trigger_source, parent_run_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (run_id, workflow_name, status, started_at, json.dumps(inputs) if inputs else None, workflow_definition, trigger_source)
+            (run_id, workflow_name, status, started_at, json.dumps(inputs) if inputs else None, workflow_definition, trigger_source, parent_run_id)
         )
         conn.commit()
         return run_id
+    finally:
+        conn.close()
+
+
+def get_run_for_rerun(db_path: Path, run_id: str) -> Optional[Dict[str, Any]]:
+    """Get workflow run data for rerun operation."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT workflow_name, inputs FROM workflow_runs WHERE id = ?",
+            (run_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        return {
+            "workflow_name": row[0],
+            "inputs": json.loads(row[1]) if row[1] else {}
+        }
     finally:
         conn.close()
 
@@ -1007,52 +1029,69 @@ def get_node_log_lines(
     node_id: str,
     limit: int = 500,
     offset: int = 0,
-    stream_filter: str = "all"
+    stream_filter: str = "all",
 ) -> List[Dict[str, Any]]:
-    """Get log lines for a specific node from the events table.
-    
+    """Retrieve log lines for a specific node in a workflow run.
+
+    Reads from the ``node_logs`` table (flat rows, populated by
+    ``EventCollector._persist_node_log_batch``). Each row:
+    ``{run_id, node_id, stream, sequence, line, created_at}``.
+
     Args:
         db_path: Path to SQLite database
-        run_id: Workflow run identifier
-        node_id: Node identifier
-        limit: Maximum number of lines to return
-        offset: Number of lines to skip (for pagination)
-        stream_filter: Filter by stream ('stdout', 'stderr', or 'all')
-    
+        run_id: Workflow run ID
+        node_id: Node ID
+        limit: Maximum number of log lines to return
+        offset: Number of log lines to skip (for pagination)
+        stream_filter: ``'all'``, ``'stdout'``, or ``'stderr'``
+
     Returns:
-        List of log line dicts with keys: sequence, stream, line, timestamp
+        List of log line dicts with keys: run_id, node_id, stream, sequence, line, created_at
     """
     conn = get_connection(db_path)
     try:
         cursor = conn.cursor()
-        
-        # Build query with optional stream filter
-        query = """
-            SELECT 
-                json_extract(payload, '$.sequence') as sequence,
-                json_extract(payload, '$.stream') as stream,
-                json_extract(payload, '$.line') as line,
-                created_at as timestamp
-            FROM events
-            WHERE run_id = ?
-              AND event_type = 'node_log_line'
-              AND json_extract(payload, '$.node_id') = ?
-        """
-        
+
+        query = (
+            "SELECT run_id, node_id, stream, sequence, line, created_at "
+            "FROM node_logs WHERE run_id = ? AND node_id = ?"
+        )
         params: List[Any] = [run_id, node_id]
-        
+
         if stream_filter != "all":
-            query += " AND json_extract(payload, '$.stream') = ?"
+            query += " AND stream = ?"
             params.append(stream_filter)
-        
-        query += """
-            ORDER BY CAST(json_extract(payload, '$.sequence') AS INTEGER)
-            LIMIT ? OFFSET ?
-        """
+
+        query += " ORDER BY sequence LIMIT ? OFFSET ?"
         params.extend([limit, offset])
-        
+
         cursor.execute(query, tuple(params))
-        
         return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+# Back-compat alias: earlier callers/tests referenced get_node_logs.
+get_node_logs = get_node_log_lines
+
+
+def count_node_log_lines(
+    db_path: Path,
+    run_id: str,
+    node_id: str,
+    stream_filter: str = "all",
+) -> int:
+    """Return the total count of log lines for a node, respecting ``stream_filter``."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.cursor()
+        query = "SELECT COUNT(*) FROM node_logs WHERE run_id = ? AND node_id = ?"
+        params: List[Any] = [run_id, node_id]
+        if stream_filter != "all":
+            query += " AND stream = ?"
+            params.append(stream_filter)
+        cursor.execute(query, tuple(params))
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
     finally:
         conn.close()

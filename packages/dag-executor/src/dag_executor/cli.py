@@ -749,6 +749,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             elif subcmd == "cancel":
                 run_cancel(argv[1:])
                 return
+            elif subcmd == "logs":
+                from dag_executor.logs import run_logs
+                sys.exit(run_logs(argv[1:]))
             elif subcmd == "rerun":
                 run_rerun(argv[1:])
                 return

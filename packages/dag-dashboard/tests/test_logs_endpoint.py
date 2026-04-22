@@ -1,6 +1,5 @@
 """Tests for node log lines historical endpoint."""
 from pathlib import Path
-import json
 import pytest
 
 from dag_dashboard.database import init_db
@@ -29,34 +28,21 @@ def sample_run_with_logs(db_path: Path) -> tuple[Path, str, str]:
     conn = get_connection(db_path)
     cursor = conn.cursor()
     
-    log_events = [
-        {
-            "sequence": 1,
-            "stream": "stdout",
-            "line": "Starting process...",
-            "node_id": node_id
-        },
-        {
-            "sequence": 2,
-            "stream": "stderr",
-            "line": "Warning: deprecated option",
-            "node_id": node_id
-        },
-        {
-            "sequence": 3,
-            "stream": "stdout",
-            "line": "Process completed",
-            "node_id": node_id
-        },
+    # get_node_log_lines reads from node_logs (flat rows populated by
+    # EventCollector._persist_node_log_batch). Insert rows directly to match
+    # production storage.
+    log_rows = [
+        (run_id, node_id, "stdout", 1, "Starting process...", "2026-04-22T10:00:02Z"),
+        (run_id, node_id, "stderr", 2, "Warning: deprecated option", "2026-04-22T10:00:03Z"),
+        (run_id, node_id, "stdout", 3, "Process completed", "2026-04-22T10:00:04Z"),
     ]
-    
-    for event in log_events:
+    for row in log_rows:
         cursor.execute(
             """
-            INSERT INTO events (run_id, event_type, payload, created_at)
-            VALUES (?, ?, ?, datetime('now'))
+            INSERT INTO node_logs (run_id, node_id, stream, sequence, line, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (run_id, "node_log_line", json.dumps(event), )
+            row,
         )
     
     conn.commit()

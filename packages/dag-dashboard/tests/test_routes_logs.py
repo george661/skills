@@ -1,6 +1,5 @@
 """Tests for node logs REST endpoint."""
 from pathlib import Path
-import json
 import pytest
 from fastapi.testclient import TestClient
 
@@ -27,19 +26,16 @@ def test_db(tmp_path: Path) -> Path:
     conn = get_connection(db_path)
     cursor = conn.cursor()
     
+    # Route reads from node_logs (flat rows populated by
+    # EventCollector._persist_node_log_batch). Insert rows directly.
     for i in range(10):
         stream = "stdout" if i % 2 == 0 else "stderr"
         cursor.execute(
             """
-            INSERT INTO events (run_id, event_type, payload, created_at)
-            VALUES (?, ?, ?, datetime('now'))
+            INSERT INTO node_logs (run_id, node_id, stream, sequence, line, created_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
             """,
-            (run_id, "node_log_line", json.dumps({
-                "sequence": i + 1,
-                "stream": stream,
-                "line": f"Log line {i + 1}",
-                "node_id": node_id
-            }))
+            (run_id, node_id, stream, i + 1, f"Log line {i + 1}")
         )
     
     conn.commit()

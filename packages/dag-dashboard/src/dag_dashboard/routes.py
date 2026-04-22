@@ -19,8 +19,8 @@ from .queries import (
     get_interrupt_checkpoint,
     get_state_diff_timeline, get_checkpoint_comparison,
     list_run_artifacts,
-    get_nodes_by_names,
-    get_node_log_lines,
+    get_nodes_by_names, get_run_for_rerun, insert_run,
+    get_node_log_lines, count_node_log_lines,
 )
 from .layout import compute_layout
 
@@ -270,11 +270,10 @@ async def get_node_logs(
     
     # Get log lines with pagination and stream filter
     lines = get_node_log_lines(db_path, run_id, node_id, limit, offset, stream)
-    
-    # Get total count for pagination metadata
-    total_lines = get_node_log_lines(db_path, run_id, node_id, limit=999999, offset=0, stream_filter=stream)
-    total = len(total_lines)
-    
+
+    # Total count via COUNT(*) so pagination metadata is cheap even for large runs.
+    total = count_node_log_lines(db_path, run_id, node_id, stream_filter=stream)
+
     return {
         "lines": lines,
         "total": total,

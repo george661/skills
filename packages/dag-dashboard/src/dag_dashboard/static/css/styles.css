@@ -2750,6 +2750,14 @@ select.form-control {
 .artifact-items .artifact-item { padding: 0.25rem 0; border-bottom: 1px solid var(--border-subtle, #eee); }
 .artifact-items .artifact-node { display: inline-block; margin-left: 0.5rem; padding: 0 0.4rem; background: var(--chip-bg, #f0f0f0); border-radius: 10px; font-size: 0.75rem; color: var(--text-muted, #666); }
 
+.retry-button-container {
+    margin-bottom: 1rem;
+}
+
+.retry-run-btn {
+    margin-top: 0.5rem;
+}
+
 /* Step Logs Component */
 .step-logs {
   display: flex;

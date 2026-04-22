@@ -125,31 +125,35 @@ def test_tail_logs_local_missing_file_returns_error(tmp_path: Path, capsys):
 
 
 def test_process_log_line_filters_correctly(capsys):
-    """Test _process_log_line filtering logic."""
+    """Test _process_log_line filtering logic.
+
+    Production WorkflowEvent shape: node_id is top-level; sequence/stream/line live in metadata.
+    """
     log_event = json.dumps({
         "event_type": "node_log_line",
+        "node_id": "test-node",
         "metadata": {
-            "node_id": "test-node",
+            "sequence": 0,
             "stream": "stdout",
-            "line": "Test output"
-        }
+            "line": "Test output",
+        },
     })
-    
+
     # No filter - should print
     _process_log_line(log_event, None, "all")
     captured = capsys.readouterr()
     assert "[stdout][test-node] Test output" in captured.out
-    
+
     # Node filter match - should print
     _process_log_line(log_event, "test-node", "all")
     captured = capsys.readouterr()
     assert "Test output" in captured.out
-    
+
     # Node filter no match - should not print
     _process_log_line(log_event, "other-node", "all")
     captured = capsys.readouterr()
     assert captured.out == ""
-    
+
     # Stream filter no match - should not print
     _process_log_line(log_event, None, "stderr")
     captured = capsys.readouterr()
