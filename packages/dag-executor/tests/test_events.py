@@ -35,6 +35,10 @@ class TestEventType:
         """Verify ARTIFACT_CREATED event type is defined."""
         assert EventType.ARTIFACT_CREATED == "artifact_created"
 
+    def test_approval_resolved_event_type_registered(self) -> None:
+        """Verify APPROVAL_RESOLVED event type is defined."""
+        assert EventType.APPROVAL_RESOLVED == "approval_resolved"
+
 
 class TestStreamMode:
     """Test StreamMode enum."""

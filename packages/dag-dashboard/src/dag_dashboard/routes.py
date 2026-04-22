@@ -8,14 +8,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
 
+import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+
+from dag_executor.gates import build_approval_resolved_event
+from dag_executor.checkpoint import CheckpointStore
 
 from .models import SortBy, RunStatus, StatusSummary, GateDecisionRequest, InterruptResumeRequest, NodeStateDiff, RerunRequest
 from .queries import (
     get_run, list_runs, list_runs_grouped, get_node, list_nodes, get_status_counts,
     get_artifacts, get_chat_messages, get_workflow_totals,
     insert_gate_decision, update_node, get_pending_gates, count_pending_gates,
+    get_pending_gates_for_run,
     get_interrupt_checkpoint,
     get_state_diff_timeline, get_checkpoint_comparison,
     list_run_artifacts,
@@ -420,9 +425,34 @@ async def approve_gate(
     # Update node status to completed
     update_node(db_path, node_id, status="completed", finished_at=decided_at)
 
-    # Append NDJSON event to {run_id}.ndjson for executor signaling
+    # Get workflow definition to check if this is an interrupt node
+    workflow_def_yaml = run["workflow_definition"]
+    workflow_def = yaml.safe_load(workflow_def_yaml) if workflow_def_yaml else {}
+    checkpoint_prefix = workflow_def.get("config", {}).get("checkpoint_prefix")
+
+    if not checkpoint_prefix:
+        checkpoint_prefix = request.app.state.checkpoint_dir_fallback or os.path.expanduser(
+            "~/.dag-executor/checkpoints"
+        )
+
+    # For interrupt nodes, save resume_values
+    resume_key = None
+    try:
+        store = CheckpointStore(checkpoint_prefix)
+        interrupt_checkpoint = store.load_interrupt(run["workflow_name"], run_id)
+        if interrupt_checkpoint and interrupt_checkpoint.resume_key:
+            resume_key = interrupt_checkpoint.resume_key
+            resume_values = {resume_key: True}
+            store.save_resume_values(run["workflow_name"], run_id, resume_values)
+    except Exception:
+        # If checkpoint loading fails, continue without resume_values
+        pass
+
+    # Append NDJSON events to {run_id}.ndjson for executor signaling
     event_file = events_dir / f"{run_id}.ndjson"
-    event = {
+
+    # Event 1: gate.decided (backward compatibility)
+    gate_decided_event = {
         "event_type": "gate.decided",
         "payload": json.dumps({
             "node_name": node_name,
@@ -432,8 +462,22 @@ async def approve_gate(
         }),
         "created_at": decided_at,
     }
+
+    # Event 2: approval_resolved (new canonical)
+    approval_resolved_event = build_approval_resolved_event(
+        run_id=run_id,
+        node_id=node_name,
+        decision="approved",
+        decided_by=decided_by,
+        source="api",
+        resume_key=resume_key,
+        resume_value=True if resume_key else None,
+        comment=body.comment,
+    )
+
     with open(event_file, "a") as f:
-        f.write(json.dumps(event) + "\n")
+        f.write(json.dumps(gate_decided_event) + "\n")
+        f.write(json.dumps(approval_resolved_event) + "\n")
 
     return {
         "run_id": run_id,
@@ -487,9 +531,34 @@ async def reject_gate(
     # Update node status to failed
     update_node(db_path, node_id, status="failed", finished_at=decided_at)
 
-    # Append NDJSON event to {run_id}.ndjson for executor signaling
+    # Get workflow definition to check if this is an interrupt node
+    workflow_def_yaml = run["workflow_definition"]
+    workflow_def = yaml.safe_load(workflow_def_yaml) if workflow_def_yaml else {}
+    checkpoint_prefix = workflow_def.get("config", {}).get("checkpoint_prefix")
+
+    if not checkpoint_prefix:
+        checkpoint_prefix = request.app.state.checkpoint_dir_fallback or os.path.expanduser(
+            "~/.dag-executor/checkpoints"
+        )
+
+    # For interrupt nodes, save resume_values
+    resume_key = None
+    try:
+        store = CheckpointStore(checkpoint_prefix)
+        interrupt_checkpoint = store.load_interrupt(run["workflow_name"], run_id)
+        if interrupt_checkpoint and interrupt_checkpoint.resume_key:
+            resume_key = interrupt_checkpoint.resume_key
+            resume_values = {resume_key: False}
+            store.save_resume_values(run["workflow_name"], run_id, resume_values)
+    except Exception:
+        # If checkpoint loading fails, continue without resume_values
+        pass
+
+    # Append NDJSON events to {run_id}.ndjson for executor signaling
     event_file = events_dir / f"{run_id}.ndjson"
-    event = {
+
+    # Event 1: gate.decided (backward compatibility)
+    gate_decided_event = {
         "event_type": "gate.decided",
         "payload": json.dumps({
             "node_name": node_name,
@@ -499,8 +568,22 @@ async def reject_gate(
         }),
         "created_at": decided_at,
     }
+
+    # Event 2: approval_resolved (new canonical)
+    approval_resolved_event = build_approval_resolved_event(
+        run_id=run_id,
+        node_id=node_name,
+        decision="rejected",
+        decided_by=decided_by,
+        source="api",
+        resume_key=resume_key,
+        resume_value=False if resume_key else None,
+        comment=body.comment,
+    )
+
     with open(event_file, "a") as f:
-        f.write(json.dumps(event) + "\n")
+        f.write(json.dumps(gate_decided_event) + "\n")
+        f.write(json.dumps(approval_resolved_event) + "\n")
 
     return {
         "run_id": run_id,
@@ -522,6 +605,19 @@ async def get_pending_gates_route(request: Request) -> Dict[str, Any]:
 
     return {
         "count": count,
+        "gates": gates,
+    }
+
+
+@router.get("/workflows/{run_id}/gates")
+async def get_workflow_gates_route(request: Request, run_id: str) -> Dict[str, Any]:
+    """Get pending gate approvals for a specific workflow run."""
+    db_path = get_db_path(request)
+
+    gates = get_pending_gates_for_run(db_path, run_id)
+
+    return {
+        "count": len(gates),
         "gates": gates,
     }
 
