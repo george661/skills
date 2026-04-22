@@ -6,6 +6,7 @@ class NodeDetailPanel {
     constructor() {
         this.panel = null;
         this.currentNode = null;
+        this.stepLogsInstance = null;
         this.init();
     }
 
@@ -103,6 +104,17 @@ class NodeDetailPanel {
         setTimeout(() => {
             this.panel.classList.add('visible');
         }, 10);
+
+        // Initialize StepLogs component
+        const stepLogsContainer = document.getElementById(`step-logs-container-${node.id}`);
+        if (stepLogsContainer) {
+            this.stepLogsInstance = new StepLogs(stepLogsContainer, {
+                runId: node.run_id,
+                nodeId: node.id,
+                nodeStatus: node.status
+            });
+            this.stepLogsInstance.render();
+        }
 
         // Setup event listeners
         this.panel.querySelector('.panel-close-btn').addEventListener('click', () => this.hide());
@@ -242,20 +254,8 @@ class NodeDetailPanel {
     }
 
     renderLogs(node) {
-        if (!node.chat_messages || node.chat_messages.length === 0) {
-            return '<p class="empty-state">No logs available</p>';
-        }
-
-        return `
-            <div class="logs-container">
-                ${node.chat_messages.map(msg => `
-                    <div class="log-entry">
-                        <div class="log-role">${this.escapeHtml(msg.role)}</div>
-                        <div class="log-content">${this.escapeHtml(msg.content)}</div>
-                    </div>
-                `).join('')}
-            </div>
-        `;
+        // Return placeholder div for StepLogs component
+        return `<div id="step-logs-container-${node.id}" class="step-logs-container"></div>`;
     }
 
     renderChat(node) {

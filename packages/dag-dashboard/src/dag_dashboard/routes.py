@@ -18,6 +18,7 @@ from .queries import (
     get_state_diff_timeline, get_checkpoint_comparison,
     list_run_artifacts,
     get_nodes_by_names,
+    get_node_log_lines,
 )
 from .layout import compute_layout
 
@@ -157,6 +158,55 @@ async def get_node_checkpoint(
         raise HTTPException(status_code=404, detail="No checkpoint data for this node")
 
     return comparison
+
+
+@router.get("/workflows/{run_id}/nodes/{node_id}/logs")
+async def get_node_logs(
+    request: Request,
+    run_id: str,
+    node_id: str,
+    limit: int = Query(500, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    stream: str = Query("all", pattern="^(all|stdout|stderr)$")
+) -> Dict[str, Any]:
+    """Get log lines for a specific node execution.
+    
+    Returns paginated log lines from the events table. Lines are ordered by sequence number.
+    
+    Query parameters:
+    - limit: Max lines to return (1-1000, default 500)
+    - offset: Skip this many lines for pagination (default 0)
+    - stream: Filter by stream - 'all', 'stdout', or 'stderr' (default 'all')
+    
+    Response includes:
+    - lines: Array of {sequence, stream, line, timestamp}
+    - total: Total log lines for this node (considering stream filter)
+    - limit: Echo of limit parameter
+    - offset: Echo of offset parameter
+    - has_more: Boolean indicating if more lines are available
+    """
+    db_path = get_db_path(request)
+    
+    # Verify node exists
+    node = get_node(db_path, node_id)
+    if node is None or node["run_id"] != run_id:
+        raise HTTPException(status_code=404, detail="Node execution not found")
+    
+    # Get log lines with pagination and stream filter
+    lines = get_node_log_lines(db_path, run_id, node_id, limit, offset, stream)
+    
+    # Get total count for pagination metadata
+    total_lines = get_node_log_lines(db_path, run_id, node_id, limit=999999, offset=0, stream_filter=stream)
+    total = len(total_lines)
+    
+    return {
+        "lines": lines,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": (offset + len(lines)) < total
+    }
+
 
 
 @router.get("/workflows/{run_id}/layout")

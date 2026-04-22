@@ -1000,3 +1000,59 @@ def list_run_artifacts(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+def get_node_log_lines(
+    db_path: Path,
+    run_id: str,
+    node_id: str,
+    limit: int = 500,
+    offset: int = 0,
+    stream_filter: str = "all"
+) -> List[Dict[str, Any]]:
+    """Get log lines for a specific node from the events table.
+    
+    Args:
+        db_path: Path to SQLite database
+        run_id: Workflow run identifier
+        node_id: Node identifier
+        limit: Maximum number of lines to return
+        offset: Number of lines to skip (for pagination)
+        stream_filter: Filter by stream ('stdout', 'stderr', or 'all')
+    
+    Returns:
+        List of log line dicts with keys: sequence, stream, line, timestamp
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.cursor()
+        
+        # Build query with optional stream filter
+        query = """
+            SELECT 
+                json_extract(payload, '$.sequence') as sequence,
+                json_extract(payload, '$.stream') as stream,
+                json_extract(payload, '$.line') as line,
+                created_at as timestamp
+            FROM events
+            WHERE run_id = ?
+              AND event_type = 'node_log_line'
+              AND json_extract(payload, '$.node_id') = ?
+        """
+        
+        params: List[Any] = [run_id, node_id]
+        
+        if stream_filter != "all":
+            query += " AND json_extract(payload, '$.stream') = ?"
+            params.append(stream_filter)
+        
+        query += """
+            ORDER BY CAST(json_extract(payload, '$.sequence') AS INTEGER)
+            LIMIT ? OFFSET ?
+        """
+        params.extend([limit, offset])
+        
+        cursor.execute(query, tuple(params))
+        
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
