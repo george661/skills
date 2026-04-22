@@ -26,6 +26,9 @@ class RunnerContext:
         progress_callback: Optional callback for emitting progress events during execution
         event_emitter: Optional event emitter for streaming token events
         subprocess_registry: Optional registry for tracking subprocesses (for cancellation)
+        parent_run_id: Optional parent workflow run_id. The executor sets this when
+            building context for command-node runners so sub-DAG lifecycle events
+            can carry lineage back to the invoking workflow.
     """
     node_def: NodeDef
     resolved_inputs: Dict[str, Any] = field(default_factory=dict)
@@ -37,6 +40,7 @@ class RunnerContext:
     progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
     event_emitter: Optional["EventEmitter"] = None
     subprocess_registry: Optional["SubprocessRegistry"] = None
+    parent_run_id: Optional[str] = None
 
 
 class BaseRunner(ABC):

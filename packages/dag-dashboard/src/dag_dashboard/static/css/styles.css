@@ -458,6 +458,47 @@ body {
     font-size: 0.875rem;
 }
 
+/* Run grouping (parent_run_id) */
+.history-row.child-row .history-cell:first-child {
+    padding-left: 2.5rem;
+}
+
+.history-row.child-row {
+    background: var(--bg-secondary);
+}
+
+.chevron {
+    display: inline-block;
+    width: 1rem;
+    margin-right: 0.4rem;
+    color: var(--text-secondary);
+    transition: transform 0.15s;
+    user-select: none;
+    cursor: pointer;
+}
+
+.chevron.expanded {
+    transform: rotate(90deg);
+}
+
+.child-count-badge {
+    display: inline-block;
+    margin-left: 0.4rem;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    border-radius: 0.75rem;
+}
+
+.group-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: pointer;
+    user-select: none;
+}
+
 /* Pagination */
 .pagination {
     display: flex;

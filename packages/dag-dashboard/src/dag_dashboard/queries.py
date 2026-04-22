@@ -1,11 +1,14 @@
 """Database query helpers with pagination and filtering."""
 import json
+import logging
 import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .models import SortBy, RunStatus
+
+logger = logging.getLogger(__name__)
 
 
 # JSON columns that need deserialization when reading from SQLite
@@ -222,6 +225,169 @@ def list_runs(
         }
     finally:
         conn.close()
+
+
+# Worst-wins ordering for aggregate_status across a parent's subtree.
+# Lower rank = worse. Used by list_runs_grouped.
+_STATUS_RANK = {
+    "failed": 0,
+    "running": 1,
+    "cancelled": 2,
+    "paused": 2,
+    "pending": 3,
+    "completed": 4,
+}
+
+# Safety cap when walking parent_run_id chains to root. Loops or unexpectedly
+# deep chains are truncated with a warning rather than stack-overflowing.
+_MAX_PARENT_WALK_DEPTH = 20
+
+
+def _aggregate_status(statuses: List[str]) -> str:
+    """Return the worst status across the given list. Unknown statuses rank last."""
+    if not statuses:
+        return "completed"
+    return min(statuses, key=lambda s: _STATUS_RANK.get(s, 99))
+
+
+def list_runs_grouped(
+    db_path: Path,
+    limit: int = 50,
+    offset: int = 0,
+    status: Optional[RunStatus] = None,
+    sort_by: SortBy = SortBy.STARTED_AT,
+    name: Optional[str] = None,
+    started_after: Optional[str] = None,
+    started_before: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List workflow runs grouped by parent_run_id.
+
+    Top-level items are root runs (runs whose parent chain terminates without
+    reaching another run in the table). Every descendant is nested under its
+    root in a ``children`` list sorted by ``started_at`` ascending. Each root
+    also carries an ``aggregate_status`` computed with worst-wins semantics
+    across the root and all descendants.
+
+    Filters (``status``/``name``/date range) narrow both roots and descendants.
+    Pagination applies to root runs, not total descendants.
+
+    Cycles in ``parent_run_id`` are detected via a visited-set with a depth
+    cap; affected rows are surfaced as roots and a warning is logged.
+    """
+    # Load ALL rows matching the filters into memory. The History view is
+    # paginated; in practice run counts are modest for a dev tool.
+    conn = get_connection(db_path)
+    try:
+        where_clauses: List[str] = []
+        params: List[Any] = []
+
+        if status is not None:
+            where_clauses.append("status = ?")
+            params.append(status.value if isinstance(status, RunStatus) else status)
+        if name is not None:
+            where_clauses.append("workflow_name LIKE ?")
+            params.append(f"%{name}%")
+        if started_after is not None:
+            where_clauses.append("started_at >= ?")
+            params.append(started_after)
+        if started_before is not None:
+            where_clauses.append("started_at < ?")
+            params.append(started_before)
+
+        where_clause = ""
+        if where_clauses:
+            where_clause = "WHERE " + " AND ".join(where_clauses)
+
+        cursor = conn.execute(f"SELECT * FROM workflow_runs {where_clause}", params)
+        rows = [_row_to_dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+    rows_by_id: Dict[str, Dict[str, Any]] = {r["id"]: r for r in rows}
+
+    def _walk_to_root(run: Dict[str, Any]) -> str:
+        """Walk parent_run_id links to root. Returns the root's id.
+
+        If a cycle or unresolvable parent is hit, returns the id of the
+        last reachable row — the row breaking the chain becomes a root.
+        """
+        current = run
+        visited = {current["id"]}
+        depth = 0
+        while True:
+            parent_id = current.get("parent_run_id")
+            if not parent_id:
+                return str(current["id"])
+            if parent_id not in rows_by_id:
+                # Parent exists outside the filtered set or was deleted —
+                # treat this node as a root of its own visible subtree.
+                return str(current["id"])
+            if parent_id in visited:
+                logger.warning(
+                    "Cycle detected in parent_run_id chain for run %s; breaking at %s",
+                    run["id"],
+                    current["id"],
+                )
+                return str(current["id"])
+            depth += 1
+            if depth > _MAX_PARENT_WALK_DEPTH:
+                logger.warning(
+                    "parent_run_id chain for run %s exceeds max walk depth %d",
+                    run["id"],
+                    _MAX_PARENT_WALK_DEPTH,
+                )
+                return str(current["id"])
+            current = rows_by_id[parent_id]
+            visited.add(current["id"])
+
+    # Group every row by its root
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        root_id = _walk_to_root(row)
+        groups.setdefault(root_id, []).append(row)
+
+    # Build items: one per root, containing root + nested children
+    items: List[Dict[str, Any]] = []
+    for root_id, members in groups.items():
+        root_row = rows_by_id.get(root_id)
+        if root_row is None:
+            continue
+        children = [m for m in members if m["id"] != root_id]
+        children.sort(key=lambda r: r.get("started_at") or "")
+        statuses = [m.get("status", "") for m in members]
+        item = dict(root_row)
+        item["children"] = children
+        item["aggregate_status"] = _aggregate_status(statuses)
+        items.append(item)
+
+    # Sort roots by the requested sort_by. Only STARTED_AT / FINISHED_AT /
+    # DURATION are meaningful; fall back to started_at for anything else.
+    if isinstance(sort_by, str):
+        try:
+            sort_by = SortBy(sort_by)
+        except ValueError:
+            sort_by = SortBy.STARTED_AT
+
+    def _sort_key(item: Dict[str, Any]) -> Any:
+        if sort_by == SortBy.DURATION:
+            s, f = item.get("started_at"), item.get("finished_at")
+            if s and f:
+                return f  # approximate: latest-finished first
+            return ""
+        col = sort_by.value if hasattr(sort_by, "value") else "started_at"
+        return item.get(col) or ""
+
+    items.sort(key=_sort_key, reverse=True)
+
+    total = len(items)
+    paged = items[offset:offset + limit]
+
+    return {
+        "items": paged,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 def get_status_counts(db_path: Path) -> Dict[str, int]:

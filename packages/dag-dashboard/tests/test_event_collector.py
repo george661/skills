@@ -681,3 +681,112 @@ async def test_workflow_started_transitions_resuming_to_running(
 
     assert row is not None
     assert row[0] == "running", f"Expected status 'running', got '{row[0]}'"
+
+
+def test_event_collector_persists_parent_run_id_from_workflow_started_metadata(
+    test_db: Path,
+    events_dir: Path,
+) -> None:
+    """Sub-DAG workflow_started events should insert a child workflow_runs row
+    with parent_run_id set from metadata.parent_run_id.
+    """
+    import sqlite3
+
+    parent_run_id = "parent-root-1"
+    sub_run_id = "child-sub-1"
+
+    event_file = events_dir / f"{parent_run_id}.ndjson"
+    event = {
+        "workflow_name": "parent-workflow",
+        "event_type": "workflow_started",
+        "timestamp": "2026-04-22T12:00:00Z",
+        "metadata": {
+            "parent_run_id": parent_run_id,
+            "run_id": sub_run_id,
+            "workflow_name": "child-workflow",
+        },
+    }
+    event_file.write_text(json.dumps(event) + "\n")
+
+    loop = asyncio.new_event_loop()
+    broadcaster = Broadcaster()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop,
+    )
+    try:
+        collector._process_file(event_file)
+    finally:
+        loop.close()
+
+    conn = sqlite3.connect(test_db)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, parent_run_id, workflow_name FROM workflow_runs WHERE id = ?",
+            (sub_run_id,),
+        )
+        row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None, f"Sub-DAG run {sub_run_id} not persisted"
+    assert row[1] == parent_run_id
+    assert row[2] == "child-workflow"
+
+
+def test_event_collector_skips_self_referential_parent_run_id(
+    test_db: Path,
+    events_dir: Path,
+    caplog,
+) -> None:
+    """If metadata.parent_run_id == metadata.run_id, the sub-DAG row is skipped
+    and a warning is logged (defensive guard against malformed events)."""
+    import logging
+    import sqlite3
+
+    same_id = "self-ref-1"
+    event_file = events_dir / f"{same_id}.ndjson"
+    event = {
+        "workflow_name": "whatever",
+        "event_type": "workflow_started",
+        "timestamp": "2026-04-22T12:00:00Z",
+        "metadata": {
+            "parent_run_id": same_id,
+            "run_id": same_id,
+            "workflow_name": "whatever",
+        },
+    }
+    event_file.write_text(json.dumps(event) + "\n")
+
+    loop = asyncio.new_event_loop()
+    broadcaster = Broadcaster()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop,
+    )
+    with caplog.at_level(logging.WARNING):
+        try:
+            collector._process_file(event_file)
+        finally:
+            loop.close()
+
+    conn = sqlite3.connect(test_db)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT parent_run_id FROM workflow_runs WHERE id = ?",
+            (same_id,),
+        )
+        row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    # The row exists (main workflow insert) but parent_run_id stayed NULL
+    assert row is not None
+    assert row[0] is None
+    assert any("self-referential" in record.message for record in caplog.records)

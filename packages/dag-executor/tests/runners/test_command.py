@@ -2,6 +2,7 @@
 from unittest.mock import Mock, patch
 import pytest
 
+from dag_executor.events import EventType, WorkflowEvent
 from dag_executor.schema import NodeDef, NodeStatus, WorkflowDef, NodeResult
 from dag_executor.runners.base import RunnerContext
 from dag_executor.runners.command import CommandRunner, MAX_RECURSION_DEPTH
@@ -133,6 +134,52 @@ def test_command_invalid_workflow_path():
         
         assert result.status == NodeStatus.FAILED
         assert "not found" in result.error.lower() or "failed to load" in result.error.lower()
+
+
+def test_command_runner_emits_workflow_started_with_parent_run_id(command_node):
+    """Sub-DAG invocations emit a WORKFLOW_STARTED event carrying parent_run_id."""
+    emitter = Mock()
+    ctx = RunnerContext(
+        node_def=command_node,
+        event_emitter=emitter,
+        parent_run_id="parent-123",
+    )
+
+    mock_workflow_def = Mock(spec=WorkflowDef)
+    mock_workflow_def.name = "test-workflow"
+    mock_result = NodeResult(status=NodeStatus.COMPLETED, output={})
+
+    with patch("dag_executor.runners.command.load_workflow", return_value=mock_workflow_def):
+        with patch("dag_executor.runners.command._execute_workflow_stub", return_value=mock_result):
+            CommandRunner().run(ctx)
+
+    assert emitter.emit.called, "event_emitter.emit should have been called for sub-DAG start"
+    emitted_events = [call.args[0] for call in emitter.emit.call_args_list]
+    started = [e for e in emitted_events if e.event_type == EventType.WORKFLOW_STARTED]
+    assert len(started) == 1, f"Expected one WORKFLOW_STARTED event, got {len(started)}"
+    event = started[0]
+    assert event.metadata.get("parent_run_id") == "parent-123"
+    assert event.metadata.get("workflow_name") == "test-workflow"
+    assert event.metadata.get("run_id"), "Sub-DAG run_id must be present in metadata"
+
+
+def test_command_runner_skips_emission_without_event_emitter(command_node):
+    """Backwards-compat: no event_emitter means no emission attempt and no crash."""
+    ctx = RunnerContext(
+        node_def=command_node,
+        # event_emitter defaults to None
+        # parent_run_id defaults to None
+    )
+
+    mock_workflow_def = Mock(spec=WorkflowDef)
+    mock_workflow_def.name = "test-workflow"
+    mock_result = NodeResult(status=NodeStatus.COMPLETED, output={})
+
+    with patch("dag_executor.runners.command.load_workflow", return_value=mock_workflow_def):
+        with patch("dag_executor.runners.command._execute_workflow_stub", return_value=mock_result):
+            result = CommandRunner().run(ctx)
+
+    assert result.status == NodeStatus.COMPLETED
 
 
 def test_command_workflow_execution_failure():

@@ -816,3 +816,53 @@ def test_get_workflow_node_upstream_context_empty_when_no_depends_on(client: Tes
     data = response.json()
     assert "upstream_context" in data
     assert data["upstream_context"] == []
+
+
+# --- GW-5197: run grouping by parent_run_id ---------------------------------
+
+
+def _insert_with_parent(db_path: Path, run_id: str, parent: "str | None", status: str, started_at: str) -> None:
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO workflow_runs (id, workflow_name, status, started_at, parent_run_id) VALUES (?, ?, ?, ?, ?)",
+            (run_id, "wf", status, started_at, parent),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_get_workflows_group_by_parent_returns_grouped_response(client: TestClient, test_db: Path):
+    """GET /api/workflows?group_by=parent returns items with children and aggregate_status."""
+    _insert_with_parent(test_db, "root-a", None, "completed", "2026-04-22T10:00:00Z")
+    _insert_with_parent(test_db, "child-1", "root-a", "failed", "2026-04-22T10:01:00Z")
+    _insert_with_parent(test_db, "child-2", "root-a", "completed", "2026-04-22T10:02:00Z")
+
+    response = client.get("/api/workflows?group_by=parent")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+    root = data["items"][0]
+    assert root["id"] == "root-a"
+    assert "children" in root
+    assert len(root["children"]) == 2
+    assert root["aggregate_status"] == "failed"  # worst child wins
+
+
+def test_get_workflows_default_is_flat_backwards_compat(client: TestClient, test_db: Path):
+    """GET /api/workflows (no group_by) keeps the existing flat shape — no 'children' key."""
+    _insert_with_parent(test_db, "root-a", None, "completed", "2026-04-22T10:00:00Z")
+    _insert_with_parent(test_db, "child-1", "root-a", "completed", "2026-04-22T10:01:00Z")
+
+    response = client.get("/api/workflows")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["total"] == 2  # flat: both rows are top-level
+    for item in data["items"]:
+        assert "children" not in item
+        assert "aggregate_status" not in item

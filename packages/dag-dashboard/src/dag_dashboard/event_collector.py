@@ -317,8 +317,30 @@ class EventCollector:
 
             # Handle workflow_started event: store workflow definition and create node stubs
             if event_type == "workflow_started":
+                metadata = event_data.get("metadata", {})
                 # WorkflowEvent stores workflow_definition in metadata
-                workflow_definition = event_data.get("metadata", {}).get("workflow_definition")
+                workflow_definition = metadata.get("workflow_definition")
+
+                # Sub-DAG started events (emitted by CommandRunner) carry parent_run_id
+                # and a distinct sub_run_id in metadata. When present, persist the
+                # sub-DAG as its own workflow_runs row with lineage back to the parent.
+                # Guard against self-references (parent == child).
+                sub_parent_run_id = metadata.get("parent_run_id")
+                sub_run_id = metadata.get("run_id")
+                if sub_parent_run_id and sub_run_id and sub_parent_run_id != sub_run_id:
+                    sub_workflow_name = metadata.get("workflow_name") or workflow_name
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO workflow_runs
+                        (id, workflow_name, status, started_at, workflow_definition, parent_run_id)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (sub_run_id, sub_workflow_name, "running", created_at, workflow_definition, sub_parent_run_id),
+                    )
+                elif sub_parent_run_id and sub_run_id and sub_parent_run_id == sub_run_id:
+                    logger.warning(
+                        f"Skipping self-referential parent_run_id for run {sub_run_id}"
+                    )
 
                 # Insert workflow_runs row with workflow_definition (use INSERT OR IGNORE + UPDATE to avoid cascade delete)
                 cursor.execute(

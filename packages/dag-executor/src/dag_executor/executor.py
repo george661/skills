@@ -788,7 +788,8 @@ class WorkflowExecutor:
                 filtered_workflow_inputs = ctx.workflow_inputs
                 filtered_node_outputs = ctx.node_outputs
 
-            # Create runner context
+            # Create runner context. parent_run_id is propagated so command
+            # runners can emit sub-DAG WORKFLOW_STARTED events with lineage.
             runner_ctx = RunnerContext(
                 node_def=node_def,
                 resolved_inputs=resolved_inputs,
@@ -799,8 +800,9 @@ class WorkflowExecutor:
                 progress_callback=progress_callback,
                 event_emitter=event_emitter,
                 subprocess_registry=ctx.subprocess_registry,
+                parent_run_id=run_id,
             )
-            
+
             # Get timeout for this node
             timeout = self._get_node_timeout(node_def)
 
