@@ -139,11 +139,157 @@ def ensure_dir(path: Path) -> None:
         path.mkdir(parents=True, mode=0o700)
 
 
-def init_db(db_path: Path) -> None:
+def init_fts5_index(conn: sqlite3.Connection) -> None:
+    """Create FTS5 full-text search indexes and triggers.
+
+    This is called conditionally from init_db when fts5_enabled=True.
+    Idempotent - safe to call multiple times.
+
+    Args:
+        conn: Database connection (must already have base tables)
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Check if FTS5 is available
+    cursor = conn.cursor()
+    cursor.execute("SELECT sqlite_compileoption_used('ENABLE_FTS5')")
+    fts5_available = cursor.fetchone()[0]
+
+    if not fts5_available:
+        logger.warning(
+            "FTS5 not available in this SQLite build. "
+            "Search will fall back to LIKE queries."
+        )
+        return
+
+    # Create FTS5 virtual tables (contentful mode for snippet support)
+    # events_fts
+    cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+            payload, event_type, run_id UNINDEXED,
+            content='events', content_rowid='id'
+        )
+    """)
+
+    # workflow_runs_fts
+    cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS workflow_runs_fts USING fts5(
+            workflow_name, inputs, error, id UNINDEXED,
+            content='workflow_runs', content_rowid='id'
+        )
+    """)
+
+    # node_executions_fts
+    cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS node_executions_fts USING fts5(
+            node_name, inputs, error, id UNINDEXED, run_id UNINDEXED,
+            content='node_executions', content_rowid='id'
+        )
+    """)
+
+    # Create triggers to keep FTS indexes in sync
+    # Events triggers
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
+            INSERT INTO events_fts(rowid, payload, event_type, run_id)
+            VALUES (new.id, new.payload, new.event_type, new.run_id);
+        END
+    """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
+            INSERT INTO events_fts(events_fts, rowid, payload, event_type, run_id)
+            VALUES ('delete', old.id, old.payload, old.event_type, old.run_id);
+        END
+    """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS events_au AFTER UPDATE ON events BEGIN
+            INSERT INTO events_fts(events_fts, rowid, payload, event_type, run_id)
+            VALUES ('delete', old.id, old.payload, old.event_type, old.run_id);
+            INSERT INTO events_fts(rowid, payload, event_type, run_id)
+            VALUES (new.id, new.payload, new.event_type, new.run_id);
+        END
+    """)
+
+    # workflow_runs triggers
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS workflow_runs_ai AFTER INSERT ON workflow_runs BEGIN
+            INSERT INTO workflow_runs_fts(rowid, workflow_name, inputs, error, id)
+            VALUES (new.id, new.workflow_name, new.inputs, new.error, new.id);
+        END
+    """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS workflow_runs_ad AFTER DELETE ON workflow_runs BEGIN
+            INSERT INTO workflow_runs_fts(workflow_runs_fts, rowid, workflow_name, inputs, error, id)
+            VALUES ('delete', old.id, old.workflow_name, old.inputs, old.error, old.id);
+        END
+    """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS workflow_runs_au AFTER UPDATE ON workflow_runs BEGIN
+            INSERT INTO workflow_runs_fts(workflow_runs_fts, rowid, workflow_name, inputs, error, id)
+            VALUES ('delete', old.id, old.workflow_name, old.inputs, old.error, old.id);
+            INSERT INTO workflow_runs_fts(rowid, workflow_name, inputs, error, id)
+            VALUES (new.id, new.workflow_name, new.inputs, new.error, new.id);
+        END
+    """)
+
+    # node_executions triggers
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS node_executions_ai AFTER INSERT ON node_executions BEGIN
+            INSERT INTO node_executions_fts(rowid, node_name, inputs, error, id, run_id)
+            VALUES (new.id, new.node_name, new.inputs, new.error, new.id, new.run_id);
+        END
+    """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS node_executions_ad AFTER DELETE ON node_executions BEGIN
+            INSERT INTO node_executions_fts(node_executions_fts, rowid, node_name, inputs, error, id, run_id)
+            VALUES ('delete', old.id, old.node_name, old.inputs, old.error, old.id, old.run_id);
+        END
+    """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS node_executions_au AFTER UPDATE ON node_executions BEGIN
+            INSERT INTO node_executions_fts(node_executions_fts, rowid, node_name, inputs, error, id, run_id)
+            VALUES ('delete', old.id, old.node_name, old.inputs, old.error, old.id, old.run_id);
+            INSERT INTO node_executions_fts(rowid, node_name, inputs, error, id, run_id)
+            VALUES (new.id, new.node_name, new.inputs, new.error, new.id, new.run_id);
+        END
+    """)
+
+    # Backfill existing rows
+    cursor.execute("""
+        INSERT OR IGNORE INTO events_fts(rowid, payload, event_type, run_id)
+        SELECT id, payload, event_type, run_id FROM events
+    """)
+
+    cursor.execute("""
+        INSERT OR IGNORE INTO workflow_runs_fts(rowid, workflow_name, inputs, error, id)
+        SELECT id, workflow_name, inputs, error, id FROM workflow_runs
+    """)
+
+    cursor.execute("""
+        INSERT OR IGNORE INTO node_executions_fts(rowid, node_name, inputs, error, id, run_id)
+        SELECT id, node_name, inputs, error, id, run_id FROM node_executions
+    """)
+
+    conn.commit()
+    logger.info("FTS5 indexes and triggers created successfully")
+
+
+def init_db(db_path: Path, fts5_enabled: bool = False) -> None:
     """Initialize database with schema and security settings.
 
     Migration strategy: For existing DBs, ALTER TABLE adds new columns.
     For new DBs, CREATE TABLE IF NOT EXISTS includes the columns from the start.
+
+    Args:
+        db_path: Path to SQLite database file
+        fts5_enabled: If True, create FTS5 full-text search indexes
     """
     # Connect and create schema
     conn = sqlite3.connect(db_path)
@@ -252,6 +398,10 @@ def init_db(db_path: Path) -> None:
             cursor.execute("ALTER TABLE node_executions ADD COLUMN cache_hit INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+
+        # Create FTS5 indexes if enabled
+        if fts5_enabled:
+            init_fts5_index(conn)
 
         conn.commit()
     finally:
