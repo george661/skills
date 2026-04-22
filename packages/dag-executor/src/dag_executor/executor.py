@@ -253,17 +253,17 @@ class WorkflowExecutor:
         started_at = workflow_started_at.isoformat()
 
         # Emit WORKFLOW_STARTED event with model_override metadata if present
-        metadata: Dict[str, Any] = {}
+        event_metadata: Dict[str, Any] = {}
         model_override = inputs.get("__model_override__")
         if model_override:
-            metadata["model_override"] = model_override
+            event_metadata["model_override"] = model_override
 
         if event_emitter:
             event_emitter.emit(WorkflowEvent(
                 event_type=EventType.WORKFLOW_STARTED,
                 workflow_id=workflow_def.name,
                 status=WorkflowStatus.RUNNING,
-                metadata=metadata,
+                metadata=event_metadata,
                 timestamp=workflow_started_at
             ))
 

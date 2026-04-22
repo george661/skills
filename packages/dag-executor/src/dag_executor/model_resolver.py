@@ -37,7 +37,14 @@ def resolve_model(
     # Tier 1: override (unless strict_model blocks it)
     override_str = workflow_inputs.get("__model_override__")
     if override_str and not getattr(node_def, "strict_model", False):
-        return ModelTier(override_str)
+        try:
+            return ModelTier(override_str)
+        except ValueError:
+            valid_values = [tier.value for tier in ModelTier]
+            raise ValueError(
+                f"Invalid __model_override__ value: {override_str!r}. "
+                f"Must be one of {valid_values}"
+            )
 
     # Tier 2: node-level model
     if node_def.model:

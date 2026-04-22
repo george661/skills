@@ -815,12 +815,12 @@ async def test_node_started_writes_model_to_node_executions(test_db: Path, event
             "workflow_id": "test-workflow",
             "timestamp": "2026-01-01T00:00:00.000Z",
             "metadata": {
-                "workflow_def": {
-                    "name": "test-workflow",
-                    "nodes": [
-                        {"id": "node1", "name": "Test Node", "type": "prompt"}
-                    ]
-                }
+                "workflow_definition": """
+name: test-workflow
+nodes:
+  - name: node1
+    type: prompt
+"""
             }
         }
         
@@ -878,12 +878,12 @@ async def test_node_completed_does_not_overwrite_model(test_db: Path, events_dir
             "workflow_id": "test-workflow",
             "timestamp": "2026-01-01T00:00:00.000Z",
             "metadata": {
-                "workflow_def": {
-                    "name": "test-workflow",
-                    "nodes": [
-                        {"id": "node1", "name": "Test Node", "type": "prompt"}
-                    ]
-                }
+                "workflow_definition": """
+name: test-workflow
+nodes:
+  - name: node1
+    type: prompt
+"""
             }
         }
         
