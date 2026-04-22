@@ -22,6 +22,7 @@ class RunStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     PENDING = "pending"
+    RESUMING = "resuming"
 
 
 class WorkflowRunResponse(BaseModel):
@@ -235,6 +236,13 @@ class CheckpointRunDetail(BaseModel):
 
     metadata: CheckpointRunSummary
     nodes: List[CheckpointNodeSummary]
+
+
+class RerunRequest(BaseModel):
+    """Request body for rerun endpoint."""
+    model_config = {"extra": "forbid"}
+
+    inputs: Optional[Dict[str, Any]] = None
 
 
 class ReplayRequest(BaseModel):

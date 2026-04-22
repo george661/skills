@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Union
 
 from simpleeval import SimpleEval  # type: ignore
 
@@ -38,6 +38,8 @@ class SubprocessRegistry:
 
     Allows the executor to track all in-flight subprocesses and
     terminate them gracefully (SIGTERM -> SIGKILL) on cancel.
+
+    Accepts both subprocess.Popen and asyncio.subprocess.Process.
     """
 
     def __init__(self) -> None:
@@ -45,19 +47,27 @@ class SubprocessRegistry:
         # needed for add/discard/iteration. An asyncio.Lock here would break
         # Python 3.9 where Lock() requires a running event loop at
         # construction time.
-        self._processes: Set["subprocess.Popen[Any]"] = set()
+        self._processes: Set[Union["subprocess.Popen[Any]", "asyncio.subprocess.Process"]] = set()
 
-    def register(self, proc: "subprocess.Popen[Any]") -> None:
+    def register(self, proc: Union["subprocess.Popen[Any]", "asyncio.subprocess.Process"]) -> None:
         """Register a subprocess."""
         self._processes.add(proc)
 
-    def deregister(self, proc: "subprocess.Popen[Any]") -> None:
+    def deregister(self, proc: Union["subprocess.Popen[Any]", "asyncio.subprocess.Process"]) -> None:
         """Deregister a subprocess."""
         self._processes.discard(proc)
 
-    def list(self) -> List["subprocess.Popen[Any]"]:
+    def list(self) -> List[Union["subprocess.Popen[Any]", "asyncio.subprocess.Process"]]:
         """Return list of registered processes."""
         return list(self._processes)
+
+    def _is_alive(self, proc: Union["subprocess.Popen[Any]", "asyncio.subprocess.Process"]) -> bool:
+        """Check if a process is still running."""
+        if isinstance(proc, subprocess.Popen):
+            return proc.poll() is None
+        else:
+            # asyncio.subprocess.Process
+            return proc.returncode is None
 
     def terminate_all(self, timeout: float = 5.0) -> None:
         """Terminate all registered processes.
@@ -74,7 +84,7 @@ class SubprocessRegistry:
         # Send SIGTERM to all
         for proc in self._processes:
             try:
-                if proc.poll() is None:  # Still running
+                if self._is_alive(proc):
                     proc.terminate()
             except Exception:
                 pass  # Process may have already exited
@@ -82,7 +92,7 @@ class SubprocessRegistry:
         # Wait for graceful termination
         start = time.time()
         while time.time() - start < timeout:
-            alive = [p for p in self._processes if p.poll() is None]
+            alive = [p for p in self._processes if self._is_alive(p)]
             if not alive:
                 return
             time.sleep(0.1)
@@ -90,7 +100,7 @@ class SubprocessRegistry:
         # Escalate to SIGKILL for remaining processes
         for proc in self._processes:
             try:
-                if proc.poll() is None:
+                if self._is_alive(proc):
                     proc.kill()
             except Exception:
                 pass
