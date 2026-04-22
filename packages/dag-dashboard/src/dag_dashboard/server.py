@@ -3,7 +3,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Dict, Optional
+from typing import AsyncIterator, Dict, List, Optional
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -39,7 +39,7 @@ def create_app(
     checkpoint_prefix: Optional[Path] = None,
     settings: Optional[Settings] = None,
     checkpoint_dir_fallback: Optional[str] = None,
-    workflows_dirs: Optional[list] = None,
+    workflows_dirs: Optional[List[Path]] = None,
 ) -> FastAPI:
     """Create and configure FastAPI application."""
 

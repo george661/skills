@@ -36,7 +36,7 @@ class Settings(BaseSettings):
         """Accept Path objects for backwards compatibility; normalize to str."""
         if isinstance(v, Path):
             return str(v)
-        return v
+        return str(v) if not isinstance(v, str) else v
 
     # Search endpoint settings
     search_token: Optional[str] = None  # Bearer token for search endpoint auth
