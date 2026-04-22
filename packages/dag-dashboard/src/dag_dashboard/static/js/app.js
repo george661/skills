@@ -863,6 +863,14 @@ class GateIndicator {
 // Initialize gate indicator
 const gateIndicator = new GateIndicator();
 
+// Initialize search bars
+if (window.SearchBar) {
+    const desktopContainer = document.getElementById('search-bar-container-desktop');
+    const mobileContainer = document.getElementById('search-bar-container-mobile');
+    if (desktopContainer) SearchBar.init(desktopContainer);
+    if (mobileContainer) SearchBar.init(mobileContainer);
+}
+
 // Initialize router
 const router = new Router();
 router.register('/', renderDashboard);
