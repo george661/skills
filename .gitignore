@@ -36,3 +36,4 @@ env/
 htmlcov/
 .agent-context.json
 .dag-checkpoints/
+implementation-plan.md

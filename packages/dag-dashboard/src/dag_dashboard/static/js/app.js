@@ -863,6 +863,14 @@ class GateIndicator {
 // Initialize gate indicator
 const gateIndicator = new GateIndicator();
 
+// Initialize search bars
+if (window.SearchBar) {
+    const desktopContainer = document.getElementById('search-bar-container-desktop');
+    const mobileContainer = document.getElementById('search-bar-container-mobile');
+    if (desktopContainer) SearchBar.init(desktopContainer);
+    if (mobileContainer) SearchBar.init(mobileContainer);
+}
+
 // Initialize router
 const router = new Router();
 router.register('/', renderDashboard);
@@ -872,6 +880,11 @@ router.register('/checkpoints', renderCheckpointWorkflows);
 router.register('/checkpoints/:wf', renderCheckpointRuns);
 router.register('/checkpoints/:wf/:runId', renderCheckpointRunDetail);
 router.register('/checkpoints/compare/:wf/:runIdA/:runIdB', renderCheckpointCompare);
+router.register('/settings', function () {
+    if (typeof window.renderSettings === 'function') {
+        window.renderSettings();
+    }
+});
 
 // Mobile menu toggle
 document.getElementById('mobile-menu-toggle')?.addEventListener('click', () => {

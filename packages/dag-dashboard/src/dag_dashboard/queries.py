@@ -1023,23 +1023,27 @@ def list_run_artifacts(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
     finally:
         conn.close()
 
-
-def get_node_logs(
+def get_node_log_lines(
     db_path: Path,
     run_id: str,
     node_id: str,
-    limit: int = 1000,
-    offset: int = 0
+    limit: int = 500,
+    offset: int = 0,
+    stream_filter: str = "all",
 ) -> List[Dict[str, Any]]:
-    """
-    Retrieve log lines for a specific node in a workflow run.
+    """Retrieve log lines for a specific node in a workflow run.
+
+    Reads from the ``node_logs`` table (flat rows, populated by
+    ``EventCollector._persist_node_log_batch``). Each row:
+    ``{run_id, node_id, stream, sequence, line, created_at}``.
 
     Args:
         db_path: Path to SQLite database
         run_id: Workflow run ID
         node_id: Node ID
-        limit: Maximum number of log lines to return (default 1000)
-        offset: Number of log lines to skip (default 0)
+        limit: Maximum number of log lines to return
+        offset: Number of log lines to skip (for pagination)
+        stream_filter: ``'all'``, ``'stdout'``, or ``'stderr'``
 
     Returns:
         List of log line dicts with keys: run_id, node_id, stream, sequence, line, created_at
@@ -1047,16 +1051,47 @@ def get_node_logs(
     conn = get_connection(db_path)
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT run_id, node_id, stream, sequence, line, created_at
-            FROM node_logs
-            WHERE run_id = ? AND node_id = ?
-            ORDER BY sequence
-            LIMIT ? OFFSET ?
-            """,
-            (run_id, node_id, limit, offset)
+
+        query = (
+            "SELECT run_id, node_id, stream, sequence, line, created_at "
+            "FROM node_logs WHERE run_id = ? AND node_id = ?"
         )
+        params: List[Any] = [run_id, node_id]
+
+        if stream_filter != "all":
+            query += " AND stream = ?"
+            params.append(stream_filter)
+
+        query += " ORDER BY sequence LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        cursor.execute(query, tuple(params))
         return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+# Back-compat alias: earlier callers/tests referenced get_node_logs.
+get_node_logs = get_node_log_lines
+
+
+def count_node_log_lines(
+    db_path: Path,
+    run_id: str,
+    node_id: str,
+    stream_filter: str = "all",
+) -> int:
+    """Return the total count of log lines for a node, respecting ``stream_filter``."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.cursor()
+        query = "SELECT COUNT(*) FROM node_logs WHERE run_id = ? AND node_id = ?"
+        params: List[Any] = [run_id, node_id]
+        if stream_filter != "all":
+            query += " AND stream = ?"
+            params.append(stream_filter)
+        cursor.execute(query, tuple(params))
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
     finally:
         conn.close()
