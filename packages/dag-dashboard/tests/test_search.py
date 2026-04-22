@@ -232,3 +232,70 @@ def test_search_rate_limit_429(app_with_search):
     )
     assert response.status_code == 429
     assert "rate limit" in response.json()["detail"].lower()
+
+
+@pytest.mark.slow
+def test_search_latency_10k_db(tmp_path):
+    """Test 12: Latency benchmark with 10k workflow_runs + 5 node_executions/run + 3 events/run."""
+    from dag_dashboard.server import create_app
+    from dag_dashboard.config import Settings
+    from dag_dashboard.database import init_db
+    import time
+    import statistics
+
+    db_path = tmp_path / "dashboard.db"
+    init_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+
+    # Seed 10,000 workflow_runs
+    for i in range(10000):
+        conn.execute(
+            "INSERT INTO workflow_runs (id, workflow_name, status, started_at) VALUES (?, ?, ?, ?)",
+            (f"run_{i:06d}", f"workflow_{i % 100}", "completed", "2026-04-22T10:00:00Z")
+        )
+
+    # Seed 5 node_executions per run
+    for i in range(10000):
+        for j in range(5):
+            conn.execute(
+                "INSERT INTO node_executions (id, workflow_run_id, node_id, status, started_at) VALUES (?, ?, ?, ?, ?)",
+                (f"node_{i:06d}_{j}", f"run_{i:06d}", f"node_{j}", "completed", "2026-04-22T10:00:00Z")
+            )
+
+    # Seed 3 events per run
+    for i in range(10000):
+        for j in range(3):
+            conn.execute(
+                "INSERT INTO events (id, workflow_run_id, event_type, timestamp, data) VALUES (?, ?, ?, ?, ?)",
+                (f"event_{i:06d}_{j}", f"run_{i:06d}", "state_change", "2026-04-22T10:00:00Z", "{}")
+            )
+
+    conn.commit()
+    conn.close()
+
+    settings = Settings(db_dir=tmp_path, search_token="test_token")
+    app = create_app(db_dir=tmp_path, settings=settings)
+    client = TestClient(app)
+
+    # Warm-up: 20 queries
+    for i in range(20):
+        client.get(
+            f"/api/search?q=workflow_{i % 10}",
+            headers={"Authorization": "Bearer test_token"}
+        )
+
+    # Measure 20 queries
+    latencies = []
+    for i in range(20):
+        start = time.perf_counter()
+        response = client.get(
+            f"/api/search?q=workflow_{i % 10}",
+            headers={"Authorization": "Bearer test_token"}
+        )
+        latency_ms = (time.perf_counter() - start) * 1000
+        latencies.append(latency_ms)
+        assert response.status_code == 200
+
+    # Assert P95 < 500ms
+    p95 = statistics.quantiles(latencies, n=20)[18]  # 95th percentile
+    assert p95 < 500, f"P95 latency {p95:.1f}ms exceeds 500ms threshold"

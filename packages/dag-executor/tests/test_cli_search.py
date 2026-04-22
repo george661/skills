@@ -43,9 +43,8 @@ def test_cli_search_local_mode(tmp_path):
     
     # Run CLI in local mode
     with patch('sys.stdout', new_callable=lambda: Mock(write=lambda x: None)):
-        with patch('dag_executor.cli.get_db_path', return_value=db_path):
-            result = main(['search', 'abc', '--db', str(db_path)])
-            # Just verify it doesn't crash
+        result = main(['search', 'abc', '--db', str(db_path)])
+        # Just verify it doesn't crash
 
 
 def test_cli_search_remote_mode():
@@ -97,9 +96,8 @@ def test_cli_search_json_output(tmp_path):
     # Capture stdout
     captured = io.StringIO()
     with patch('sys.stdout', captured):
-        with patch('dag_executor.cli.get_db_path', return_value=db_path):
-            main(['search', 'test', '--db', str(db_path), '--json'])
-    
+        main(['search', 'test', '--db', str(db_path), '--json'])
+
     output = captured.getvalue()
     data = json.loads(output)  # Should not raise
     assert 'total' in data or isinstance(data, list)

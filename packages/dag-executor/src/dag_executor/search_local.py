@@ -1,12 +1,11 @@
 """Pure query helpers for local search (CLI and dashboard)."""
-import json
 import sqlite3
 from typing import Any, Dict, List
 
 
 def search_runs(conn: sqlite3.Connection, q: str, limit: int) -> List[Dict[str, Any]]:
-    """Search workflow_runs for matching id prefix, workflow_name, inputs, or error.
-    
+    """Search workflow_runs for matching id substring, workflow_name, inputs, or error.
+
     Returns list of dicts with keys: kind, run_id, workflow_name, snippet, started_at.
     """
     results = []

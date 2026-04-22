@@ -1,11 +1,14 @@
 """Search endpoint for dashboard queries."""
+import hashlib
 import hmac
 import sqlite3
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+
+from dag_executor.search_local import search_all
 
 from .config import Settings
 from .rate_limit import RateLimiter
@@ -54,13 +57,13 @@ def build_search_router(
     if rate_limiter is None:
         rate_limiter = RateLimiter(settings.search_rate_limit_per_min)
     
-    # Default limiter key: first 8 chars of bearer token
+    # Default limiter key: sha256 hash of bearer token
     if limiter_key is None:
         def limiter_key(request: Request) -> str:
             auth_header = request.headers.get("Authorization", "")
             if auth_header.startswith("Bearer "):
                 token = auth_header[7:]
-                return token[:8]
+                return hashlib.sha256(token.encode()).hexdigest()[:16]
             return "anonymous"
     
     @router.get("/api/search", response_model=SearchResponse)
@@ -90,9 +93,9 @@ def build_search_router(
             )
         
         token = auth_header[7:]
-        
+
         # Constant-time token comparison
-        if not hmac.compare_digest(token, settings.search_token):
+        if not hmac.compare_digest(token.encode('utf-8'), settings.search_token.encode('utf-8')):
             raise HTTPException(
                 status_code=401,
                 detail="Invalid bearer token"
@@ -114,9 +117,6 @@ def build_search_router(
         conn = sqlite3.connect(str(db_path))
         
         try:
-            # Import search helpers from dag-executor
-            from dag_executor.search_local import search_all
-            
             raw_results = search_all(conn, q=q, kinds=kinds_list, limit=limit)
             
             # Convert to pydantic models
