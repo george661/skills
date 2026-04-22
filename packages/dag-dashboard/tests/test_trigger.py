@@ -63,7 +63,7 @@ def client(tmp_path: Path, test_db: Path, events_dir: Path, workflows_dir: Path)
     # Create settings with trigger enabled
     settings = Settings(
         trigger_enabled=True,
-        workflows_dir=workflows_dir
+        workflows_dir=str(workflows_dir)
     )
 
     app = create_app(tmp_path, events_dir=events_dir, settings=settings)
@@ -235,7 +235,7 @@ def test_trigger_response_non_blocking(tmp_path: Path, test_db: Path, events_dir
 
     settings = Settings(
         trigger_enabled=True,
-        workflows_dir=workflows_dir
+        workflows_dir=str(workflows_dir)
     )
 
     app = create_app(tmp_path, events_dir=events_dir, settings=settings)
@@ -278,7 +278,7 @@ def test_hmac_verification_accepts_valid_signature(tmp_path: Path, test_db: Path
     settings = Settings(
         trigger_enabled=True,
         trigger_secret=secret,
-        workflows_dir=workflows_dir
+        workflows_dir=str(workflows_dir)
     )
 
     app = create_app(tmp_path, events_dir=events_dir, settings=settings)
@@ -316,7 +316,7 @@ def test_hmac_verification_rejects_bad_signature(tmp_path: Path, test_db: Path, 
     settings = Settings(
         trigger_enabled=True,
         trigger_secret="test-secret-key",
-        workflows_dir=workflows_dir
+        workflows_dir=str(workflows_dir)
     )
 
     app = create_app(tmp_path, events_dir=events_dir, settings=settings)
@@ -343,7 +343,7 @@ def test_hmac_verification_rejects_missing_signature_when_secret_configured(tmp_
     settings = Settings(
         trigger_enabled=True,
         trigger_secret="test-secret-key",
-        workflows_dir=workflows_dir
+        workflows_dir=str(workflows_dir)
     )
 
     app = create_app(tmp_path, events_dir=events_dir, settings=settings)
@@ -388,7 +388,7 @@ def test_rate_limiter_enforces_per_source_limit(tmp_path: Path, test_db: Path, e
     settings = Settings(
         trigger_enabled=True,
         trigger_rate_limit_per_min=3,  # Allow only 3 requests per minute
-        workflows_dir=workflows_dir
+        workflows_dir=str(workflows_dir)
     )
 
     app = create_app(tmp_path, events_dir=events_dir, settings=settings)
@@ -429,7 +429,7 @@ def test_rate_limiter_separate_sources_tracked_independently(tmp_path: Path, tes
     settings = Settings(
         trigger_enabled=True,
         trigger_rate_limit_per_min=2,
-        workflows_dir=workflows_dir
+        workflows_dir=str(workflows_dir)
     )
 
     app = create_app(tmp_path, events_dir=events_dir, settings=settings)
