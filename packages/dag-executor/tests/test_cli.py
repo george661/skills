@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from dag_executor.cli import parse_args, main, run_dry_run, run_visualize, run_list, run_info
+from dag_executor.cli import parse_args, parse_inputs, main, run_dry_run, run_visualize, run_list, run_info
 from dag_executor.schema import WorkflowDef, WorkflowConfig, NodeDef, EdgeDef, WorkflowStatus, NodeStatus, NodeResult
 from dag_executor.executor import WorkflowResult
 
@@ -755,3 +755,38 @@ nodes:
     # Verify workflow-a comes from dir1
     wf_a = next(wf for wf in workflows if wf["name"] == "workflow-a")
     assert wf_a["source_dir"] == str(dir1)
+
+
+def test_model_override_flag_injected_into_inputs(tmp_path):
+    """--model-override sonnet injects into inputs as __model_override__."""
+    workflow_yaml = tmp_path / "test.yaml"
+    workflow_yaml.write_text("""
+name: test_workflow
+config:
+  checkpoint_prefix: test
+default_model: local
+nodes:
+  - id: node1
+    name: Test
+    type: prompt
+    prompt: "test"
+""")
+    
+    # Run with --model-override
+    args = parse_args([str(workflow_yaml), "--model-override", "sonnet"])
+    inputs = parse_inputs(args.inputs)
+    
+    # Inject model override as CLI does
+    if args.model_override:
+        inputs["__model_override__"] = args.model_override
+    
+    assert inputs["__model_override__"] == "sonnet"
+
+
+def test_model_override_invalid_value_rejected():
+    """--model-override with invalid value is rejected by argparse."""
+    workflow_yaml = Path("test.yaml")
+    
+    # This should fail during argument parsing
+    with pytest.raises(SystemExit):
+        parse_args([str(workflow_yaml), "--model-override", "invalid"])

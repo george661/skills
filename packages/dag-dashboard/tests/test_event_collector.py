@@ -790,3 +790,138 @@ def test_event_collector_skips_self_referential_parent_run_id(
     assert row is not None
     assert row[0] is None
     assert any("self-referential" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_node_started_writes_model_to_node_executions(test_db: Path, events_dir: Path, broadcaster: Broadcaster):
+    """node_started event with model='sonnet' writes to node_executions.model."""
+    loop = asyncio.get_event_loop()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop
+    )
+    
+    collector.start()
+    
+    try:
+        run_id = "test-run"
+        ndjson_file = events_dir / f"{run_id}.ndjson"
+        
+        # Emit workflow_started to create the run and node_executions rows
+        workflow_started = {
+            "event_type": "workflow_started",
+            "workflow_id": "test-workflow",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "metadata": {
+                "workflow_definition": """
+name: test-workflow
+nodes:
+  - name: node1
+    type: prompt
+"""
+            }
+        }
+        
+        # Emit node_started with model='sonnet'
+        node_started = {
+            "event_type": "node_started",
+            "workflow_id": "test-workflow",
+            "node_id": "node1",
+            "model": "sonnet",
+            "timestamp": "2026-01-01T00:00:01.000Z"
+        }
+        
+        ndjson_file.write_text(
+            json.dumps(workflow_started) + "\n" +
+            json.dumps(node_started) + "\n"
+        )
+        
+        # Wait for collector to process
+        await asyncio.sleep(0.5)
+        
+        # Verify node_executions.model = 'sonnet'
+        conn = sqlite3.connect(test_db)
+        cursor = conn.cursor()
+        cursor.execute("SELECT model, status FROM node_executions WHERE id = ?", (f"{run_id}:node1",))
+        row = cursor.fetchone()
+        conn.close()
+        
+        assert row is not None, "node_executions row not found"
+        assert row[0] == "sonnet", f"Expected model='sonnet', got {row[0]}"
+        assert row[1] == "running", f"Expected status='running', got {row[1]}"
+    finally:
+        collector.stop()
+
+
+@pytest.mark.asyncio
+async def test_node_completed_does_not_overwrite_model(test_db: Path, events_dir: Path, broadcaster: Broadcaster):
+    """node_completed event does NOT overwrite node_executions.model (node_started writes it)."""
+    loop = asyncio.get_event_loop()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop
+    )
+    
+    collector.start()
+    
+    try:
+        run_id = "test-run"
+        ndjson_file = events_dir / f"{run_id}.ndjson"
+        
+        # Emit workflow_started
+        workflow_started = {
+            "event_type": "workflow_started",
+            "workflow_id": "test-workflow",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "metadata": {
+                "workflow_definition": """
+name: test-workflow
+nodes:
+  - name: node1
+    type: prompt
+"""
+            }
+        }
+        
+        # Emit node_started with model='opus'
+        node_started = {
+            "event_type": "node_started",
+            "workflow_id": "test-workflow",
+            "node_id": "node1",
+            "model": "opus",
+            "timestamp": "2026-01-01T00:00:01.000Z"
+        }
+        
+        # Emit node_completed (no model field in metadata)
+        node_completed = {
+            "event_type": "node_completed",
+            "workflow_id": "test-workflow",
+            "node_id": "node1",
+            "status": "success",
+            "timestamp": "2026-01-01T00:00:02.000Z"
+        }
+        
+        ndjson_file.write_text(
+            json.dumps(workflow_started) + "\n" +
+            json.dumps(node_started) + "\n" +
+            json.dumps(node_completed) + "\n"
+        )
+        
+        # Wait for collector to process
+        await asyncio.sleep(0.5)
+        
+        # Verify model remains 'opus' (not overwritten by node_completed)
+        conn = sqlite3.connect(test_db)
+        cursor = conn.cursor()
+        cursor.execute("SELECT model FROM node_executions WHERE id = ?", (f"{run_id}:node1",))
+        row = cursor.fetchone()
+        conn.close()
+        
+        assert row is not None
+        assert row[0] == "opus"
+    finally:
+        collector.stop()

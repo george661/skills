@@ -6,7 +6,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
@@ -23,6 +23,10 @@ class TriggerRequest(BaseModel):
     workflow: str = Field(..., description="Workflow name (no .yaml extension)")
     inputs: Dict[str, Any] = Field(default_factory=dict, description="Workflow inputs")
     source: str = Field(..., description="Trigger source identifier (e.g., 'github-webhook')")
+    model_override: Optional[Literal["opus", "sonnet", "local"]] = Field(
+        default=None,
+        description="Override model tier for all prompt nodes (unless strict_model=true)"
+    )
 
 
 class TriggerResponse(BaseModel):
@@ -243,15 +247,25 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
         # watches) and polls {events_dir}/{run_id}.cancel for cancel markers.
         child_env = {**os.environ, "DAG_EVENTS_DIR": str(settings.events_dir.resolve())}
 
+        # Build dag-exec command
+        dag_exec_args = [
+            "dag-exec",
+            str(workflow_file),  # Pass resolved file path, not workflow name
+            "--run-id", run_id,
+        ]
+
+        # Add model override if provided
+        if request_body.model_override:
+            dag_exec_args.extend(["--model-override", request_body.model_override])
+
+        dag_exec_args.extend(input_args)
+
         # Spawn the subprocess (detached, survives dashboard restart).
         # CRITICAL: Pass --run-id so the executor uses the same run_id we
         # INSERTed into workflow_runs above. Otherwise it generates a new
         # UUID and emits events under a run_id the DB row does not know.
         await asyncio.create_subprocess_exec(
-            "dag-exec",
-            str(workflow_file),  # Pass resolved file path, not workflow name
-            "--run-id", run_id,
-            *input_args,
+            *dag_exec_args,
             stdout=asyncio.subprocess.DEVNULL,  # Avoid pipe leak
             stderr=asyncio.subprocess.DEVNULL,  # Avoid pipe leak
             cwd=str(settings.events_dir.parent) if settings.events_dir.parent != Path(".") else None,

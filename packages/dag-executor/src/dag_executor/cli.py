@@ -305,6 +305,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--model-override",
+        choices=["opus", "sonnet", "local"],
+        help=(
+            "Override model tier for all prompt nodes (unless strict_model=true). "
+            "Valid values: opus, sonnet, local. Takes precedence over node-level "
+            "and workflow-level default_model settings."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -820,6 +830,10 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         # Parse inputs
         inputs = parse_inputs(args.inputs)
+
+        # Inject model override if provided
+        if args.model_override:
+            inputs["__model_override__"] = args.model_override
 
         # Resolve events_dir from --events-dir flag or DAG_EVENTS_DIR env var.
         # When set, the executor writes {events_dir}/{run_id}.ndjson and polls

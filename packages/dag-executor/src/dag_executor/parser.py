@@ -72,5 +72,10 @@ def load_workflow_from_string(yaml_string: str) -> WorkflowDef:
     
     if duplicates:
         raise ValueError(f"Duplicate node IDs found: {', '.join(set(duplicates))}")
-    
+
+    # Validate reserved input names (starting with __)
+    reserved_inputs = [name for name in workflow.inputs.keys() if name.startswith("__")]
+    if reserved_inputs:
+        raise ValueError(f'Input names starting with "__" are reserved: {", ".join(reserved_inputs)}')
+
     return workflow
