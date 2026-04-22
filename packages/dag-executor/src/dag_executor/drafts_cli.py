@@ -15,17 +15,17 @@ from typing import Any
 import httpx
 
 
-def _resolve_workflow_dir(args: Any) -> str:
+def _resolve_workflow_dir(args: Any) -> Path:
     """Resolve workflow directory from --workflows-dir, env var, or default."""
     if hasattr(args, 'workflows_dir') and args.workflows_dir:
-        return str(args.workflows_dir)
-    
+        return Path(args.workflows_dir)
+
     # Fall back to first entry in DAG_DASHBOARD_WORKFLOWS_DIR
     env_dirs = os.environ.get('DAG_DASHBOARD_WORKFLOWS_DIR', '')
     if env_dirs:
-        return env_dirs.split(':')[0]
-    
-    return '.'
+        return Path(env_dirs.split(':')[0])
+
+    return Path('.')
 
 
 def _get_remote_token(args: Any) -> str:
