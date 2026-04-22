@@ -128,6 +128,20 @@ window.showReplayModal = async function(workflow, runId) {
             return;
         }
 
+        // Show confirmation dialog
+        const confirmed = await window.showConfirmDialog({
+            title: 'Confirm Replay',
+            message: `Replay workflow from node "${fromNode}"? A new run will start with the selected overrides.`,
+            confirmLabel: 'Start Replay',
+            cancelLabel: 'Cancel',
+            confirmTone: 'primary'
+        });
+
+        if (!confirmed) {
+            errorDiv.style.display = 'none';
+            return;
+        }
+
         // Collect overrides
         const overrides = {};
         document.querySelectorAll('.override-row').forEach(row => {
