@@ -2,7 +2,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 from pydantic import ConfigDict, Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,8 +27,16 @@ class Settings(BaseSettings):
     trigger_enabled: bool = False
     trigger_secret: Optional[str] = None
     trigger_rate_limit_per_min: int = 10
-    workflows_dir: str = "workflows"  # Raw string from env var
+    workflows_dir: Union[str, Path] = "workflows"  # Accepts str (env) or Path (programmatic); normalized to str by validator
     workflows_dirs: List[Path] = Field(default_factory=list)  # Parsed list, populated by validator
+
+    @field_validator("workflows_dir", mode="before")
+    @classmethod
+    def _coerce_workflows_dir_to_str(cls, v: Any) -> str:
+        """Accept Path objects for backwards compatibility; normalize to str."""
+        if isinstance(v, Path):
+            return str(v)
+        return v
 
     # Search endpoint settings
     search_token: Optional[str] = None  # Bearer token for search endpoint auth
