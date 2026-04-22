@@ -16,6 +16,7 @@ from .chat_relay import ChatRelay
 from .chat_routes import create_chat_router
 from .checkpoint_routes import router as checkpoint_router
 from .config import Settings
+from .drafts_routes import router as drafts_router
 from .database import ensure_dir, init_db
 from .event_collector import EventCollector
 from .notifier import SlackNotifier
@@ -141,6 +142,9 @@ def create_app(
     # Register checkpoint routes if checkpoint_prefix is set
     if checkpoint_prefix is not None:
         app.include_router(checkpoint_router)
+
+    # Register drafts routes (always mounted - workflow editing)
+    app.include_router(drafts_router)
 
     # Register chat routes
     chat_router = create_chat_router(db_path)
