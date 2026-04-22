@@ -82,3 +82,51 @@ class Settings(BaseSettings):
                 "slack_bot_token requires slack_channel_id to be set."
             )
         return self
+
+    def reload_from_db(self, db_path: Path) -> None:
+        """Re-read dashboard_settings and apply overrides in place.
+
+        Preserves env values when no db override is present.
+
+        Args:
+            db_path: Path to SQLite database with dashboard_settings table
+        """
+        import sqlite3
+        import json
+
+        conn = sqlite3.connect(db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT key, value FROM dashboard_settings"
+            )
+            rows = cursor.fetchall()
+
+            # Build dict of overrides
+            overrides = {}
+            for key, value_str in rows:
+                # Skip keys not in Settings model
+                if not hasattr(self, key):
+                    continue
+
+                # Decode JSON value
+                try:
+                    value = json.loads(value_str)
+                except (json.JSONDecodeError, TypeError):
+                    value = value_str
+
+                overrides[key] = value
+
+            # Apply overrides to self
+            for key, value in overrides.items():
+                setattr(self, key, value)
+
+            # Re-validate by calling model_validate on a fresh instance
+            # This ensures Slack coherency rules are still enforced
+            if overrides:
+                # Validate by constructing with current values
+                current_values = self.model_dump()
+                self.__class__(**current_values)
+
+        finally:
+            conn.close()
