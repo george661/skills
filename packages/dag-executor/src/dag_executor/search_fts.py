@@ -1,6 +1,6 @@
 """Full-text search using SQLite FTS5."""
 import sqlite3
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def _sanitize_query(query: str) -> str:
@@ -168,33 +168,32 @@ def search_nodes_fts(
 def search_all_fts(
     conn: sqlite3.Connection,
     query: str,
-    kinds: List[str] = None,
-    limit: int = 20
+    kinds: Optional[List[str]] = None,
+    limit: int = 20,
 ) -> List[Dict[str, Any]]:
     """Search across all tables using FTS5 indexes.
 
     Args:
         conn: Database connection
         query: Search query string
-        kinds: List of kinds to search (e.g., ['event', 'run', 'node']). If None, search all.
+        kinds: List of kinds to search. Accepts plural forms from the LIKE
+            router (``"runs"``, ``"nodes"``, ``"events"``). If None, searches all.
         limit: Maximum total results to return
 
     Returns:
         Combined list of results from all search surfaces
     """
     if kinds is None:
-        kinds = ['event', 'run', 'node']
+        kinds = ["runs", "nodes", "events"]
 
-    # Distribute limit across requested kinds
     per_kind_limit = max(limit // len(kinds), 10) if kinds else limit
 
-    results = []
-    if 'event' in kinds:
+    results: List[Dict[str, Any]] = []
+    if "events" in kinds:
         results.extend(search_events_fts(conn, query, limit=per_kind_limit))
-    if 'run' in kinds:
+    if "runs" in kinds:
         results.extend(search_runs_fts(conn, query, limit=per_kind_limit))
-    if 'node' in kinds:
+    if "nodes" in kinds:
         results.extend(search_nodes_fts(conn, query, limit=per_kind_limit))
 
-    # Sort by relevance (if we stored rank) and cap at limit
     return results[:limit]
