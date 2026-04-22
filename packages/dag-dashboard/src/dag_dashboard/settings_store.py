@@ -17,6 +17,7 @@ WHITELISTED_KEYS = {
     "max_sse_connections",
     "dashboard_url",
     "workflows_dir",
+    "node_log_line_cap",
 }
 
 # Keys that contain secrets (should be masked in GET responses)
