@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, List, Optional, Union
 
-from pydantic import ConfigDict, Field, computed_field, field_validator, model_validator
+from pydantic import AliasChoices, ConfigDict, Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     # Search endpoint settings
     search_token: Optional[str] = None  # Bearer token for search endpoint auth
     search_rate_limit_per_min: int = 30  # Rate limit is per-bearer-token
+    fts5_enabled: bool = Field(default=False, validation_alias=AliasChoices("DAG_DASHBOARD_FTS", "fts5_enabled"))
 
     # Slack notification settings
     slack_enabled: bool = False

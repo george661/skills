@@ -62,3 +62,18 @@ def test_workflows_dir_property() -> None:
     settings = Settings()
     assert settings.workflows_dir == "workflows"
     assert settings.workflows_dirs[0] == Path("workflows")
+
+
+def test_fts5_enabled_defaults_to_false() -> None:
+    """FTS5 should be disabled by default."""
+    settings = Settings()
+    assert settings.fts5_enabled is False
+
+
+def test_fts5_enabled_from_DAG_DASHBOARD_FTS_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DAG_DASHBOARD_FTS=true should enable FTS5."""
+    monkeypatch.setenv("DAG_DASHBOARD_FTS", "true")
+    settings = Settings()
+    assert settings.fts5_enabled is True
