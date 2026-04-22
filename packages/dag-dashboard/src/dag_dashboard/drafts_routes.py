@@ -2,6 +2,7 @@
 import logging
 import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -24,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/workflows", tags=["drafts"])
 
-# Timestamp format: YYYYMMDDTHHMMSSZ (UTC, sortable)
-TIMESTAMP_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}Z$")
+# Timestamp format: YYYYMMDDTHHMMSS_uuuuuuZ (UTC with microseconds, sortable)
+TIMESTAMP_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}_[0-9]{6}Z$")
 
 
 def _validate_workflow_name(name: str) -> None:
@@ -50,7 +51,7 @@ def _validate_timestamp(timestamp: str) -> None:
     if not TIMESTAMP_PATTERN.match(timestamp):
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid timestamp format: {timestamp}. Expected YYYYMMDDTHHMMSSZ."
+            detail=f"Invalid timestamp format: {timestamp}. Expected YYYYMMDDTHHMMSS_uuuuuuZ."
         )
 
 
@@ -73,15 +74,6 @@ def _resolve_draft(
     for workflows_dir in workflows_dirs:
         draft_path = workflows_dir / ".drafts" / name / f"{timestamp}.yaml"
         if draft_path.exists():
-            # Defense-in-depth: verify resolved path is within workflows_dir
-            try:
-                draft_path.resolve().relative_to(workflows_dir.resolve())
-            except ValueError:
-                logger.error(
-                    f"Security: resolved path {draft_path.resolve()} "
-                    f"is outside workflows_dir {workflows_dir.resolve()}"
-                )
-                continue
             return draft_path, workflows_dir
     
     raise HTTPException(
@@ -167,7 +159,10 @@ async def get_draft(
     name: str, timestamp: str, request: Request
 ) -> Dict[str, Any]:
     """Get draft content and parsed YAML.
-    
+
+    Returns 200 with parsed=null on YAML errors (intentionally lenient to allow
+    operators to retrieve and fix broken drafts), unlike publish which returns 400.
+
     Returns:
         Dict with timestamp, content (raw YAML), and parsed data
     """
@@ -212,12 +207,16 @@ async def create_draft(
     drafts_dir = primary_dir / ".drafts" / name
     drafts_dir.mkdir(parents=True, exist_ok=True)
     
-    # Generate timestamp
-    now = datetime.now(timezone.utc)
-    timestamp = now.strftime("%Y%m%dT%H%M%SZ")
-    
+    # Generate timestamp with microsecond precision and collision protection
+    # Keep regenerating with fresh timestamps until we get a unique one
+    while True:
+        now = datetime.now(timezone.utc)
+        timestamp = now.strftime("%Y%m%dT%H%M%S_%fZ")
+        draft_path = drafts_dir / f"{timestamp}.yaml"
+        if not draft_path.exists():
+            break
+
     # Write draft
-    draft_path = drafts_dir / f"{timestamp}.yaml"
     draft_path.write_text(body.content)
     
     logger.info(f"Created draft: {draft_path}")
@@ -296,16 +295,26 @@ async def publish_draft(
     
     # Write to temporary file in same directory (for atomic rename)
     canonical_path = workflows_dir / f"{name}.yaml"
-    tmp_path = workflows_dir / f".tmp-{name}-{timestamp}"
-    
+
+    # Use tempfile for collision-proof tmp name
+    with tempfile.NamedTemporaryFile(
+        mode='w',
+        delete=False,
+        dir=workflows_dir,
+        prefix=f".tmp-{name}-",
+        suffix=".yaml"
+    ) as tmp:
+        tmp_path = Path(tmp.name)
+
     try:
+        # Write content
         tmp_path.write_text(content)
-        
+
         # Atomic rename (POSIX)
         os.replace(str(tmp_path), str(canonical_path))
-        
+
         logger.info(f"Published draft {timestamp} to {canonical_path}")
-        
+
         return DraftPublishResponse(
             published_path=str(canonical_path),
             source_timestamp=timestamp,

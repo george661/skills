@@ -269,7 +269,7 @@ class DraftListItem(BaseModel):
     """Single draft in list response."""
     model_config = {"extra": "forbid"}
 
-    timestamp: str = Field(pattern=r"^[0-9]{8}T[0-9]{6}Z$")
+    timestamp: str = Field(pattern=r"^[0-9]{8}T[0-9]{6}_[0-9]{6}Z$")
     size_bytes: int = Field(ge=0)
 
 
@@ -277,21 +277,21 @@ class DraftCreateRequest(BaseModel):
     """Request body for creating a draft."""
     model_config = {"extra": "forbid"}
 
-    content: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=2_097_152)
 
 
 class DraftUpdateRequest(BaseModel):
     """Request body for updating a draft."""
     model_config = {"extra": "forbid"}
 
-    content: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=2_097_152)
 
 
 class DraftCreateResponse(BaseModel):
     """Response from creating a draft."""
     model_config = {"extra": "forbid"}
 
-    timestamp: str = Field(pattern=r"^[0-9]{8}T[0-9]{6}Z$")
+    timestamp: str = Field(pattern=r"^[0-9]{8}T[0-9]{6}_[0-9]{6}Z$")
 
 
 class DraftPublishResponse(BaseModel):
