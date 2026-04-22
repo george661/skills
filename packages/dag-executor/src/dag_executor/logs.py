@@ -123,9 +123,12 @@ def tail_logs_remote(
     follow: bool = False,
 ) -> int:
     """Tail logs from a running dashboard over SSE (and historical REST if ``--node`` is set)."""
+    # httpx/httpx_sse are optional — import at call time and fall back
+    # cleanly when not installed (e.g., CI). mypy may not find them on
+    # install-minimal environments, so silence the import diagnostics.
     try:
-        import httpx
-        from httpx_sse import connect_sse
+        import httpx  # type: ignore[import-not-found, unused-ignore]
+        from httpx_sse import connect_sse  # type: ignore[import-not-found, unused-ignore]
     except ImportError:
         print("Error: httpx and httpx-sse required for remote mode", file=sys.stderr)
         print("Install: pip install httpx httpx-sse", file=sys.stderr)
