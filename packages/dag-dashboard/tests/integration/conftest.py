@@ -6,6 +6,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -18,6 +19,10 @@ def dashboard_server(request, tmp_path_factory):
 
     Supports indirect parametrization for fixture injection:
         @pytest.mark.parametrize("dashboard_server", ["gate_pending_workflow"], indirect=True)
+
+    Fixtures must be .ndjson files (EventCollector filters on extension). They are
+    copied AFTER the server starts so the watchdog observer fires a created-event
+    and processes the file — files present before the observer starts are ignored.
     """
     if os.getenv("PLAYWRIGHT_E2E") != "1":
         pytest.skip("Server fixture skipped (PLAYWRIGHT_E2E != 1)")
@@ -29,13 +34,19 @@ def dashboard_server(request, tmp_path_factory):
     db_dir = tmp_path / "db"
     db_dir.mkdir()
 
-    # Copy fixture if specified via indirect param
+    # Resolve fixture source path BEFORE starting the server, so a missing
+    # fixture fails the test rather than silently producing an empty workflow.
+    fixture_src: Optional[Path] = None
+    fixture_name: Optional[str] = None
     if hasattr(request, "param") and request.param:
         fixture_name = request.param
         fixtures_dir = Path(__file__).parent.parent / "fixtures"
-        fixture_path = fixtures_dir / f"{fixture_name}.jsonl"
-        if fixture_path.exists():
-            shutil.copy(fixture_path, events_dir / f"{fixture_name}.jsonl")
+        fixture_src = fixtures_dir / f"{fixture_name}.ndjson"
+        if not fixture_src.exists():
+            pytest.fail(
+                f"Fixture {fixture_src} not found. Fixtures must be .ndjson "
+                f"(EventCollector ignores other extensions)."
+            )
 
     env = os.environ.copy()
     env["DAG_DASHBOARD_PORT"] = "8100"
@@ -63,6 +74,27 @@ def dashboard_server(request, tmp_path_factory):
     if not ready:
         process.kill()
         pytest.fail("Dashboard server did not start within 10 seconds")
+
+    # Copy fixture AFTER the observer is running so watchdog sees a
+    # file-created event and processes it. Poll the API until the workflow
+    # run appears so tests don't race the collector.
+    if fixture_src is not None:
+        shutil.copy(fixture_src, events_dir / fixture_src.name)
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen("http://localhost:8100/api/workflows", timeout=1) as resp:
+                    if resp.status == 200:
+                        body = resp.read().decode()
+                        if fixture_name and fixture_name in body:
+                            break
+                        # fixture_name may not match the run_id inside the ndjson;
+                        # fall through if ANY workflow is present.
+                        if '"runs"' in body and '"run_id"' in body:
+                            break
+            except (urllib.error.URLError, ConnectionError, TimeoutError):
+                pass
+            time.sleep(0.1)
 
     yield
 

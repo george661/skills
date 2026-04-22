@@ -1,5 +1,0 @@
-{"type": "workflow_start", "workflow_id": "gate-test-run", "timestamp": "2026-04-22T10:00:00Z", "metadata": {"started_by": "test-user"}}
-{"type": "node_start", "workflow_id": "gate-test-run", "node_id": "node_1", "node_name": "data_prep", "timestamp": "2026-04-22T10:00:01Z"}
-{"type": "node_complete", "workflow_id": "gate-test-run", "node_id": "node_1", "timestamp": "2026-04-22T10:00:05Z", "status": "success"}
-{"type": "node_start", "workflow_id": "gate-test-run", "node_id": "node_2", "node_name": "approval_gate", "timestamp": "2026-04-22T10:00:06Z"}
-{"type": "gate_pending", "workflow_id": "gate-test-run", "node_id": "node_2", "timestamp": "2026-04-22T10:00:07Z", "gate_type": "manual_approval", "message": "Please review and approve"}

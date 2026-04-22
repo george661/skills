@@ -20,7 +20,12 @@ try:
 except ImportError:
     pytest.skip("Playwright not installed (install with: pip install -e .[e2e])", allow_module_level=True)
 
-from .helpers_mobile import assert_no_horizontal_scroll, assert_touch_targets_meet_minimum, get_console_errors
+from .helpers_mobile import (
+    assert_no_horizontal_scroll,
+    assert_touch_targets_meet_minimum,
+    get_console_errors,
+    navigate_to_run,
+)
 
 
 def test_dashboard_home_no_horizontal_scroll_at_320px(page: Page) -> None:
@@ -75,36 +80,41 @@ def test_mobile_nav_toggle_is_tappable(page: Page) -> None:
     assert len(console_errors) == 0, f"Console errors: {console_errors}"
 
 
+@pytest.mark.xfail(
+    reason="Preexisting prod bug: ChatPanel class is not assigned to window.ChatPanel, "
+    "so run detail can't instantiate it. Filed as GW-5275."
+)
+@pytest.mark.parametrize("dashboard_server", ["sample_workflow"], indirect=True)
 def test_chat_panel_fits_at_320px(page: Page) -> None:
     """Test chat panel fits at 320px with adequate touch targets.
 
     FR-12: No horizontal overflow, textarea and send button >= 44px tall.
+    Chat is rendered on the run detail page, not the home page.
+
+    XFAIL: Preexisting bug prevents chat panel from rendering at all
+    (see GW-5275). Once fixed, remove the xfail decorator.
     """
     page.set_viewport_size({"width": 320, "height": 568})
     console_errors = get_console_errors(page)
 
-    page.goto("http://localhost:8100")
-    page.wait_for_timeout(1000)
+    navigate_to_run(page, "sample_workflow")
+    page.wait_for_timeout(2000)
 
-    # Open chat panel
-    chat_toggle = page.locator(".chat-toggle, #chat-toggle, button:has-text('Chat')")
-    if chat_toggle.count() == 0:
-        pytest.skip("Chat toggle not found on home page")
+    # Verify chat panel is present
+    chat_panel = page.locator(".chat-panel")
+    assert chat_panel.count() > 0, "Chat panel not rendered on run detail page"
 
-    chat_toggle.first.click()
-    page.wait_for_timeout(500)
-
-    # Verify no horizontal overflow in chat panel
+    # Verify no horizontal overflow
     assert_no_horizontal_scroll(page)
 
     # Check textarea and send button meet touch target minimums
-    textarea = page.locator(".chat-input, #chat-input, textarea")
+    textarea = page.locator(".chat-input, textarea.chat-input")
     if textarea.count() > 0:
         box = textarea.first.bounding_box()
         assert box is not None and box["height"] >= 44, \
             f"Chat textarea height {box['height'] if box else 0}px < 44px"
 
-    send_btn = page.locator(".chat-send, #chat-send, button:has-text('Send')")
+    send_btn = page.locator("button:has-text('Send'), .chat-send")
     if send_btn.count() > 0:
         box = send_btn.first.bounding_box()
         assert box is not None and box["height"] >= 44, \
@@ -114,36 +124,55 @@ def test_chat_panel_fits_at_320px(page: Page) -> None:
     assert len(console_errors) == 0, f"Console errors: {console_errors}"
 
 
+@pytest.mark.xfail(
+    reason="Event schema gap: node_detail-panel only renders the gate approval "
+    "UI when node.status == 'interrupted', but the event collector has no "
+    "handler that transitions a node into that status from ndjson events — "
+    "it's only set via a code path not reachable from the public event format. "
+    "Testing this surface requires either a DB-level seed or a new "
+    "'node_interrupted' event type. Filed as GW-5276."
+)
 @pytest.mark.parametrize("dashboard_server", ["gate_pending_workflow"], indirect=True)
 def test_gate_approval_surface_fits_at_320px(page: Page) -> None:
     """Test gate approval surface fits at 320px with 44x44px approve/reject buttons.
 
     FR-12: No horizontal overflow, approve/reject buttons >= 44x44px.
-    Seeded with gate_pending_workflow.jsonl fixture.
+
+    XFAIL: Event-format gap prevents seeding an interrupted node via ndjson.
+    Until GW-5276 is addressed, this surface can only be audited via manual
+    inspection or a separate DB-level seed mechanism.
     """
     page.set_viewport_size({"width": 320, "height": 568})
     console_errors = get_console_errors(page)
 
-    page.goto("http://localhost:8100")
-    page.wait_for_timeout(2000)  # Allow fixture to load
+    navigate_to_run(page, "gate_pending_workflow")
 
-    # Navigate to workflow detail (look for gate-test-run)
-    run_link = page.locator("a:has-text('gate-test-run')")
-    if run_link.count() == 0:
-        pytest.skip("Gate workflow not loaded (fixture injection may have failed)")
-
-    run_link.first.click()
-    page.wait_for_timeout(1000)
+    # Click the gate node to open the node detail panel where approve/reject
+    # buttons render. The DAG renderer attaches click handlers to .dag-node.
+    gate_node = page.locator('[data-node-name="approval_gate"]')
+    assert gate_node.count() > 0, "Gate node not rendered in DAG"
+    # SVG node groups may not be reported as visible by Playwright at 320px
+    # (no explicit bbox on <g>), so dispatch the custom node-click event
+    # directly the same way the DAG renderer does (see dag-renderer.js:144).
+    # NodeDetailPanel.show() requires node.id of the form "run_id:node_name".
+    page.evaluate("""
+        const evt = new CustomEvent('node-click', {
+            detail: { id: 'gate_pending_workflow:approval_gate', node_name: 'approval_gate' }
+        });
+        window.dispatchEvent(evt);
+    """)
+    page.wait_for_timeout(1500)
 
     # Verify no horizontal overflow
     assert_no_horizontal_scroll(page)
 
     # Check approve/reject buttons meet touch target minimums
-    approve_btn = page.locator(".gate-btn-approve, button:has-text('Approve')")
-    reject_btn = page.locator(".gate-btn-reject, button:has-text('Reject')")
+    approve_btn = page.locator(".gate-btn-approve")
+    reject_btn = page.locator(".gate-btn-reject")
 
-    if approve_btn.count() == 0 and reject_btn.count() == 0:
-        pytest.skip("Gate approval buttons not visible (may need to click node)")
+    assert approve_btn.count() > 0 and reject_btn.count() > 0, (
+        "Gate approve/reject buttons not rendered after clicking gate node"
+    )
 
     if approve_btn.count() > 0:
         box = approve_btn.first.bounding_box()
@@ -159,32 +188,28 @@ def test_gate_approval_surface_fits_at_320px(page: Page) -> None:
     assert len(console_errors) == 0, f"Console errors: {console_errors}"
 
 
+@pytest.mark.parametrize("dashboard_server", ["sample_workflow"], indirect=True)
 def test_artifact_panel_fits_at_320px(page: Page) -> None:
-    """Test artifact panel fits at 320px with no clipping.
+    """Test artifact panel fits at 320px without horizontal overflow.
 
-    FR-12: No horizontal overflow, download buttons >= 44px.
+    FR-12: No horizontal overflow on the run detail page where the artifact
+    list is rendered. Download button sizing is asserted when present; the
+    sample fixture has no artifacts, so the test verifies the layout does
+    not overflow even when the empty-state is rendered.
     """
     page.set_viewport_size({"width": 320, "height": 568})
     console_errors = get_console_errors(page)
 
-    page.goto("http://localhost:8100")
-    page.wait_for_timeout(1000)
+    navigate_to_run(page, "sample_workflow")
+    page.wait_for_timeout(2000)
 
-    # Look for artifacts panel or link
-    artifacts_link = page.locator("a:has-text('Artifacts'), .artifacts-panel, #artifacts")
-    if artifacts_link.count() == 0:
-        pytest.skip("Artifacts panel not found (may need workflow with artifacts)")
-
-    artifacts_link.first.click()
-    page.wait_for_timeout(500)
-
-    # Verify no horizontal overflow
+    # Verify no horizontal overflow on the run detail page
     assert_no_horizontal_scroll(page)
 
-    # Check download buttons if present
+    # Check download buttons if present (none expected in sample fixture)
     download_btns = page.locator(".artifact-download, button:has-text('Download')")
     if download_btns.count() > 0:
-        for btn in download_btns.all()[:3]:  # Check first 3
+        for btn in download_btns.all()[:3]:
             box = btn.bounding_box()
             if box is not None:
                 assert box["height"] >= 44, \
@@ -204,16 +229,9 @@ def test_error_detail_fits_at_320px(page: Page) -> None:
     page.set_viewport_size({"width": 320, "height": 568})
     console_errors = get_console_errors(page)
 
-    page.goto("http://localhost:8100")
-    page.wait_for_timeout(2000)  # Allow fixture to load
-
-    # Navigate to failed workflow
-    run_link = page.locator("a:has-text('failed-test-run')")
-    if run_link.count() == 0:
-        pytest.skip("Failed workflow not loaded (fixture injection may have failed)")
-
-    run_link.first.click()
-    page.wait_for_timeout(1000)
+    # Navigate directly to the run detail page (run_id = fixture filename stem).
+    navigate_to_run(page, "failed_node_workflow")
+    page.wait_for_timeout(1500)
 
     # Click on failed node to view error detail
     failed_node = page.locator(".node.failed, .node-failed, [data-status='failed']")
@@ -244,22 +262,13 @@ def test_dag_canvas_pinch_zoom_listeners_attached(page: Page) -> None:
     page.set_viewport_size({"width": 320, "height": 568})
     console_errors = get_console_errors(page)
 
-    page.goto("http://localhost:8100")
-    page.wait_for_timeout(3000)  # Allow fixture to load and JS to render
+    # Navigate directly to the run detail page (run_id = fixture filename stem).
+    navigate_to_run(page, "sample_workflow")
+    page.wait_for_timeout(2000)
 
-    # Navigate to workflow detail page to see DAG canvas
-    # Try different selectors for workflow link
-    run_link = page.locator("a:has-text('test-workflow'), .workflow-item, .run-item")
-    if run_link.count() == 0:
-        pytest.skip("Workflow link not found (fixture may not have loaded or JS not rendered)")
-
-    run_link.first.click()
-    page.wait_for_timeout(1500)
-
-    # Verify SVG exists
+    # Verify SVG exists (if not, the DAG renderer didn't load — surface it)
     svg = page.locator("svg")
-    if svg.count() == 0:
-        pytest.skip("DAG canvas SVG not rendered (may be on wrong page or no DAG data)")
+    assert svg.count() > 0, "DAG canvas SVG not rendered"
 
     # Use CDP to check for touchstart/touchmove listeners
     # Note: getEventListeners is a DevTools-only function
@@ -297,22 +306,11 @@ def test_dag_canvas_pan_gesture(page: Page) -> None:
     page.set_viewport_size({"width": 320, "height": 568})
     console_errors = get_console_errors(page)
 
-    page.goto("http://localhost:8100")
-    page.wait_for_timeout(3000)  # Allow fixture to load and JS to render
+    navigate_to_run(page, "sample_workflow")
+    page.wait_for_timeout(2000)
 
-    # Navigate to workflow detail page to see DAG canvas
-    # Try different selectors for workflow link
-    run_link = page.locator("a:has-text('test-workflow'), .workflow-item, .run-item")
-    if run_link.count() == 0:
-        pytest.skip("Workflow link not found (fixture may not have loaded or JS not rendered)")
-
-    run_link.first.click()
-    page.wait_for_timeout(1500)
-
-    # Verify SVG exists
     svg = page.locator("svg")
-    if svg.count() == 0:
-        pytest.skip("DAG canvas SVG not rendered (may be on wrong page or no DAG data)")
+    assert svg.count() > 0, "DAG canvas SVG not rendered"
 
     # Get initial viewBox/transform
     initial_transform = page.evaluate("""() => {

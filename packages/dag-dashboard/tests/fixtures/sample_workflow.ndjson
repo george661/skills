@@ -1,4 +1,4 @@
-{"event_type": "workflow_started", "workflow_name": "test-workflow", "metadata": {}, "timestamp": "2026-04-20T12:00:00Z"}
+{"event_type": "workflow_started", "workflow_name": "test-workflow", "metadata": {"workflow_definition": "name: test-workflow\nnodes:\n  - name: step1\n    depends_on: []\n  - name: step2\n    depends_on: [step1]\n"}, "timestamp": "2026-04-20T12:00:00Z"}
 {"event_type": "node_started", "workflow_name": "test-workflow", "node_id": "step1", "status": "running", "metadata": {}, "timestamp": "2026-04-20T12:00:01Z"}
 {"event_type": "node_completed", "workflow_name": "test-workflow", "node_id": "step1", "status": "completed", "metadata": {}, "timestamp": "2026-04-20T12:00:05Z"}
 {"event_type": "node_started", "workflow_name": "test-workflow", "node_id": "step2", "status": "running", "metadata": {}, "timestamp": "2026-04-20T12:00:06Z"}
