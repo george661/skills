@@ -317,18 +317,18 @@ def list_runs_grouped(
         while True:
             parent_id = current.get("parent_run_id")
             if not parent_id:
-                return current["id"]
+                return str(current["id"])
             if parent_id not in rows_by_id:
                 # Parent exists outside the filtered set or was deleted —
                 # treat this node as a root of its own visible subtree.
-                return current["id"]
+                return str(current["id"])
             if parent_id in visited:
                 logger.warning(
                     "Cycle detected in parent_run_id chain for run %s; breaking at %s",
                     run["id"],
                     current["id"],
                 )
-                return current["id"]
+                return str(current["id"])
             depth += 1
             if depth > _MAX_PARENT_WALK_DEPTH:
                 logger.warning(
@@ -336,7 +336,7 @@ def list_runs_grouped(
                     run["id"],
                     _MAX_PARENT_WALK_DEPTH,
                 )
-                return current["id"]
+                return str(current["id"])
             current = rows_by_id[parent_id]
             visited.add(current["id"])
 
