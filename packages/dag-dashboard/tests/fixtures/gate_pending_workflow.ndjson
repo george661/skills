@@ -1,0 +1,5 @@
+{"event_type": "workflow_started", "workflow_name": "gate-pending-test", "metadata": {"workflow_definition": "name: gate-pending-test\nnodes:\n  - name: data_prep\n    depends_on: []\n  - name: approval_gate\n    depends_on: [data_prep]\n"}, "timestamp": "2026-04-22T10:00:00Z"}
+{"event_type": "node_started", "workflow_name": "gate-pending-test", "node_id": "data_prep", "status": "running", "metadata": {}, "timestamp": "2026-04-22T10:00:01Z"}
+{"event_type": "node_completed", "workflow_name": "gate-pending-test", "node_id": "data_prep", "status": "completed", "metadata": {}, "timestamp": "2026-04-22T10:00:05Z"}
+{"event_type": "node_started", "workflow_name": "gate-pending-test", "node_id": "approval_gate", "status": "running", "metadata": {}, "timestamp": "2026-04-22T10:00:06Z"}
+{"event_type": "gate_pending", "workflow_name": "gate-pending-test", "node_id": "approval_gate", "metadata": {"prompt": "Approve to continue"}, "timestamp": "2026-04-22T10:00:07Z"}

@@ -1,0 +1,6 @@
+{"event_type": "workflow_started", "workflow_name": "failed-node-test", "metadata": {"workflow_definition": "name: failed-node-test\nnodes:\n  - name: data_load\n    depends_on: []\n  - name: transform\n    depends_on: [data_load]\n"}, "timestamp": "2026-04-22T10:00:00Z"}
+{"event_type": "node_started", "workflow_name": "failed-node-test", "node_id": "data_load", "status": "running", "metadata": {}, "timestamp": "2026-04-22T10:00:01Z"}
+{"event_type": "node_completed", "workflow_name": "failed-node-test", "node_id": "data_load", "status": "completed", "metadata": {}, "timestamp": "2026-04-22T10:00:05Z"}
+{"event_type": "node_started", "workflow_name": "failed-node-test", "node_id": "transform", "status": "running", "metadata": {}, "timestamp": "2026-04-22T10:00:06Z"}
+{"event_type": "node_completed", "workflow_name": "failed-node-test", "node_id": "transform", "status": "failed", "metadata": {"error": "ValueError: invalid input schema"}, "timestamp": "2026-04-22T10:00:10Z"}
+{"event_type": "workflow_failed", "workflow_name": "failed-node-test", "metadata": {"error": "ValueError: invalid input schema"}, "timestamp": "2026-04-22T10:00:11Z"}
