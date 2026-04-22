@@ -410,7 +410,7 @@ async def approve_gate(
         raise HTTPException(status_code=409, detail="Node is not in interrupted state")
 
     # Get decided_by from request body or default to OS user
-    decided_by = body.decided_by or os.getlogin()
+    decided_by = body.decided_by or os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
     decided_at = datetime.now(timezone.utc).isoformat()
 
     # Insert gate decision
@@ -516,7 +516,7 @@ async def reject_gate(
         raise HTTPException(status_code=409, detail="Node is not in interrupted state")
 
     # Get decided_by from request body or default to OS user
-    decided_by = body.decided_by or os.getlogin()
+    decided_by = body.decided_by or os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
     decided_at = datetime.now(timezone.utc).isoformat()
 
     # Insert gate decision
@@ -712,7 +712,7 @@ async def resume_interrupt(
     store.save_resume_values(run["workflow_name"], run_id, resume_values)
 
     # Get decided_by from request body or default to OS user
-    decided_by = body.decided_by or os.getlogin()
+    decided_by = body.decided_by or os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
     decided_at = datetime.now(timezone.utc).isoformat()
 
     # Insert gate decision for audit (use "resumed" as decision value)

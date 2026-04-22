@@ -183,7 +183,7 @@ def run_gates_approve_or_reject(args: argparse.Namespace, decision: str) -> None
             sys.exit(1)
 
         # Get decided_by (use OS user)
-        decided_by = os.getlogin()
+        decided_by = os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
 
         # Get checkpoint_prefix from flag or env var
         checkpoint_prefix = args.checkpoint_dir if hasattr(args, 'checkpoint_dir') and args.checkpoint_dir else os.environ.get(
