@@ -2,6 +2,29 @@
  * DAG Renderer - SVG-based visualization with zoom/pan
  */
 
+/**
+ * Calculate new scale for pinch-to-zoom gesture.
+ *
+ * @param {number} currentDistance - Current distance between touch points
+ * @param {number} initialDistance - Initial distance between touch points
+ * @param {number} initialScale - Scale at gesture start
+ * @returns {number} New scale clamped to [0.5, 3.0]
+ */
+function calculatePinchZoom(currentDistance, initialDistance, initialScale) {
+    if (initialDistance === 0 || initialDistance < 0) {
+        return initialScale;
+    }
+    const ratio = currentDistance / initialDistance;
+    const newScale = initialScale * ratio;
+    return Math.max(0.5, Math.min(3.0, newScale));
+}
+
+// Expose for testing
+if (typeof window !== 'undefined') {
+    window.__testHooks = window.__testHooks || {};
+    window.__testHooks.calculatePinchZoom = calculatePinchZoom;
+}
+
 class DAGRenderer {
     constructor(containerId) {
         this.container = document.getElementById(containerId);
@@ -308,8 +331,7 @@ class DAGRenderer {
                 const dx = e.touches[0].clientX - e.touches[1].clientX;
                 const dy = e.touches[0].clientY - e.touches[1].clientY;
                 const distance = Math.sqrt(dx * dx + dy * dy);
-                this.scale = initialScale * (distance / initialDistance);
-                this.scale = Math.max(0.1, Math.min(this.scale, 3));
+                this.scale = calculatePinchZoom(distance, initialDistance, initialScale);
                 this.updateTransform();
             }
         });

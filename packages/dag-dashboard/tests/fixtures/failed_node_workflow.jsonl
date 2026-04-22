@@ -1,0 +1,5 @@
+{"type": "workflow_start", "workflow_id": "failed-test-run", "timestamp": "2026-04-22T10:00:00Z", "metadata": {"started_by": "test-user"}}
+{"type": "node_start", "workflow_id": "failed-test-run", "node_id": "node_1", "node_name": "data_load", "timestamp": "2026-04-22T10:00:01Z"}
+{"type": "node_complete", "workflow_id": "failed-test-run", "node_id": "node_1", "timestamp": "2026-04-22T10:00:05Z", "status": "success"}
+{"type": "node_start", "workflow_id": "failed-test-run", "node_id": "node_2", "node_name": "transform", "timestamp": "2026-04-22T10:00:06Z"}
+{"type": "node_failed", "workflow_id": "failed-test-run", "node_id": "node_2", "timestamp": "2026-04-22T10:00:10Z", "error": "ValueError: Invalid data format in column 'amount'", "traceback": "  File \"/app/transform.py\", line 42, in process\n    value = float(row['amount'])\nValueError: Invalid data format in column 'amount'"}
