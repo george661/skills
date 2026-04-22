@@ -514,6 +514,7 @@ async function renderWorkflowDetail(runId) {
                 ← Back to Dashboard
             </a>
             <div id="cancel-button-container" class="cancel-button-container"></div>
+            <div id="retry-button-container" class="retry-button-container"></div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
                 <h2 style="margin: 0;">Workflow Detail</h2>
                 <button id="rerun-button" class="btn btn-secondary" style="display: none;">
@@ -575,6 +576,12 @@ async function renderWorkflowDetail(runId) {
         const cancelButtonContainer = document.getElementById('cancel-button-container');
         if (cancelButtonContainer && window.renderCancelButton) {
             window.renderCancelButton(cancelButtonContainer, runId, workflowData.run?.status);
+        }
+
+        // Render retry button if workflow is failed
+        const retryButtonContainer = document.getElementById('retry-button-container');
+        if (retryButtonContainer && window.renderRetryButton) {
+            window.renderRetryButton(retryButtonContainer, runId, workflowData.run?.status);
         }
 
         // Render totals strip
@@ -726,6 +733,14 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel) {
                 if (cancelButtonContainer && window.hideCancelButton) {
                     window.hideCancelButton(cancelButtonContainer);
                 }
+
+                // Show retry button if workflow failed
+                if (eventType === 'workflow_failed') {
+                    const retryButtonContainer = document.getElementById('retry-button-container');
+                    if (retryButtonContainer && window.renderRetryButton) {
+                        window.renderRetryButton(retryButtonContainer, runId, 'failed');
+                    }
+                }
             }
         } catch (error) {
             console.error('Error parsing SSE event:', error, event.data);
@@ -848,6 +863,14 @@ class GateIndicator {
 // Initialize gate indicator
 const gateIndicator = new GateIndicator();
 
+// Initialize search bars
+if (window.SearchBar) {
+    const desktopContainer = document.getElementById('search-bar-container-desktop');
+    const mobileContainer = document.getElementById('search-bar-container-mobile');
+    if (desktopContainer) SearchBar.init(desktopContainer);
+    if (mobileContainer) SearchBar.init(mobileContainer);
+}
+
 // Initialize router
 const router = new Router();
 router.register('/', renderDashboard);
@@ -857,6 +880,11 @@ router.register('/checkpoints', renderCheckpointWorkflows);
 router.register('/checkpoints/:wf', renderCheckpointRuns);
 router.register('/checkpoints/:wf/:runId', renderCheckpointRunDetail);
 router.register('/checkpoints/compare/:wf/:runIdA/:runIdB', renderCheckpointCompare);
+router.register('/settings', function () {
+    if (typeof window.renderSettings === 'function') {
+        window.renderSettings();
+    }
+});
 
 // Mobile menu toggle
 document.getElementById('mobile-menu-toggle')?.addEventListener('click', () => {

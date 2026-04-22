@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 
 from .broadcast import Broadcaster
 from .cancel import create_cancel_router
+from .retry import create_retry_router
 from .chat_relay import ChatRelay
 from .chat_routes import create_chat_router
 from .checkpoint_routes import router as checkpoint_router
@@ -18,6 +19,8 @@ from .config import Settings
 from .database import ensure_dir, init_db
 from .event_collector import EventCollector
 from .notifier import SlackNotifier
+from .search import build_search_router
+from .settings_routes import create_settings_router
 from .sse import create_sse_router
 from .routes import router
 from .trigger import create_trigger_router
@@ -70,6 +73,7 @@ def create_app(
         app.state.events_dir = events_dir
         app.state.chat_relay = chat_relay
         app.state.checkpoint_dir_fallback = checkpoint_dir_fallback
+        app.state.settings = settings
 
         # Create and start event collector
         loop = asyncio.get_running_loop()
@@ -123,6 +127,16 @@ def create_app(
     cancel_router = create_cancel_router(cancel_settings, db_path)
     app.include_router(cancel_router)
 
+    # Register settings routes (always mounted, core functionality)
+    if settings:
+        settings_router = create_settings_router(settings, db_path)
+        app.include_router(settings_router)
+
+    # Register retry routes (requires settings with workflows_dir)
+    if settings:
+        retry_router = create_retry_router(settings, db_path)
+        app.include_router(retry_router)
+
     # Mount static files
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
@@ -157,5 +171,17 @@ def create_app(
         trigger_router = create_trigger_router(settings, db_path)
         app.include_router(trigger_router)
         logger.info("Trigger endpoint enabled")
+
+    # Mount search router (always mounted; auth handled by endpoint)
+    if settings:
+        search_router = build_search_router(
+            settings=settings,
+            db_path_provider=lambda: db_path
+        )
+        app.include_router(search_router)
+        if settings.search_token:
+            logger.info("Search endpoint enabled")
+        else:
+            logger.info("Search endpoint available but not configured (503)")
 
     return app

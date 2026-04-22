@@ -22,6 +22,7 @@ class RunStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     PENDING = "pending"
+    RESUMING = "resuming"
 
 
 class WorkflowRunResponse(BaseModel):
