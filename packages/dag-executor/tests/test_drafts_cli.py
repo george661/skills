@@ -246,6 +246,25 @@ def test_restore_remote_calls_api_with_yes(capsys):
     assert mock_client_instance.post.call_count >= 1
 
 
+def test_restore_remote_non_2xx_exits_1(capsys):
+    """Restore --remote with 400 → exit 1, body printed."""
+    mock_response = Mock(status_code=400, text="Validation failed")
+
+    mock_client_instance = MagicMock()
+    mock_client_instance.post.return_value = mock_response
+    mock_client_instance.__enter__.return_value = mock_client_instance
+    mock_client_instance.__exit__.return_value = None
+
+    with patch("httpx.Client", return_value=mock_client_instance):
+        from dag_executor.drafts_cli import run_drafts
+        with pytest.raises(SystemExit) as exc_info:
+            run_drafts(["restore", "my-workflow", "1234567890", "--remote", "https://api.example.com", "--token", "fake-token", "--yes"])
+        assert exc_info.value.code == 1
+
+    captured = capsys.readouterr()
+    assert "400" in captured.err or "validation" in captured.err.lower()
+
+
 # --- Publish tests ---
 
 

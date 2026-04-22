@@ -146,12 +146,15 @@ def run_drafts_restore(args: Any) -> None:
     if args.remote:
         token = _get_remote_token(args)
         base_url = args.remote.rstrip('/')
-        
+
         with httpx.Client(timeout=30.0) as client:
             # Use publish endpoint to restore (publish IS the restore mechanism)
             url = f"{base_url}/api/workflows/{args.workflow}/drafts/{args.timestamp}/publish"
             response = client.post(url, headers={"Authorization": f"Bearer {token}"})
-            response.raise_for_status()
+
+            if response.status_code != 200 and response.status_code != 201:
+                print(f"Error {response.status_code}: {response.text}", file=sys.stderr)
+                sys.exit(1)
     else:
         # Local mode
         from dag_executor.drafts_fs import read_draft
