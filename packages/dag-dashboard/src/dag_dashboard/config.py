@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     workflows_dir: str = "workflows"  # Raw string from env var
     workflows_dirs: List[Path] = Field(default_factory=list)  # Parsed list, populated by validator
 
+    # Search endpoint settings
+    search_token: Optional[str] = None  # Bearer token for search endpoint auth
+    search_rate_limit_per_min: int = 30  # Rate limit is per-bearer-token
+
     # Slack notification settings
     slack_enabled: bool = False
     slack_webhook_url: Optional[str] = None

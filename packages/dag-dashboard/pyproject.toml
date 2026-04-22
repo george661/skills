@@ -58,3 +58,6 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
 timeout = 15
+markers = [
+    "slow: marks tests as slow, e.g. the 10k-row latency benchmark (deselect with '-m \"not slow\"')",
+]

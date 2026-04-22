@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from dag_executor.cancel import InvalidRunIdError, validate_run_id  # type: ignore[import-untyped]
+from dag_executor.cancel import InvalidRunIdError, validate_run_id
 from .config import Settings
 
 

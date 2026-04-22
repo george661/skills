@@ -28,7 +28,7 @@ from dag_executor import (
 from dag_executor.replay import execute_replay
 from dag_executor.validator import WorkflowValidator
 
-SUBCOMMANDS = {"replay", "history", "inspect", "cancel", "rerun"}
+SUBCOMMANDS = {"replay", "history", "inspect", "cancel", "search", "logs", "rerun"}
 
 
 def _build_list_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -776,6 +776,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             elif subcmd == "cancel":
                 run_cancel(argv[1:])
                 return
+            elif subcmd == "search":
+                run_search(argv[1:])
+                return
+            elif subcmd == "logs":
+                from dag_executor.logs import run_logs
+                sys.exit(run_logs(argv[1:]))
             elif subcmd == "rerun":
                 run_rerun(argv[1:])
                 return
@@ -969,3 +975,78 @@ def main(argv: Optional[List[str]] = None) -> None:
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def run_search(argv: List[str]) -> None:
+    """Run search subcommand."""
+    import argparse
+    import json
+    import os
+    import sqlite3
+    from pathlib import Path
+    
+    parser = argparse.ArgumentParser(prog="dag-exec search")
+    parser.add_argument("query", help="Search query string")
+    parser.add_argument("--kinds", default="runs,nodes,events", help="Comma-separated kinds")
+    parser.add_argument("--limit", type=int, default=50, help="Max results")
+    parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    parser.add_argument("--db", type=Path, help="Database path (local mode)")
+    parser.add_argument("--remote", help="Remote dashboard URL (remote mode)")
+    parser.add_argument("--token", help="Bearer token for remote mode")
+    
+    args = parser.parse_args(argv)
+    
+    # Remote mode
+    if args.remote:
+        import httpx
+        
+        token = args.token or os.environ.get("DAG_EXEC_SEARCH_TOKEN")
+        if not token:
+            print("Error: Remote mode requires --token or DAG_EXEC_SEARCH_TOKEN env var", file=sys.stderr)
+            sys.exit(2)
+        
+        url = f"{args.remote.rstrip('/')}/api/search"
+        response = httpx.get(
+            url,
+            params={"q": args.query, "kinds": args.kinds, "limit": args.limit},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        if response.status_code != 200:
+            print(f"Error: {response.status_code} {response.text}", file=sys.stderr)
+            sys.exit(1)
+        
+        data = response.json()
+        if args.json_output:
+            print(json.dumps(data, indent=2))
+        else:
+            print(f"Found {data['total']} results for '{data['query']}':")
+            for r in data['results']:
+                print(f"  [{r['kind']}] {r['run_id']}: {r['snippet'][:80]}")
+        return
+    
+    # Local mode
+    db_path = args.db
+    if not db_path:
+        db_dir = Path.home() / ".dag-dashboard"
+        db_path = db_dir / "dashboard.db"
+    
+    if not db_path.exists():
+        print(f"Error: Database not found at {db_path}", file=sys.stderr)
+        sys.exit(1)
+    
+    from dag_executor.search_local import search_all
+    
+    conn = sqlite3.connect(str(db_path))
+    try:
+        kinds_list = [k.strip() for k in args.kinds.split(",")]
+        results = search_all(conn, q=args.query, kinds=kinds_list, limit=args.limit)
+        
+        if args.json_output:
+            print(json.dumps({"query": args.query, "total": len(results), "results": results}, indent=2))
+        else:
+            print(f"Found {len(results)} results for '{args.query}':")
+            for r in results:
+                print(f"  [{r['kind']}] {r['run_id']}: {r['snippet'][:80]}")
+    finally:
+        conn.close()
