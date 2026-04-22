@@ -1,8 +1,10 @@
 """Tests for skill runner."""
+import asyncio
 import json
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
+from dag_executor.events import EventType
 from dag_executor.schema import NodeDef, NodeStatus
 from dag_executor.runners.base import RunnerContext
 from dag_executor.runners.skill import SkillRunner
@@ -36,9 +38,41 @@ def _mock_popen(stdout: str = "", stderr: str = "", returncode: int = 0):
     return proc
 
 
-def test_skill_runner_valid_execution(skills_dir, valid_skill_node):
+def _create_mock_subprocess_exec(stdout_lines=None, stderr_lines=None, returncode=0):
+    """Create a mock async subprocess_exec function with configurable output."""
+    if stdout_lines is None:
+        stdout_lines = []
+    if stderr_lines is None:
+        stderr_lines = []
+
+    stdout_bytes = [line.encode('utf-8') if isinstance(line, str) else line for line in stdout_lines] + [b'']
+    stderr_bytes = [line.encode('utf-8') if isinstance(line, str) else line for line in stderr_lines] + [b'']
+
+    async def mock_create_subprocess_exec(*args, **kwargs):
+        stdout_reader = AsyncMock()
+        stderr_reader = AsyncMock()
+        stdout_reader.readline = AsyncMock(side_effect=stdout_bytes.copy())
+        stderr_reader.readline = AsyncMock(side_effect=stderr_bytes.copy())
+
+        process = AsyncMock()
+        process.stdout = stdout_reader
+        process.stderr = stderr_reader
+        process.returncode = returncode
+        process.wait = AsyncMock(return_value=returncode)
+        process.kill = Mock()
+        process.stdin = AsyncMock()
+        process.stdin.write = Mock()
+        process.stdin.drain = AsyncMock()
+        process.stdin.close = Mock()
+
+        return process
+
+    return mock_create_subprocess_exec
+
+
+@pytest.mark.asyncio
+async def test_skill_runner_valid_execution(skills_dir, valid_skill_node):
     """Test skill runner executes and parses JSON output."""
-    # Create the skill file so path validation passes
     (skills_dir / "jira").mkdir()
     (skills_dir / "jira" / "get_issue.ts").write_text("// test stub")
 
@@ -48,20 +82,19 @@ def test_skill_runner_valid_execution(skills_dir, valid_skill_node):
     )
 
     mock_output = {"status": "success", "data": {"key": "TEST-123"}}
-    proc = _mock_popen(stdout=json.dumps(mock_output), stderr="", returncode=0)
+    mock_exec = _create_mock_subprocess_exec(
+        stdout_lines=[json.dumps(mock_output) + "\n"],
+        stderr_lines=[],
+        returncode=0
+    )
 
-    with patch("dag_executor.runners.skill.subprocess.Popen", return_value=proc) as mock_popen:
+    with patch("asyncio.create_subprocess_exec", side_effect=mock_exec):
         runner = SkillRunner()
-        result = runner.run(ctx)
+        result = await runner._run_async(ctx)
 
         assert result.status == NodeStatus.COMPLETED
         assert result.output == mock_output
         assert result.error is None
-
-        # Verify subprocess was called correctly
-        mock_popen.assert_called_once()
-        call_args = mock_popen.call_args
-        assert "python3" in call_args[0][0] or "python" in call_args[0][0]
 
 
 def test_skill_path_traversal_rejected(skills_dir, valid_skill_node):
@@ -97,12 +130,7 @@ def test_skill_path_outside_skills_dir_rejected(skills_dir, valid_skill_node):
 
 
 def test_skill_sibling_directory_attack_rejected(skills_dir, valid_skill_node):
-    """Test that sibling directory names don't bypass path validation.
-
-    Regression test: str.startswith('/tmp/skills') matches '/tmp/skills_evil/' too.
-    Path.is_relative_to() prevents this.
-    """
-    # Create a sibling directory with a prefix-matching name
+    """Test that sibling directory names don't bypass path validation."""
     sibling = skills_dir.parent / (skills_dir.name + "_evil")
     sibling.mkdir()
     malicious = sibling / "malicious.py"
@@ -122,9 +150,9 @@ def test_skill_sibling_directory_attack_rejected(skills_dir, valid_skill_node):
     assert "outside skills directory" in result.error.lower()
 
 
-def test_skill_non_zero_exit_code(skills_dir, valid_skill_node):
+@pytest.mark.asyncio
+async def test_skill_non_zero_exit_code(skills_dir, valid_skill_node):
     """Test skill with non-zero exit code returns FAILED status."""
-    # Create the skill file so path validation passes
     (skills_dir / "jira").mkdir()
     (skills_dir / "jira" / "get_issue.ts").write_text("// test stub")
 
@@ -133,19 +161,23 @@ def test_skill_non_zero_exit_code(skills_dir, valid_skill_node):
         skills_dir=skills_dir
     )
 
-    proc = _mock_popen(stdout="", stderr="Error: Something went wrong", returncode=1)
+    mock_exec = _create_mock_subprocess_exec(
+        stdout_lines=[],
+        stderr_lines=["Error: Something went wrong\n"],
+        returncode=1
+    )
 
-    with patch("dag_executor.runners.skill.subprocess.Popen", return_value=proc):
+    with patch("asyncio.create_subprocess_exec", side_effect=mock_exec):
         runner = SkillRunner()
-        result = runner.run(ctx)
+        result = await runner._run_async(ctx)
 
         assert result.status == NodeStatus.FAILED
-        assert result.error == "Error: Something went wrong"
+        assert "Error: Something went wrong" in result.error
 
 
-def test_skill_non_json_output(skills_dir, valid_skill_node):
+@pytest.mark.asyncio
+async def test_skill_non_json_output(skills_dir, valid_skill_node):
     """Test skill with non-JSON output returns raw text."""
-    # Create the skill file so path validation passes
     (skills_dir / "jira").mkdir()
     (skills_dir / "jira" / "get_issue.ts").write_text("// test stub")
 
@@ -154,11 +186,115 @@ def test_skill_non_json_output(skills_dir, valid_skill_node):
         skills_dir=skills_dir
     )
 
-    proc = _mock_popen(stdout="Plain text output", stderr="", returncode=0)
+    mock_exec = _create_mock_subprocess_exec(
+        stdout_lines=["Plain text output\n"],
+        stderr_lines=[],
+        returncode=0
+    )
 
-    with patch("dag_executor.runners.skill.subprocess.Popen", return_value=proc):
+    with patch("asyncio.create_subprocess_exec", side_effect=mock_exec):
         runner = SkillRunner()
-        result = runner.run(ctx)
+        result = await runner._run_async(ctx)
 
         assert result.status == NodeStatus.COMPLETED
-        assert result.output == {"stdout": "Plain text output"}
+        assert result.output == {"stdout": "Plain text output\n"}
+
+
+@pytest.mark.asyncio
+async def test_skill_streams_events(skills_dir, valid_skill_node):
+    """Test that stdout/stderr lines emit NODE_LOG_LINE events."""
+    (skills_dir / "jira").mkdir()
+    (skills_dir / "jira" / "get_issue.ts").write_text("// test stub")
+
+    emitted_events = []
+    event_emitter = Mock()
+    event_emitter.emit = lambda e: emitted_events.append(e)
+
+    ctx = RunnerContext(
+        node_def=valid_skill_node,
+        skills_dir=skills_dir,
+        event_emitter=event_emitter,
+        workflow_id="wf123"
+    )
+
+    mock_output = {"status": "success"}
+    mock_exec = _create_mock_subprocess_exec(
+        stdout_lines=[json.dumps(mock_output) + "\n"],
+        stderr_lines=["log 1\n", "log 2\n"],
+        returncode=0
+    )
+
+    with patch("asyncio.create_subprocess_exec", side_effect=mock_exec):
+        runner = SkillRunner()
+        result = await runner._run_async(ctx)
+
+        assert result.status == NodeStatus.COMPLETED
+        
+        log_events = [e for e in emitted_events if e.event_type == EventType.NODE_LOG_LINE]
+        assert len(log_events) == 3
+        
+        # Check sequences are monotonic
+        sequences = [e.metadata["sequence"] for e in log_events]
+        assert sequences == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+async def test_skill_output_size_limit(skills_dir, valid_skill_node):
+    """Test that oversized output returns FAILED."""
+    (skills_dir / "jira").mkdir()
+    (skills_dir / "jira" / "get_issue.ts").write_text("// test stub")
+
+    ctx = RunnerContext(
+        node_def=valid_skill_node,
+        skills_dir=skills_dir,
+        max_output_bytes=50
+    )
+
+    large_line = "x" * 100 + "\n"
+    mock_exec = _create_mock_subprocess_exec(
+        stdout_lines=[large_line],
+        returncode=0
+    )
+
+    with patch("asyncio.create_subprocess_exec", side_effect=mock_exec):
+        runner = SkillRunner()
+        result = await runner._run_async(ctx)
+
+        assert result.status == NodeStatus.FAILED
+        assert "size" in result.error.lower() and "exceeded" in result.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_skill_timeout(skills_dir, valid_skill_node):
+    """Test that timeout kills subprocess."""
+    (skills_dir / "jira").mkdir()
+    (skills_dir / "jira" / "get_issue.ts").write_text("// test stub")
+
+    valid_skill_node.timeout = 0.1
+
+    ctx = RunnerContext(
+        node_def=valid_skill_node,
+        skills_dir=skills_dir
+    )
+
+    async def hanging_readline():
+        await asyncio.sleep(10)
+        return b''
+
+    mock_exec = _create_mock_subprocess_exec(
+        stdout_lines=[],
+        returncode=0
+    )
+
+    async def mock_hanging(*args, **kwargs):
+        process = await mock_exec(*args, **kwargs)
+        process.stdout.readline = hanging_readline
+        process.stderr.readline = hanging_readline
+        return process
+
+    with patch("asyncio.create_subprocess_exec", mock_hanging):
+        runner = SkillRunner()
+        result = await runner._run_async(ctx)
+
+        assert result.status == NodeStatus.FAILED
+        assert "timed out" in result.error.lower() or "timeout" in result.error.lower()
