@@ -2757,3 +2757,119 @@ select.form-control {
 .retry-run-btn {
     margin-top: 0.5rem;
 }
+
+/* Workflows page styles */
+.workflows-list-container {
+    padding: 2rem;
+    max-width: 1200px;
+}
+
+.workflow-group {
+    margin-bottom: 2rem;
+}
+
+.source-dir-header {
+    font-size: 1.2rem;
+    color: var(--text-muted);
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.workflow-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1rem;
+}
+
+.workflow-card {
+    padding: 1.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-bg);
+    transition: border-color 0.2s;
+    position: relative;
+}
+
+.workflow-card:hover {
+    border-color: var(--accent);
+}
+
+.workflow-card h3 {
+    margin: 0 0 0.5rem 0;
+    font-size: 1.1rem;
+}
+
+.workflow-card h3 a {
+    color: var(--text);
+    text-decoration: none;
+}
+
+.workflow-card h3 a:hover {
+    color: var(--accent);
+}
+
+.workflow-path {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin: 0;
+    word-break: break-all;
+}
+
+.collision-badge {
+    display: inline-block;
+    background: var(--warning);
+    color: var(--warning-text);
+    padding: 0.2rem 0.5rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    margin-left: 0.5rem;
+}
+
+.workflow-detail-container {
+    padding: 2rem;
+    max-width: 1200px;
+}
+
+.workflow-detail-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+}
+
+.back-link {
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+.back-link:hover {
+    color: var(--accent);
+}
+
+.workflow-yaml pre {
+    background: var(--surface-bg);
+    padding: 1rem;
+    border-radius: var(--radius);
+    overflow-x: auto;
+}
+
+.workflow-actions {
+    margin: 2rem 0;
+}
+
+.workflow-dag {
+    margin-top: 2rem;
+}
+
+#dag-preview-container {
+    min-height: 400px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.empty-state {
+    padding: 3rem;
+    text-align: center;
+    color: var(--text-muted);
+}
