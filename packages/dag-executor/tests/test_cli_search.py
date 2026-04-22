@@ -18,33 +18,55 @@ def test_cli_search_argparse_defaults():
         assert call_args == ['foo']
 
 
-def test_cli_search_local_mode(tmp_path):
-    """Test 15: local mode queries DB directly."""
-    from dag_executor.cli import main
-    from dag_executor.search_local import search_all
-    
-    # Create and seed a test DB
-    db_path = tmp_path / "test.db"
+def _seed_search_db(db_path: Path, run_id: str = "run_abc123") -> None:
+    """Create minimal schema matching what search_local queries (id + columns it LIKEs)."""
     conn = sqlite3.connect(str(db_path))
-    conn.execute("""
+    conn.executescript(
+        """
         CREATE TABLE workflow_runs (
             id TEXT PRIMARY KEY,
             workflow_name TEXT NOT NULL,
             status TEXT NOT NULL,
-            started_at TEXT NOT NULL
-        )
-    """)
+            started_at TEXT NOT NULL,
+            inputs TEXT,
+            error TEXT
+        );
+        CREATE TABLE node_executions (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            node_name TEXT NOT NULL,
+            inputs TEXT,
+            error TEXT
+        );
+        CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            payload TEXT,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
     conn.execute(
         "INSERT INTO workflow_runs (id, workflow_name, status, started_at) VALUES (?, ?, ?, ?)",
-        ("run_abc123", "deploy", "completed", "2026-04-22T10:00:00Z")
+        (run_id, "deploy", "completed", "2026-04-22T10:00:00Z"),
     )
     conn.commit()
     conn.close()
-    
-    # Run CLI in local mode
-    with patch('sys.stdout', new_callable=lambda: Mock(write=lambda x: None)):
-        result = main(['search', 'abc', '--db', str(db_path)])
-        # Just verify it doesn't crash
+
+
+def test_cli_search_local_mode(tmp_path, capsys):
+    """Test 15: local mode queries DB directly."""
+    from dag_executor.cli import main
+
+    db_path = tmp_path / "test.db"
+    _seed_search_db(db_path, run_id="run_abc123")
+
+    main(['search', 'abc', '--db', str(db_path)])
+
+    captured = capsys.readouterr()
+    assert "run_abc123" in captured.out
+    assert "1 results" in captured.out
 
 
 def test_cli_search_remote_mode():
@@ -69,38 +91,20 @@ def test_cli_search_remote_mode():
     assert 'http://localhost:8100/api/search' in mock_get.call_args.args[0]
 
 
-def test_cli_search_json_output(tmp_path):
+def test_cli_search_json_output(tmp_path, capsys):
     """Test 17: --json emits valid JSON."""
     from dag_executor.cli import main
-    import io
-    import sys
-    
-    # Create test DB
-    db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("""
-        CREATE TABLE workflow_runs (
-            id TEXT PRIMARY KEY,
-            workflow_name TEXT NOT NULL,
-            status TEXT NOT NULL,
-            started_at TEXT NOT NULL
-        )
-    """)
-    conn.execute(
-        "INSERT INTO workflow_runs (id, workflow_name, status, started_at) VALUES (?, ?, ?, ?)",
-        ("run_test", "deploy", "completed", "2026-04-22T10:00:00Z")
-    )
-    conn.commit()
-    conn.close()
-    
-    # Capture stdout
-    captured = io.StringIO()
-    with patch('sys.stdout', captured):
-        main(['search', 'test', '--db', str(db_path), '--json'])
 
-    output = captured.getvalue()
-    data = json.loads(output)  # Should not raise
-    assert 'total' in data or isinstance(data, list)
+    db_path = tmp_path / "test.db"
+    _seed_search_db(db_path, run_id="run_test")
+
+    main(['search', 'test', '--db', str(db_path), '--json'])
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["total"] == 1
+    assert data["query"] == "test"
+    assert data["results"][0]["run_id"] == "run_test"
 
 
 def test_cli_search_token_sources():

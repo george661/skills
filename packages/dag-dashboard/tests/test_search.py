@@ -258,7 +258,7 @@ def test_search_latency_10k_db(tmp_path):
     for i in range(10000):
         for j in range(5):
             conn.execute(
-                "INSERT INTO node_executions (id, workflow_run_id, node_id, status, started_at) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO node_executions (id, run_id, node_name, status, started_at) VALUES (?, ?, ?, ?, ?)",
                 (f"node_{i:06d}_{j}", f"run_{i:06d}", f"node_{j}", "completed", "2026-04-22T10:00:00Z")
             )
 
@@ -266,23 +266,29 @@ def test_search_latency_10k_db(tmp_path):
     for i in range(10000):
         for j in range(3):
             conn.execute(
-                "INSERT INTO events (id, workflow_run_id, event_type, timestamp, data) VALUES (?, ?, ?, ?, ?)",
-                (f"event_{i:06d}_{j}", f"run_{i:06d}", "state_change", "2026-04-22T10:00:00Z", "{}")
+                "INSERT INTO events (run_id, event_type, payload, created_at) VALUES (?, ?, ?, ?)",
+                (f"run_{i:06d}", "state_change", "{}", "2026-04-22T10:00:00Z")
             )
 
     conn.commit()
     conn.close()
 
-    settings = Settings(db_dir=tmp_path, search_token="test_token")
+    # Raise rate limit above the 40 calls the benchmark makes (20 warm + 20 measured).
+    settings = Settings(
+        db_dir=tmp_path,
+        search_token="test_token",
+        search_rate_limit_per_min=1000,
+    )
     app = create_app(db_dir=tmp_path, settings=settings)
     client = TestClient(app)
 
     # Warm-up: 20 queries
     for i in range(20):
-        client.get(
+        r = client.get(
             f"/api/search?q=workflow_{i % 10}",
             headers={"Authorization": "Bearer test_token"}
         )
+        assert r.status_code == 200, f"Warm-up query {i} failed: {r.status_code} {r.text}"
 
     # Measure 20 queries
     latencies = []
