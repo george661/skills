@@ -609,3 +609,51 @@ async def get_state_diff_timeline_route(request: Request, run_id: str) -> list[N
             raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
     return [NodeStateDiff(**entry) for entry in timeline]
+
+
+@router.get("/definitions")
+async def get_definitions_list(request: Request) -> list[dict[str, Any]]:
+    """
+    List all workflow definitions across configured workflows directories.
+    
+    Returns:
+        List of workflow definitions with name, source_dir, and collision info.
+    """
+    from .definitions import list_definitions
+    
+    workflows_dirs = request.app.state.workflows_dirs
+    return list_definitions(workflows_dirs)
+
+
+@router.get("/definitions/{name}")
+async def get_definition_detail(name: str, request: Request) -> dict[str, Any]:
+    """
+    Get workflow definition details including YAML source and parsed data.
+    
+    Args:
+        name: Workflow name (without .yaml extension).
+    
+    Returns:
+        Definition dict with name, yaml_source, and parsed data.
+    
+    Raises:
+        HTTPException 400: If name contains invalid characters (traversal attempt).
+        HTTPException 404: If workflow not found.
+    """
+    from .definitions import get_definition
+    
+    workflows_dirs = request.app.state.workflows_dirs
+    
+    try:
+        definition = get_definition(workflows_dirs, name)
+    except ValueError as e:
+        # Invalid name (traversal attempt)
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    if definition is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Workflow '{name}' not found in configured directories"
+        )
+    
+    return definition

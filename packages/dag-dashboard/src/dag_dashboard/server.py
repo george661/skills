@@ -71,6 +71,12 @@ def create_app(
         app.state.events_dir = events_dir
         app.state.chat_relay = chat_relay
         app.state.checkpoint_dir_fallback = checkpoint_dir_fallback
+        # Store workflows_dirs from settings for definitions endpoints
+        if settings:
+            app.state.workflows_dirs = settings.workflows_dirs
+        else:
+            # Default if no settings provided
+            app.state.workflows_dirs = [Path("workflows")]
 
         # Create and start event collector
         loop = asyncio.get_running_loop()
