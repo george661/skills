@@ -95,6 +95,13 @@ def validate_setting_value(key: str, value: Any) -> Optional[str]:
         if not value:
             return "must be non-empty path string"
 
+    elif key == "node_log_line_cap":
+        if not isinstance(value, int):
+            return f"must be integer, got {type(value).__name__}"
+        # 10M ≈ 1 GB at 100 B/line
+        if value < 1 or value > 10_000_000:
+            return "must be between 1 and 10_000_000"
+
     return None
 
 
