@@ -19,9 +19,9 @@ jobs:
         python-version: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v4
         with:
-          python-version: ${{ matrix.python-version }}
+          enable-cache: true
 
       - name: Find packages
         id: packages
@@ -36,23 +36,23 @@ jobs:
         if: steps.packages.outputs.found == 'true'
         run: |
           set -e
-          # Sort packages for deterministic ordering across runs
           pkgs=$(printf '%s\n' "${{ steps.packages.outputs.list }}" | sort -u | sed '/^$/d')
-          # Phase 1: install every package editable in a single pip call, so pip
-          # resolves the inter-package dependency graph (dag-dashboard depends on
-          # dag-executor, which is not on PyPI — only editable installs satisfy
-          # that). Dev extras are added per-package.
+          # Phase 1: single uv call installs every package editable so the
+          # inter-package graph resolves (dag-dashboard depends on dag-executor,
+          # which is not on PyPI — only editable installs satisfy that).
+          uv venv .venv --python ${{ matrix.python-version }}
+          source .venv/bin/activate
           install_args=()
           while IFS= read -r pkg; do
             [ -z "$pkg" ] && continue
             install_args+=(-e "$pkg[dev]")
           done <<< "$pkgs"
           echo "::group::install all packages (editable)"
-          pip install "${install_args[@]}"
+          uv pip install "${install_args[@]}"
           echo "::endgroup::"
           # Phase 2: test and type-check each package. With every package already
-          # editable-installed, mypy can resolve cross-package imports (e.g.
-          # dag_executor → dag_dashboard.notifier) regardless of check order.
+          # editable-installed, mypy resolves cross-package imports regardless of
+          # check order.
           while IFS= read -r pkg; do
             [ -z "$pkg" ] && continue
             echo "::group::check $pkg"

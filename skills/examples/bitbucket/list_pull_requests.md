@@ -8,7 +8,12 @@ List pull requests in a repository with optional state filtering and field selec
 |-----------|----------|-------------|
 | `repo_slug` | Yes | Repository slug |
 | `state` | No | Filter: `OPEN`, `MERGED`, `DECLINED`, `SUPERSEDED` |
+| `source_branch` | No | Filter by source branch name (exact match) |
 | `fields` | No | Comma-separated fields to reduce payload |
+
+> When `source_branch` is set, `state` is folded into Bitbucket's BBQL `q`
+> expression. Bitbucket's plain `state=` param is silently ignored whenever
+> `q` is present, so the skill combines them into one clause.
 
 ## Field Selection
 
@@ -38,6 +43,12 @@ npx tsx .claude/skills/bitbucket-mcp/list_pull_requests.ts '{"repo_slug": "my-re
 
 ```bash
 npx tsx .claude/skills/bitbucket-mcp/list_pull_requests.ts '{"repo_slug": "my-repo", "fields": "values.id,values.title,values.state"}'
+```
+
+### Find a MERGED PR for a specific branch (cleanup-worktrees Tier 2)
+
+```bash
+npx tsx .claude/skills/bitbucket-mcp/list_pull_requests.ts '{"repo_slug": "my-repo", "state": "MERGED", "source_branch": "FOO-123-my-branch"}'
 ```
 
 ## Return Format

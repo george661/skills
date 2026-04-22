@@ -13,11 +13,23 @@ Shared agent workflow components: commands, hooks, skills, agent/team configs, a
 deploy-strategy: github-actions
 validation-type: pipeline-verification
 validation-commands:
-  - pip install -e packages/dag-executor[dev]
-  - pytest packages/dag-executor/tests/ -v
-  - mypy packages/dag-executor/src/
+  - ./scripts/setup-venv.sh
+  - source .venv/bin/activate && pytest packages/dag-executor/tests/ -v
+  - source .venv/bin/activate && mypy packages/dag-executor/src/
   - ruff check hooks/ --select E,F,W --ignore E501
   - shellcheck hooks/*.sh scripts/*.sh
+
+## Python Dev Environment
+
+Each worktree gets its own `.venv/` (uv-managed) to prevent cross-worktree
+shadowing of editable installs. First time in a worktree:
+
+    ./scripts/setup-venv.sh     # creates .venv, editable-installs packages[dev]
+    source .venv/bin/activate
+
+Do NOT `pip install -e packages/...` into miniconda or any shared interpreter —
+other worktrees on the same machine will start importing from the last one
+installed.
 
 ## CI
 
