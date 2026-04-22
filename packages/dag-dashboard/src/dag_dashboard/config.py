@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     slack_channel_id: Optional[str] = None
     dashboard_url: str = "http://127.0.0.1:8100"
 
+    # Event collection settings
+    node_log_line_cap: int = Field(
+        default=50000,
+        description="Max log lines per node. Changes take effect on next dashboard restart."
+    )
+
     @model_validator(mode="after")
     def _parse_workflows_dirs_from_workflows_dir(self) -> "Settings":
         """Parse workflows_dir string into workflows_dirs list."""

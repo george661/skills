@@ -34,6 +34,9 @@ e2e = [
 [project.scripts]
 dag-dashboard = "dag_dashboard.__main__:main"
 
+[tool.uv.sources]
+dag-executor = { path = "../dag-executor", editable = true }
+
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"

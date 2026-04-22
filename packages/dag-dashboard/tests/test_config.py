@@ -77,3 +77,16 @@ def test_fts5_enabled_from_DAG_DASHBOARD_FTS_env_var(
     monkeypatch.setenv("DAG_DASHBOARD_FTS", "true")
     settings = Settings()
     assert settings.fts5_enabled is True
+
+
+def test_node_log_line_cap_default_is_50000() -> None:
+    """Default node_log_line_cap should be 50000."""
+    settings = Settings()
+    assert settings.node_log_line_cap == 50000
+
+
+def test_node_log_line_cap_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DAG_DASHBOARD_NODE_LOG_LINE_CAP should override default."""
+    monkeypatch.setenv("DAG_DASHBOARD_NODE_LOG_LINE_CAP", "75000")
+    settings = Settings()
+    assert settings.node_log_line_cap == 75000

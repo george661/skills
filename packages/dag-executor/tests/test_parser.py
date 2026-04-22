@@ -182,3 +182,45 @@ nodes: not_a_list
             load_workflow_from_string(yaml_str)
         error_str = str(exc_info.value)
         assert "nodes" in error_str or "list" in error_str.lower()
+
+
+def test_reserved_input_name_rejected():
+    """Parser rejects workflow with input name starting with __."""
+    yaml_string = """
+name: test_workflow
+config:
+  checkpoint_prefix: test
+inputs:
+  __reserved:
+    type: string
+    required: true
+nodes:
+  - id: node1
+    name: Test Node
+    type: prompt
+    prompt: "test"
+    model: local
+"""
+    with pytest.raises(ValueError, match='Input names starting with "__" are reserved'):
+        load_workflow_from_string(yaml_string)
+
+
+def test_normal_input_name_accepted():
+    """Parser accepts workflow with normal input names."""
+    yaml_string = """
+name: test_workflow
+config:
+  checkpoint_prefix: test
+inputs:
+  normal_input:
+    type: string
+    required: true
+nodes:
+  - id: node1
+    name: Test Node
+    type: prompt
+    prompt: "test"
+    model: local
+"""
+    workflow = load_workflow_from_string(yaml_string)
+    assert "normal_input" in workflow.inputs

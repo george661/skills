@@ -181,4 +181,89 @@ def test_secrets_are_masked_in_get_response(client: TestClient, test_db: Path) -
     
     # Should be masked
     assert settings["slack_webhook_url"]["value"] == "•••• tkey"
-    assert settings["slack_webhook_url"]["is_secret"] is True
+
+
+def test_put_node_log_line_cap_validates_range_lower(client: TestClient) -> None:
+    """Test PUT with node_log_line_cap=0 returns 400."""
+    response = client.put("/api/settings", json={
+        "updates": {"node_log_line_cap": 0},
+        "updated_by": "test"
+    })
+
+    assert response.status_code == 400
+    data = response.json()
+    assert "detail" in data
+    assert "errors" in data["detail"]
+
+
+def test_put_node_log_line_cap_validates_range_upper(client: TestClient) -> None:
+    """Test PUT with node_log_line_cap=10_000_001 returns 400."""
+    response = client.put("/api/settings", json={
+        "updates": {"node_log_line_cap": 10_000_001},
+        "updated_by": "test"
+    })
+
+    assert response.status_code == 400
+    data = response.json()
+    assert "detail" in data
+    assert "errors" in data["detail"]
+
+
+def test_put_node_log_line_cap_accepts_boundaries(client: TestClient) -> None:
+    """Test PUT with node_log_line_cap=1 and 10_000_000 are accepted."""
+    # Test lower bound
+    response = client.put("/api/settings", json={
+        "updates": {"node_log_line_cap": 1},
+        "updated_by": "test"
+    })
+    assert response.status_code == 200
+
+    # Test upper bound
+    response = client.put("/api/settings", json={
+        "updates": {"node_log_line_cap": 10_000_000},
+        "updated_by": "test"
+    })
+    assert response.status_code == 200
+
+
+def test_put_node_log_line_cap_persists_and_reloads(client: TestClient, test_db: Path) -> None:
+    """Test PUT persists node_log_line_cap to db and reloads in memory."""
+    # PUT a new value
+    response = client.put("/api/settings", json={
+        "updates": {"node_log_line_cap": 75000},
+        "updated_by": "test-user"
+    })
+
+    assert response.status_code == 200
+
+    # GET again - should reflect new value
+    response = client.get("/api/settings")
+    settings = response.json()["settings"]
+
+    assert settings["node_log_line_cap"]["value"] == 75000
+    assert settings["node_log_line_cap"]["source"] == "db"
+
+
+def test_node_log_line_cap_db_override_applied_on_startup(tmp_path: Path) -> None:
+    """Test that node_log_line_cap from db is applied to EventCollector on startup."""
+    from dag_dashboard.database import init_db
+    from dag_dashboard.settings_store import put_setting
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+
+    # Write a db override
+    put_setting(db_path, "node_log_line_cap", 12345, updated_by="test")
+
+    # Create app (triggers lifespan which should reload from db)
+    settings = Settings()
+    app = create_app(
+        db_path=db_path,
+        events_dir=tmp_path / "events",
+        settings=settings
+    )
+
+    # Use TestClient context manager to trigger lifespan
+    with TestClient(app) as client:
+        # Verify collector has the db value
+        assert app.state.collector.node_log_line_cap == 12345

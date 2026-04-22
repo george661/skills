@@ -430,6 +430,24 @@ class EventCollector:
                 (run_id, event_type, payload, created_at)
             )
 
+            # Handle node_started event: update node_executions with resolved model
+            if event_type == "node_started":
+                try:
+                    node_id_raw = event_data.get("node_id")
+                    model = event_data.get("model")
+                    if node_id_raw and model:
+                        execution_id = f"{run_id}:{node_id_raw}"
+                        cursor.execute(
+                            """
+                            UPDATE node_executions
+                            SET model = ?, status = 'running', started_at = ?
+                            WHERE id = ?
+                            """,
+                            (model, created_at, execution_id)
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to update node_executions.model for node_started event: {e}")
+
             # Handle channel events
             if event_type == "channel_updated" and isinstance(raw_payload, dict):
                 try:

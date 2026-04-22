@@ -93,6 +93,17 @@ class Router {
             }
         }
 
+        if (hash.startsWith('/workflow-trigger/')) {
+            const name = hash.split('/')[2];
+            if (name) {
+                this.currentRoute = '/workflow-trigger/:name';
+                if (this.routes['/workflow-trigger/:name']) {
+                    this.routes['/workflow-trigger/:name'](name);
+                }
+                return;
+            }
+        }
+
         if (hash.startsWith('/workflow/')) {
             const runId = hash.split('/')[2];
             this.currentRoute = '/workflow/:runId';
@@ -687,6 +698,34 @@ async function renderWorkflowDetail(runId) {
             renderFailureBanner(workflowData.run, layoutData.nodes);
         }
 
+        // Render model override banner if present
+        if (workflowData.run && workflowData.run.inputs) {
+            let parsedInputs;
+            try {
+                parsedInputs = typeof workflowData.run.inputs === 'string'
+                    ? JSON.parse(workflowData.run.inputs)
+                    : workflowData.run.inputs;
+            } catch (e) {
+                parsedInputs = null;
+            }
+
+            if (parsedInputs && parsedInputs.__model_override__) {
+                const banner = document.createElement('div');
+                banner.className = 'model-override-banner';
+                banner.innerHTML = `
+                    Running with model override: <strong>${escapeHtml(parsedInputs.__model_override__)}</strong>
+                `;
+
+                // Insert before the executing-banner or dag-container
+                const executingBanner = document.getElementById('executing-banner');
+                const dagContainer = document.getElementById('dag-container');
+                const insertBefore = executingBanner || dagContainer;
+                if (insertBefore && insertBefore.parentNode) {
+                    insertBefore.parentNode.insertBefore(banner, insertBefore);
+                }
+            }
+        }
+
         // Render DAG
         const dagRenderer = new window.DAGRenderer('dag-container');
         dagRenderer.render(layoutData);
@@ -970,6 +1009,7 @@ router.register('/', renderDashboard);
 router.register('/history', renderHistory);
 router.register('/workflows', window.renderWorkflowsList);
 router.register('/workflows/:name', window.renderWorkflowDetail);
+router.register('/workflow-trigger/:name', window.renderWorkflowTriggerForm);
 router.register('/workflow/:runId', renderWorkflowDetail);
 router.register('/checkpoints', renderCheckpointWorkflows);
 router.register('/checkpoints/:wf', renderCheckpointRuns);
