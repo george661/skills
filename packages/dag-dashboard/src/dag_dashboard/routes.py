@@ -20,6 +20,7 @@ from .queries import (
     get_state_diff_timeline, get_checkpoint_comparison,
     list_run_artifacts,
     get_nodes_by_names, get_run_for_rerun, insert_run,
+    get_node_log_lines, count_node_log_lines,
 )
 from .layout import compute_layout
 
@@ -249,6 +250,54 @@ async def get_node_checkpoint(
         raise HTTPException(status_code=404, detail="No checkpoint data for this node")
 
     return comparison
+
+
+@router.get("/workflows/{run_id}/nodes/{node_id}/logs")
+async def get_node_logs(
+    request: Request,
+    run_id: str,
+    node_id: str,
+    limit: int = Query(500, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    stream: str = Query("all", pattern="^(all|stdout|stderr)$")
+) -> Dict[str, Any]:
+    """Get log lines for a specific node execution.
+    
+    Returns paginated log lines from the events table. Lines are ordered by sequence number.
+    
+    Query parameters:
+    - limit: Max lines to return (1-1000, default 500)
+    - offset: Skip this many lines for pagination (default 0)
+    - stream: Filter by stream - 'all', 'stdout', or 'stderr' (default 'all')
+    
+    Response includes:
+    - lines: Array of {sequence, stream, line, timestamp}
+    - total: Total log lines for this node (considering stream filter)
+    - limit: Echo of limit parameter
+    - offset: Echo of offset parameter
+    - has_more: Boolean indicating if more lines are available
+    """
+    db_path = get_db_path(request)
+    
+    # Verify node exists
+    node = get_node(db_path, node_id)
+    if node is None or node["run_id"] != run_id:
+        raise HTTPException(status_code=404, detail="Node execution not found")
+    
+    # Get log lines with pagination and stream filter
+    lines = get_node_log_lines(db_path, run_id, node_id, limit, offset, stream)
+
+    # Total count via COUNT(*) so pagination metadata is cheap even for large runs.
+    total = count_node_log_lines(db_path, run_id, node_id, stream_filter=stream)
+
+    return {
+        "lines": lines,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": (offset + len(lines)) < total
+    }
+
 
 
 @router.get("/workflows/{run_id}/layout")
@@ -524,7 +573,7 @@ async def resume_interrupt(
     body: InterruptResumeRequest,
 ) -> Dict[str, Any]:
     """Resume an interrupted workflow by injecting a resume value."""
-    from dag_executor.checkpoint import CheckpointStore  # type: ignore[import-untyped]
+    from dag_executor.checkpoint import CheckpointStore
     import yaml
 
     db_path = get_db_path(request)
@@ -625,3 +674,77 @@ async def get_state_diff_timeline_route(request: Request, run_id: str) -> list[N
             raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
     return [NodeStateDiff(**entry) for entry in timeline]
+
+
+@router.get("/definitions")
+async def get_definitions_list(request: Request) -> list[dict[str, Any]]:
+    """
+    List all workflow definitions across configured workflows directories.
+
+
+    Returns:
+        List of workflow definitions with name, source_dir, metadata, and collision info.
+    """
+    from .definitions import list_definitions
+
+    workflows_dirs = request.app.state.workflows_dirs
+    db_path = request.app.state.db_path
+    return list_definitions(workflows_dirs, db_path=db_path)
+
+
+@router.get("/definitions/{name}")
+async def get_definition_detail(name: str, request: Request) -> dict[str, Any]:
+    """
+    Get workflow definition details including YAML source and parsed data.
+
+    Args:
+        name: Workflow name (without .yaml extension).
+
+    Returns:
+        Definition dict with name, yaml_source, parsed data, and layout.
+
+    Raises:
+        HTTPException 400: If name contains invalid characters (traversal attempt).
+        HTTPException 404: If workflow not found.
+    """
+    from .definitions import get_definition, DefinitionParseError
+    from .layout import compute_layout
+
+    workflows_dirs = request.app.state.workflows_dirs
+
+    try:
+        definition = get_definition(workflows_dirs, name)
+    except ValueError as e:
+        # Invalid name (traversal attempt)
+        raise HTTPException(status_code=400, detail=str(e))
+    except DefinitionParseError as e:
+        # Workflow file exists but YAML is invalid
+        raise HTTPException(status_code=500, detail=f"Workflow YAML parse error: {str(e)}")
+
+    if definition is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Workflow '{name}' not found in configured directories"
+        )
+
+    # Compute layout from parsed YAML
+    parsed = definition.get("parsed", {})
+    nodes_raw = parsed.get("nodes", [])
+
+    # Convert parsed nodes to the format compute_layout expects
+    nodes_for_layout = []
+    for node in nodes_raw:
+        node_dict = {
+            "node_name": node.get("id"),
+            "depends_on": node.get("depends_on", []),
+            "status": "pending",
+            "id": node.get("id"),
+            "run_id": "",
+        }
+        nodes_for_layout.append(node_dict)
+
+    # Compute layout
+    layout = compute_layout(nodes_for_layout)
+    definition["layout"] = layout
+
+    return definition

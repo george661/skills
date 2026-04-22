@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from dag_executor.cancel import InvalidRunIdError, validate_run_id  # type: ignore[import-untyped]
+from dag_executor.cancel import InvalidRunIdError, validate_run_id
 from .config import Settings
 
 
@@ -23,7 +23,7 @@ def create_retry_router(settings: Settings, db_path: Path) -> APIRouter:
     """Create retry API router.
 
     Args:
-        settings: Dashboard Settings instance with events_dir and workflows_dir
+        settings: Dashboard Settings instance with events_dir and workflows_dirs
         db_path: Path to SQLite database
 
     Returns:
@@ -31,7 +31,7 @@ def create_retry_router(settings: Settings, db_path: Path) -> APIRouter:
     """
     router = APIRouter()
     events_dir = settings.events_dir
-    workflows_dir = settings.workflows_dir
+    workflows_dirs = settings.workflows_dirs
     events_dir.mkdir(parents=True, exist_ok=True)
 
     @router.post("/api/workflows/{run_id}/retry", response_model=RetryResponse)
@@ -78,12 +78,18 @@ def create_retry_router(settings: Settings, db_path: Path) -> APIRouter:
                     detail=f"Cannot retry run in state {current_status}"
                 )
 
-            # Resolve workflow file
-            workflow_file = workflows_dir / f"{workflow_name}.yaml"
-            if not workflow_file.exists():
+            # Resolve workflow file (search across all configured dirs)
+            workflow_file = None
+            for workflows_dir in workflows_dirs:
+                candidate = workflows_dir / f"{workflow_name}.yaml"
+                if candidate.exists():
+                    workflow_file = candidate
+                    break
+
+            if not workflow_file:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Workflow file {workflow_file} not found"
+                    detail=f"Workflow file {workflow_name}.yaml not found in configured directories"
                 )
 
             # Update workflow_runs: reset to resuming state

@@ -5,10 +5,8 @@ import hashlib
 import json
 import os
 import re
-import time
-from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
@@ -17,6 +15,7 @@ import yaml
 
 from .config import Settings
 from .queries import insert_run
+from .rate_limit import RateLimiter  # Back-compat re-export
 
 
 class TriggerRequest(BaseModel):
@@ -29,32 +28,6 @@ class TriggerRequest(BaseModel):
 class TriggerResponse(BaseModel):
     """Response model for trigger endpoint."""
     run_id: str
-
-
-class RateLimiter:
-    """In-memory sliding-window rate limiter keyed by source."""
-
-    def __init__(self, requests_per_minute: int):
-        self.requests_per_minute = requests_per_minute
-        self.requests: Dict[str, list[float]] = defaultdict(list)
-
-    def is_allowed(self, source: str) -> bool:
-        """Check if request from source is allowed under rate limit."""
-        now = time.time()
-        window_start = now - 60  # 60 seconds sliding window
-
-        # Remove expired timestamps
-        self.requests[source] = [
-            ts for ts in self.requests[source] if ts > window_start
-        ]
-
-        # Check if under limit
-        if len(self.requests[source]) >= self.requests_per_minute:
-            return False
-
-        # Record this request
-        self.requests[source].append(now)
-        return True
 
 
 def verify_hmac_signature(request: Request, body: bytes, secret: str) -> None:
@@ -93,9 +66,10 @@ def verify_hmac_signature(request: Request, body: bytes, secret: str) -> None:
         )
 
 
-def validate_workflow_path(workflow: str, workflows_dir: Path) -> Path:
+def validate_workflow_path(workflow: str, workflows_dirs: List[Path]) -> Path:
     """Validate workflow name and resolve to file path.
 
+    Searches across multiple workflows directories (first match wins).
     Rejects path traversal attempts and ensures workflow file exists.
     """
     # Reject path traversal characters and dots (prevents .yaml.yaml issue)
@@ -112,10 +86,20 @@ def validate_workflow_path(workflow: str, workflows_dir: Path) -> Path:
             detail="Invalid workflow name: must contain only alphanumeric characters and hyphens"
         )
 
-    # Resolve workflow file path
-    workflow_file = workflows_dir / f"{workflow}.yaml"
+    # Search for workflow file across configured directories (first match wins)
+    for workflows_dir in workflows_dirs:
+        workflow_file = workflows_dir / f"{workflow}.yaml"
+        if workflow_file.exists():
+            # Found it - validate and return
+            break
+    else:
+        # Not found in any directory
+        raise HTTPException(
+            status_code=400,
+            detail=f"Workflow '{workflow}' not found in configured directories"
+        )
 
-    # Ensure resolved path is under workflows_dir (defense in depth)
+    # Ensure resolved path is under its source workflows_dir (defense in depth)
     try:
         workflow_file = workflow_file.resolve()
         workflow_file.relative_to(workflows_dir.resolve())
@@ -123,13 +107,6 @@ def validate_workflow_path(workflow: str, workflows_dir: Path) -> Path:
         raise HTTPException(
             status_code=400,
             detail="Invalid workflow path: must be under workflows directory"
-        )
-
-    # Check file exists
-    if not workflow_file.exists():
-        raise HTTPException(
-            status_code=400,
-            detail=f"Workflow file not found: {workflow}.yaml"
         )
 
     return workflow_file
@@ -141,7 +118,7 @@ def validate_workflow_inputs(workflow_file: Path, inputs: Dict[str, Any]) -> Non
     Uses dag_executor.parser to parse workflow and Pydantic validation.
     """
     try:
-        from dag_executor.parser import load_workflow  # type: ignore[import-untyped]
+        from dag_executor.parser import load_workflow
         from pydantic import ValidationError
     except ImportError as e:
         raise HTTPException(
@@ -227,7 +204,7 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
             )
 
         # Validate workflow path and get file
-        workflow_file = validate_workflow_path(request_body.workflow, settings.workflows_dir)
+        workflow_file = validate_workflow_path(request_body.workflow, settings.workflows_dirs)
 
         # Validate inputs against workflow definition
         validate_workflow_inputs(workflow_file, request_body.inputs)

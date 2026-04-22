@@ -82,6 +82,17 @@ class Router {
         });
 
         // Handle parameterized routes
+        if (hash.startsWith('/workflows/')) {
+            const name = hash.split('/')[2];
+            if (name) {
+                this.currentRoute = '/workflows/:name';
+                if (this.routes['/workflows/:name']) {
+                    this.routes['/workflows/:name'](name);
+                }
+                return;
+            }
+        }
+
         if (hash.startsWith('/workflow/')) {
             const runId = hash.split('/')[2];
             this.currentRoute = '/workflow/:runId';
@@ -945,15 +956,30 @@ class GateIndicator {
 // Initialize gate indicator
 const gateIndicator = new GateIndicator();
 
+// Initialize search bars
+if (window.SearchBar) {
+    const desktopContainer = document.getElementById('search-bar-container-desktop');
+    const mobileContainer = document.getElementById('search-bar-container-mobile');
+    if (desktopContainer) SearchBar.init(desktopContainer);
+    if (mobileContainer) SearchBar.init(mobileContainer);
+}
+
 // Initialize router
 const router = new Router();
 router.register('/', renderDashboard);
 router.register('/history', renderHistory);
+router.register('/workflows', window.renderWorkflowsList);
+router.register('/workflows/:name', window.renderWorkflowDetail);
 router.register('/workflow/:runId', renderWorkflowDetail);
 router.register('/checkpoints', renderCheckpointWorkflows);
 router.register('/checkpoints/:wf', renderCheckpointRuns);
 router.register('/checkpoints/:wf/:runId', renderCheckpointRunDetail);
 router.register('/checkpoints/compare/:wf/:runIdA/:runIdB', renderCheckpointCompare);
+router.register('/settings', function () {
+    if (typeof window.renderSettings === 'function') {
+        window.renderSettings();
+    }
+});
 
 // Mobile menu toggle
 document.getElementById('mobile-menu-toggle')?.addEventListener('click', () => {

@@ -94,7 +94,7 @@ def test_app():
         from dag_dashboard.config import Settings
         settings = Settings(
             events_dir=events_dir,
-            workflows_dir=workflows_dir
+            workflows_dir=str(workflows_dir)
         )
         
         app = create_app(db_path=db_path, settings=settings)
@@ -144,7 +144,7 @@ def test_retry_api_404_for_unknown_run():
         init_db(db_path)
         
         from dag_dashboard.config import Settings
-        settings = Settings(events_dir=events_dir, workflows_dir=workflows_dir)
+        settings = Settings(events_dir=events_dir, workflows_dir=str(workflows_dir))
         app = create_app(db_path=db_path, settings=settings)
         client = TestClient(app)
         
@@ -208,7 +208,7 @@ def test_retry_api_rejects_malformed_run_id():
         init_db(db_path)
         
         from dag_dashboard.config import Settings
-        settings = Settings(events_dir=events_dir, workflows_dir=workflows_dir)
+        settings = Settings(events_dir=events_dir, workflows_dir=str(workflows_dir))
         app = create_app(db_path=db_path, settings=settings)
         client = TestClient(app)
         
@@ -269,7 +269,7 @@ def test_retry_api_returns_500_if_workflow_yaml_missing():
         conn.close()
         
         from dag_dashboard.config import Settings
-        settings = Settings(events_dir=events_dir, workflows_dir=workflows_dir)
+        settings = Settings(events_dir=events_dir, workflows_dir=str(workflows_dir))
         app = create_app(db_path=db_path, settings=settings)
         client = TestClient(app)
         

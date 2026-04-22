@@ -6,8 +6,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from dag_executor.cancel import InvalidRunIdError, validate_run_id, write_cancel_marker  # type: ignore[import-untyped]
-
+from dag_executor.cancel import InvalidRunIdError, validate_run_id, write_cancel_marker
 
 class CancelResponse(BaseModel):
     """Response for cancel request."""

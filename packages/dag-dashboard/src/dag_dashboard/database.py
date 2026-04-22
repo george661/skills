@@ -121,6 +121,15 @@ CREATE TABLE IF NOT EXISTS node_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_node_logs_run_node_seq
     ON node_logs(run_id, node_id, sequence);
+
+-- 10. dashboard_settings: Operator-editable runtime settings
+CREATE TABLE IF NOT EXISTS dashboard_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    is_secret INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT
+);
 """
 
 

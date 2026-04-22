@@ -3,7 +3,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Dict, Optional
+from typing import AsyncIterator, Dict, List, Optional
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +19,8 @@ from .config import Settings
 from .database import ensure_dir, init_db
 from .event_collector import EventCollector
 from .notifier import SlackNotifier
+from .search import build_search_router
+from .settings_routes import create_settings_router
 from .sse import create_sse_router
 from .routes import router
 from .trigger import create_trigger_router
@@ -37,6 +39,7 @@ def create_app(
     checkpoint_prefix: Optional[Path] = None,
     settings: Optional[Settings] = None,
     checkpoint_dir_fallback: Optional[str] = None,
+    workflows_dirs: Optional[List[Path]] = None,
 ) -> FastAPI:
     """Create and configure FastAPI application."""
 
@@ -71,6 +74,15 @@ def create_app(
         app.state.events_dir = events_dir
         app.state.chat_relay = chat_relay
         app.state.checkpoint_dir_fallback = checkpoint_dir_fallback
+        app.state.settings = settings
+        # Store workflows_dirs for definitions endpoints.
+        # Explicit workflows_dirs kwarg takes precedence (used by tests).
+        if workflows_dirs is not None:
+            app.state.workflows_dirs = workflows_dirs
+        elif settings:
+            app.state.workflows_dirs = settings.workflows_dirs
+        else:
+            app.state.workflows_dirs = [Path("workflows")]
 
         # Create and start event collector
         loop = asyncio.get_running_loop()
@@ -103,10 +115,20 @@ def create_app(
     )
 
     # Store db_dir, events_dir, and checkpoint state in app state for lifespan and route access
-    app.state.db_dir = db_dir
+    app.state.db_path = db_path
+    app.state.db_dir = db_dir if db_dir else db_path.parent
     app.state.events_dir = events_dir
     app.state.checkpoint_prefix = checkpoint_prefix
     app.state.checkpoint_dir_fallback = checkpoint_dir_fallback
+
+    # Store workflows_dirs up front so routes can access it without waiting for lifespan
+    # (TestClient does not always trigger lifespan startup).
+    if workflows_dirs is not None:
+        app.state.workflows_dirs = workflows_dirs
+    elif settings:
+        app.state.workflows_dirs = settings.workflows_dirs
+    else:
+        app.state.workflows_dirs = [Path("workflows")]
 
     # Register routes
     app.include_router(router)
@@ -123,6 +145,11 @@ def create_app(
     cancel_settings = type('Settings', (), {'events_dir': events_dir})()
     cancel_router = create_cancel_router(cancel_settings, db_path)
     app.include_router(cancel_router)
+
+    # Register settings routes (always mounted, core functionality)
+    if settings:
+        settings_router = create_settings_router(settings, db_path)
+        app.include_router(settings_router)
 
     # Register retry routes (requires settings with workflows_dir)
     if settings:
@@ -163,5 +190,17 @@ def create_app(
         trigger_router = create_trigger_router(settings, db_path)
         app.include_router(trigger_router)
         logger.info("Trigger endpoint enabled")
+
+    # Mount search router (always mounted; auth handled by endpoint)
+    if settings:
+        search_router = build_search_router(
+            settings=settings,
+            db_path_provider=lambda: db_path
+        )
+        app.include_router(search_router)
+        if settings.search_token:
+            logger.info("Search endpoint enabled")
+        else:
+            logger.info("Search endpoint available but not configured (503)")
 
     return app
