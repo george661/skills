@@ -606,6 +606,14 @@ class EventCollector:
             card = slack_formatter.format_gate_pending(
                 workflow_name, run_id, node_name, condition, self.dashboard_url
             )
+        elif event_type == "approval_resolved":
+            node_name = str(payload.get("node_name", "") or "")
+            decision = str(payload.get("decision", "") or "")
+            decided_by = str(payload.get("decided_by", "") or "")
+            source = str(payload.get("source", "") or "")
+            card = slack_formatter.format_approval_resolved(
+                workflow_name, run_id, node_name, decision, decided_by, source, self.dashboard_url
+            )
 
         if card is None:
             return

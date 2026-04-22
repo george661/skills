@@ -2,7 +2,6 @@
 import argparse
 import os
 import json
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -17,7 +16,6 @@ from dag_executor import (
     resume_workflow,
     topological_sort_with_layers,
     CheckpointStore,
-    CheckpointMetadata,
     WorkflowResult,
     WorkflowEvent,
     NodeStatus,

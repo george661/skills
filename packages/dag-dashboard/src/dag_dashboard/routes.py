@@ -1,8 +1,8 @@
 """FastAPI routes for workflow dashboard."""
 import asyncio
 import json
+import logging
 import os
-import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +28,8 @@ from .queries import (
     get_node_log_lines, count_node_log_lines,
 )
 from .layout import compute_layout
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -444,9 +446,9 @@ async def approve_gate(
             resume_key = interrupt_checkpoint.resume_key
             resume_values = {resume_key: True}
             store.save_resume_values(run["workflow_name"], run_id, resume_values)
-    except Exception:
+    except (FileNotFoundError, ValueError) as e:
         # If checkpoint loading fails, continue without resume_values
-        pass
+        logger.warning(f"Could not save resume_values for {run_id}: {e}")
 
     # Append NDJSON events to {run_id}.ndjson for executor signaling
     event_file = events_dir / f"{run_id}.ndjson"
@@ -550,9 +552,9 @@ async def reject_gate(
             resume_key = interrupt_checkpoint.resume_key
             resume_values = {resume_key: False}
             store.save_resume_values(run["workflow_name"], run_id, resume_values)
-    except Exception:
+    except (FileNotFoundError, ValueError) as e:
         # If checkpoint loading fails, continue without resume_values
-        pass
+        logger.warning(f"Could not save resume_values for {run_id}: {e}")
 
     # Append NDJSON events to {run_id}.ndjson for executor signaling
     event_file = events_dir / f"{run_id}.ndjson"

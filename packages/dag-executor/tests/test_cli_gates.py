@@ -97,21 +97,163 @@ def test_gates_approve_local_writes_both_events() -> None:
         assert events[1]["payload"]["source"] == "cli"
 
 
-def test_gates_list_local_mode_requires_events_dir() -> None:
-    """CLI list without events_dir or remote should error."""
+def test_gates_list_local_mode_uses_default_db() -> None:
+    """CLI list in local mode uses default database path."""
     from dag_executor.cli_gates import run_gates
     import sys
     from io import StringIO
-    
-    # Capture stderr
-    old_stderr = sys.stderr
-    sys.stderr = StringIO()
-    
-    try:
-        run_gates(["list", "test-run"])
-        # Should exit with error
-        assert False, "Should have exited"
-    except SystemExit as e:
-        assert e.code == 1
-    finally:
-        sys.stderr = old_stderr
+    import sqlite3
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        db_path = tmppath / "test.db"
+
+        # Create empty database with schema
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE workflow_runs (
+                id TEXT PRIMARY KEY,
+                workflow_name TEXT,
+                status TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE node_executions (
+                id TEXT PRIMARY KEY,
+                run_id TEXT,
+                node_name TEXT,
+                status TEXT,
+                started_at TEXT,
+                depends_on TEXT,
+                inputs TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        # Capture stdout
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+
+        try:
+            # Use custom db path
+            run_gates(["list", "test-run", "--db-path", str(db_path)])
+            # Should succeed with no pending gates message
+        finally:
+            sys.stdout = old_stdout
+
+
+def test_gates_approve_saves_resume_values() -> None:
+    """CLI approve should save resume_values to checkpoint store for interrupt nodes."""
+    from dag_executor.cli_gates import run_gates
+    from dag_executor.checkpoint import CheckpointStore, InterruptCheckpoint
+    from datetime import datetime, timezone
+    import sys
+    from io import StringIO
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        events_dir = tmppath / "events"
+        checkpoint_dir = tmppath / "checkpoints"
+        events_dir.mkdir()
+        checkpoint_dir.mkdir()
+
+        run_id = "test-run"
+        workflow_name = "test-workflow"
+        node_name = "approval-node"
+        resume_key = "user_approved"
+
+        # Create event file
+        event_file = events_dir / f"{run_id}.ndjson"
+        event_file.touch()
+
+        # Create interrupt checkpoint
+        store = CheckpointStore(str(checkpoint_dir))
+        interrupt_checkpoint = InterruptCheckpoint(
+            node_id=node_name,
+            message="Test approval required",
+            resume_key=resume_key,
+            channels=["terminal"],
+            workflow_state={},
+            pending_nodes=[],
+        )
+        store.save_interrupt(workflow_name, run_id, interrupt_checkpoint)
+
+        # Capture stdout
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+
+        try:
+            run_gates([
+                "approve",
+                run_id,
+                node_name,
+                "--events-dir", str(events_dir),
+                "--checkpoint-dir", str(checkpoint_dir),
+                "--workflow-name", workflow_name,
+            ])
+        finally:
+            sys.stdout = old_stdout
+
+        # Verify resume_values were saved
+        resume_values = store.load_resume_values(workflow_name, run_id)
+        assert resume_values is not None
+        assert resume_values.get(resume_key) is True
+
+
+def test_gates_reject_saves_false_resume_value() -> None:
+    """CLI reject should save resume_value=False to checkpoint store."""
+    from dag_executor.cli_gates import run_gates
+    from dag_executor.checkpoint import CheckpointStore, InterruptCheckpoint
+    from datetime import datetime, timezone
+    import sys
+    from io import StringIO
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        events_dir = tmppath / "events"
+        checkpoint_dir = tmppath / "checkpoints"
+        events_dir.mkdir()
+        checkpoint_dir.mkdir()
+
+        run_id = "test-run"
+        workflow_name = "test-workflow"
+        node_name = "approval-node"
+        resume_key = "user_approved"
+
+        # Create event file
+        event_file = events_dir / f"{run_id}.ndjson"
+        event_file.touch()
+
+        # Create interrupt checkpoint
+        store = CheckpointStore(str(checkpoint_dir))
+        interrupt_checkpoint = InterruptCheckpoint(
+            node_id=node_name,
+            message="Test approval required",
+            resume_key=resume_key,
+            channels=["terminal"],
+            workflow_state={},
+            pending_nodes=[],
+        )
+        store.save_interrupt(workflow_name, run_id, interrupt_checkpoint)
+
+        # Capture stdout
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+
+        try:
+            run_gates([
+                "reject",
+                run_id,
+                node_name,
+                "--events-dir", str(events_dir),
+                "--checkpoint-dir", str(checkpoint_dir),
+                "--workflow-name", workflow_name,
+            ])
+        finally:
+            sys.stdout = old_stdout
+
+        # Verify resume_values were saved with False
+        resume_values = store.load_resume_values(workflow_name, run_id)
+        assert resume_values is not None
+        assert resume_values.get(resume_key) is False

@@ -790,3 +790,69 @@ def test_event_collector_skips_self_referential_parent_run_id(
     assert row is not None
     assert row[0] is None
     assert any("self-referential" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["cli", "api", "slack"])
+async def test_collector_handles_approval_resolved_from_all_sources(
+    test_db: Path,
+    events_dir: Path,
+    broadcaster: Broadcaster,
+    source: str,
+) -> None:
+    """Test that approval_resolved events are handled identically regardless of source."""
+    # Insert workflow run
+    conn = sqlite3.connect(test_db)
+    conn.execute(
+        "INSERT INTO workflow_runs (id, workflow_name, status, started_at) VALUES (?, ?, ?, ?)",
+        ("run-1", "test-wf", "running", "2026-04-22T12:00:00Z"),
+    )
+    conn.execute(
+        "INSERT INTO node_executions (id, run_id, node_name, status) VALUES (?, ?, ?, ?)",
+        ("run-1:gate-1", "run-1", "gate-1", "interrupted"),
+    )
+    conn.commit()
+    conn.close()
+
+    # Create event file with approval_resolved event
+    event_file = events_dir / "run-1.ndjson"
+    event = {
+        "event_type": "approval_resolved",
+        "payload": json.dumps({
+            "node_name": "gate-1",
+            "decision": "approved",
+            "decided_by": "alice",
+            "source": source,
+        }),
+        "created_at": "2026-04-22T12:05:00Z",
+    }
+    with open(event_file, "w") as f:
+        f.write(json.dumps(event) + "\n")
+
+    # Start collector
+    loop = asyncio.get_event_loop()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop,
+    )
+    collector.start()
+
+    try:
+        # Wait for processing
+        await asyncio.sleep(0.2)
+
+        # Verify identical handling regardless of source
+        # The event should be processed and no errors should occur
+        conn = sqlite3.connect(test_db)
+        cursor = conn.execute("SELECT status FROM node_executions WHERE id = ?", ("run-1:gate-1",))
+        row = cursor.fetchone()
+        conn.close()
+
+        # Node should remain in interrupted state until workflow executor processes resume_values
+        assert row is not None
+        assert row[0] == "interrupted"
+
+    finally:
+        collector.stop()
