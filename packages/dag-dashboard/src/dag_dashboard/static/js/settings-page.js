@@ -43,6 +43,7 @@
             title: 'Events & Workflows',
             fields: [
                 { key: 'workflows_dir', label: 'Workflows directory', type: 'text', placeholder: 'workflows' },
+                { key: 'node_log_line_cap', label: 'Node log line cap', type: 'number', min: 1, max: 10000000, placeholder: '50000' },
             ],
         },
     ];
