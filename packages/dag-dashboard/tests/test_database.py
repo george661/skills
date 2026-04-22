@@ -33,6 +33,7 @@ def test_init_db_creates_all_tables(tmp_path: Path) -> None:
         'artifacts',
         'channel_states',
         'chat_messages',
+        'dashboard_settings',
         'events',
         'gate_decisions',
         'node_executions',
@@ -40,7 +41,7 @@ def test_init_db_creates_all_tables(tmp_path: Path) -> None:
         'slack_threads',
         'workflow_runs'
     ]
-    
+
     assert tables == expected_tables
     conn.close()
 
@@ -84,7 +85,7 @@ def test_init_db_is_idempotent(tmp_path: Path) -> None:
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence'")
     count = cursor.fetchone()[0]
-    assert count == 9  # Updated from 8 to 9 to include node_logs table
+    assert count == 10  # Updated from 9 to 10 to include dashboard_settings table
     conn.close()
 
 
