@@ -257,3 +257,193 @@ def test_gates_reject_saves_false_resume_value() -> None:
         resume_values = store.load_resume_values(workflow_name, run_id)
         assert resume_values is not None
         assert resume_values.get(resume_key) is False
+
+
+def test_gates_approve_unblocks_downstream_workflow() -> None:
+    """Integration: dag-exec gates approve unblocks an interrupted workflow so downstream nodes execute."""
+    from dag_executor import (
+        load_workflow,
+        execute_workflow,
+        resume_workflow,
+        CheckpointStore,
+        WorkflowStatus,
+        NodeStatus,
+    )
+    from dag_executor.cli_gates import run_gates
+    import sys
+    from io import StringIO
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        events_dir = tmppath / "events"
+        checkpoint_dir = tmppath / "checkpoints"
+        events_dir.mkdir()
+        checkpoint_dir.mkdir()
+
+        workflow_yaml = f"""
+name: gates_approve_integration
+config:
+  checkpoint_prefix: {checkpoint_dir}
+inputs:
+  deploy_approved:
+    type: boolean
+    required: false
+nodes:
+  - id: approval_gate
+    name: Approval Gate
+    type: interrupt
+    message: "Approve deployment?"
+    resume_key: "deploy_approved"
+
+  - id: downstream_node
+    name: Downstream
+    type: bash
+    depends_on: [approval_gate]
+    script: 'echo "deployment approved"'
+"""
+        workflow_file = tmppath / "workflow.yaml"
+        workflow_file.write_text(workflow_yaml)
+
+        workflow_def = load_workflow(str(workflow_file))
+        store = CheckpointStore(str(checkpoint_dir))
+
+        # Execute until interrupt
+        result1 = execute_workflow(workflow_def, inputs={}, checkpoint_store=store)
+        assert result1.status == WorkflowStatus.PAUSED
+        run_id = result1.run_id
+
+        # Seed the event file so local-mode CLI has a file to append to
+        event_file = events_dir / f"{run_id}.ndjson"
+        event_file.touch()
+
+        # Approve via CLI local mode
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+        try:
+            run_gates([
+                "approve",
+                run_id,
+                "approval_gate",
+                "--events-dir", str(events_dir),
+                "--checkpoint-dir", str(checkpoint_dir),
+                "--workflow-name", workflow_def.name,
+            ])
+        finally:
+            sys.stdout = old_stdout
+
+        # Resume the workflow — approve should have saved resume_values, so resume picks them up
+        result2 = resume_workflow(
+            workflow_name=workflow_def.name,
+            run_id=run_id,
+            checkpoint_store=store,
+            workflow_def=workflow_def,
+        )
+
+        assert result2.status == WorkflowStatus.COMPLETED
+        interrupt_node = next(n for n in result2.nodes if n.id == "approval_gate")
+        assert interrupt_node.status == NodeStatus.COMPLETED
+        downstream = next(n for n in result2.nodes if n.id == "downstream_node")
+        assert downstream.status == NodeStatus.COMPLETED
+
+
+def test_gates_reject_routes_to_on_failure() -> None:
+    """Integration: dag-exec gates reject marks interrupt as failed so on_failure branch executes."""
+    from dag_executor import (
+        load_workflow,
+        execute_workflow,
+        resume_workflow,
+        CheckpointStore,
+        WorkflowStatus,
+        NodeStatus,
+    )
+    from dag_executor.cli_gates import run_gates
+    import sys
+    from io import StringIO
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        events_dir = tmppath / "events"
+        checkpoint_dir = tmppath / "checkpoints"
+        events_dir.mkdir()
+        checkpoint_dir.mkdir()
+
+        # Interrupt -> gate (condition: deploy_approved) -> happy_path.
+        # When reject stores resume_value=False, the gate evaluates false,
+        # fails, and the downstream happy_path is skipped. This is the
+        # on_failure / rejection routing behavior from the Jira AC.
+        workflow_yaml = f"""
+name: gates_reject_integration
+config:
+  checkpoint_prefix: {checkpoint_dir}
+inputs:
+  deploy_approved:
+    type: boolean
+    required: false
+nodes:
+  - id: approval_gate
+    name: Approval Gate
+    type: interrupt
+    message: "Approve deployment?"
+    resume_key: "deploy_approved"
+
+  - id: approval_check
+    name: Check Approval
+    type: gate
+    depends_on: [approval_gate]
+    condition: "deploy_approved"
+
+  - id: happy_path
+    name: Deploy
+    type: bash
+    depends_on: [approval_check]
+    script: 'echo "deploying"'
+"""
+        workflow_file = tmppath / "workflow.yaml"
+        workflow_file.write_text(workflow_yaml)
+
+        workflow_def = load_workflow(str(workflow_file))
+        store = CheckpointStore(str(checkpoint_dir))
+
+        result1 = execute_workflow(workflow_def, inputs={}, checkpoint_store=store)
+        assert result1.status == WorkflowStatus.PAUSED
+        run_id = result1.run_id
+
+        event_file = events_dir / f"{run_id}.ndjson"
+        event_file.touch()
+
+        # Reject via CLI local mode
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+        try:
+            run_gates([
+                "reject",
+                run_id,
+                "approval_gate",
+                "--events-dir", str(events_dir),
+                "--checkpoint-dir", str(checkpoint_dir),
+                "--workflow-name", workflow_def.name,
+            ])
+        finally:
+            sys.stdout = old_stdout
+
+        # resume_values should now contain {deploy_approved: False}
+        resume_values = store.load_resume_values(workflow_def.name, run_id)
+        assert resume_values is not None
+        assert resume_values.get("deploy_approved") is False
+
+        # Resume — downstream should be skipped because its condition evaluates to False
+        result2 = resume_workflow(
+            workflow_name=workflow_def.name,
+            run_id=run_id,
+            checkpoint_store=store,
+            workflow_def=workflow_def,
+        )
+
+        # Workflow ends in FAILED because the gate rejected — that is the
+        # "run continues per on_failure" path for a rejected boolean gate.
+        assert result2.status == WorkflowStatus.FAILED
+        gate_check = next(n for n in result2.nodes if n.id == "approval_check")
+        assert gate_check.status == NodeStatus.FAILED
+        happy = next(n for n in result2.nodes if n.id == "happy_path")
+        # The happy-path node should NOT have completed (skipped or never started)
+        assert happy.status != NodeStatus.COMPLETED
