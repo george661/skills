@@ -26,7 +26,7 @@ from dag_executor import (
 from dag_executor.replay import execute_replay
 from dag_executor.validator import WorkflowValidator
 
-SUBCOMMANDS = {"replay", "history", "inspect", "cancel", "search", "logs", "rerun", "gates"}
+SUBCOMMANDS = {"replay", "history", "inspect", "cancel", "search", "logs", "rerun", "gates", "artifacts"}
 
 
 def _build_list_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -229,19 +229,19 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "workflow",
         help="Path to workflow YAML file",
     )
-    
+
     parser.add_argument(
         "inputs",
         nargs="*",
         help="Workflow inputs as key=value pairs or JSON object",
     )
-    
+
     parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume workflow from checkpoint",
     )
-    
+
     parser.add_argument(
         "--run-id",
         help=(
@@ -251,31 +251,31 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             "run_id in sync with the NDJSON filename and cancel marker path."
         ),
     )
-    
+
     parser.add_argument(
         "--resume-values",
         help="JSON object of resume values for interrupt points",
     )
-    
+
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate YAML and print execution plan without executing",
     )
-    
+
     parser.add_argument(
         "--visualize",
         action="store_true",
         help="Output mermaid DAG diagram",
     )
-    
+
     parser.add_argument(
         "--concurrency",
         type=int,
         default=10,
         help="Maximum concurrent node executions (default: 10)",
     )
-    
+
     parser.add_argument(
         "--checkpoint-dir",
         help="Override checkpoint directory (defaults to workflow config)",
@@ -310,19 +310,19 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def parse_inputs(input_args: List[str]) -> Dict[str, Any]:
     """Parse input arguments into a dictionary.
-    
+
     Supports:
     - key=value pairs: user_id=123 dry_run=true
     - JSON objects: '{"user_id": "123", "dry_run": true}'
-    
+
     Args:
         input_args: List of input argument strings
-    
+
     Returns:
         Dictionary of parsed inputs
     """
     inputs: Dict[str, Any] = {}
-    
+
     for arg in input_args:
         # Try JSON first
         if arg.startswith("{"):
@@ -332,7 +332,7 @@ def parse_inputs(input_args: List[str]) -> Dict[str, Any]:
                 continue
             except json.JSONDecodeError:
                 pass
-        
+
         # Try key=value
         if "=" in arg:
             key, value = arg.split("=", 1)
@@ -344,7 +344,7 @@ def parse_inputs(input_args: List[str]) -> Dict[str, Any]:
                 inputs[key] = value
         else:
             print(f"Warning: Ignoring invalid input format: {arg}", file=sys.stderr)
-    
+
     return inputs
 
 
@@ -794,6 +794,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                 from dag_executor.cli_gates import run_gates
                 run_gates(argv[1:])
                 return
+            elif subcmd == "artifacts":
+                run_artifacts(argv[1:])
+                return
 
         args = parse_args(argv)
 
@@ -810,12 +813,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         if args.dry_run:
             run_dry_run(args.workflow)
             sys.exit(0)
-        
+
         # Visualize mode
         if args.visualize:
             run_visualize(args.workflow)
             sys.exit(0)
-        
+
         # Load workflow
         workflow_def = load_workflow(args.workflow)
 
@@ -972,15 +975,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         else:
             print(f"Workflow failed with status: {result.status.value}", file=sys.stderr)
             sys.exit(1)
-    
+
     except FileNotFoundError as e:
         print(f"Error: Workflow file not found: {e}", file=sys.stderr)
         sys.exit(1)
-    
+
     except ValueError as e:
         print(f"Error: Invalid workflow: {e}", file=sys.stderr)
         sys.exit(1)
-    
+
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -993,7 +996,7 @@ def run_search(argv: List[str]) -> None:
     import os
     import sqlite3
     from pathlib import Path
-    
+
     parser = argparse.ArgumentParser(prog="dag-exec search")
     parser.add_argument("query", help="Search query string")
     parser.add_argument("--kinds", default="runs,nodes,events", help="Comma-separated kinds")
@@ -1002,29 +1005,29 @@ def run_search(argv: List[str]) -> None:
     parser.add_argument("--db", type=Path, help="Database path (local mode)")
     parser.add_argument("--remote", help="Remote dashboard URL (remote mode)")
     parser.add_argument("--token", help="Bearer token for remote mode")
-    
+
     args = parser.parse_args(argv)
-    
+
     # Remote mode
     if args.remote:
         import httpx
-        
+
         token = args.token or os.environ.get("DAG_EXEC_SEARCH_TOKEN")
         if not token:
             print("Error: Remote mode requires --token or DAG_EXEC_SEARCH_TOKEN env var", file=sys.stderr)
             sys.exit(2)
-        
+
         url = f"{args.remote.rstrip('/')}/api/search"
         response = httpx.get(
             url,
             params={"q": args.query, "kinds": args.kinds, "limit": args.limit},
             headers={"Authorization": f"Bearer {token}"}
         )
-        
+
         if response.status_code != 200:
             print(f"Error: {response.status_code} {response.text}", file=sys.stderr)
             sys.exit(1)
-        
+
         data = response.json()
         if args.json_output:
             print(json.dumps(data, indent=2))
@@ -1033,29 +1036,170 @@ def run_search(argv: List[str]) -> None:
             for r in data['results']:
                 print(f"  [{r['kind']}] {r['run_id']}: {r['snippet'][:80]}")
         return
-    
+
     # Local mode
     db_path = args.db
     if not db_path:
         db_dir = Path.home() / ".dag-dashboard"
         db_path = db_dir / "dashboard.db"
-    
+
     if not db_path.exists():
         print(f"Error: Database not found at {db_path}", file=sys.stderr)
         sys.exit(1)
-    
+
     from dag_executor.search_local import search_all
-    
+
     conn = sqlite3.connect(str(db_path))
     try:
         kinds_list = [k.strip() for k in args.kinds.split(",")]
         results = search_all(conn, q=args.query, kinds=kinds_list, limit=args.limit)
-        
+
         if args.json_output:
             print(json.dumps({"query": args.query, "total": len(results), "results": results}, indent=2))
         else:
             print(f"Found {len(results)} results for '{args.query}':")
             for r in results:
                 print(f"  [{r['kind']}] {r['run_id']}: {r['snippet'][:80]}")
+    finally:
+        conn.close()
+
+def run_artifacts(argv: List[str]) -> None:
+    """Run artifacts subcommand."""
+    import argparse
+    import json
+    import os
+    import sqlite3
+    from pathlib import Path
+
+    def _format_artifact_row(artifact: Dict[str, Any]) -> str:
+        """Format artifact data into a table row with truncation."""
+        artifact_type = artifact.get("artifact_type", "")
+        name = artifact.get("name", "")
+        name = (name[:27] + "...") if len(name) > 30 else name
+        node = artifact.get("node_name", "")
+        node = (node[:17] + "...") if len(node) > 20 else node
+        url = artifact.get("url") or ""
+        url = (url[:47] + "...") if len(url) > 50 else url
+        created = artifact.get("created_at", "")
+        return f"{artifact_type:<10} {name:<30} {node:<20} {url:<50} {created:<25}"
+
+    parser = argparse.ArgumentParser(prog="dag-exec artifacts")
+    parser.add_argument("run_id", help="Workflow run ID")
+    parser.add_argument(
+        "--type",
+        choices=["pr", "commit", "branch", "file"],
+        help="Filter by artifact type"
+    )
+    parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    parser.add_argument("--db", type=Path, help="Database path (local mode)")
+    parser.add_argument("--remote", help="Remote dashboard URL (remote mode)")
+    parser.add_argument("--token", help="Bearer token for remote mode")
+
+    args = parser.parse_args(argv)
+
+    # Remote mode
+    if args.remote:
+        import httpx
+
+        token = args.token or os.environ.get("DAG_EXEC_ARTIFACTS_TOKEN")
+        if not token:
+            print("Error: Remote mode requires --token or DAG_EXEC_ARTIFACTS_TOKEN env var", file=sys.stderr)
+            sys.exit(2)
+
+        url = f"{args.remote.rstrip('/')}/api/workflows/{args.run_id}/artifacts"
+        params = {}
+        if args.type:
+            params["type"] = args.type
+
+        response = httpx.get(
+            url,
+            params=params,
+            headers={"Authorization": f"Bearer {token}"}
+        )
+
+        if response.status_code == 404:
+            print(f"Error: Run not found: {args.run_id}", file=sys.stderr)
+            sys.exit(1)
+        elif response.status_code != 200:
+            print(f"Error: {response.status_code} {response.text}", file=sys.stderr)
+            sys.exit(1)
+
+        data = response.json()
+        artifacts = data.get("artifacts", [])
+
+        # Client-side filter for type since server doesn't consume query param yet
+        if args.type:
+            artifacts = [a for a in artifacts if a.get("artifact_type") == args.type]
+            data = {"artifacts": artifacts}
+
+        if args.json_output:
+            print(json.dumps(data, indent=2))
+        else:
+            if not artifacts:
+                print(f"No artifacts for run {args.run_id}", file=sys.stderr)
+                sys.exit(0)
+            else:
+                # Pretty table output
+                print(f"{'TYPE':<10} {'NAME':<30} {'NODE':<20} {'URL':<50} {'CREATED':<25}")
+                print("-" * 135)
+                for a in artifacts:
+                    print(_format_artifact_row(a))
+        return
+
+    # Local mode
+    db_path = args.db
+    if not db_path:
+        db_dir = Path.home() / ".dag-dashboard"
+        db_path = db_dir / "dashboard.db"
+
+    if not db_path.exists():
+        print(f"Error: Database not found at {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # Inline SQL matching list_run_artifacts from dag_dashboard.queries
+        sql = """
+            SELECT a.id, a.execution_id, a.name, a.artifact_type,
+                   a.path, a.content, a.created_at, a.url,
+                   ne.node_name
+            FROM artifacts a
+            JOIN node_executions ne ON ne.id = a.execution_id
+            WHERE ne.run_id = ?
+        """
+        sql_params: List[str] = [args.run_id]
+
+        if args.type:
+            sql += " AND a.artifact_type = ?"
+            sql_params.append(args.type)
+
+        sql += " ORDER BY a.created_at"
+
+        cursor = conn.execute(sql, sql_params)
+        rows = cursor.fetchall()
+
+        # Check if run exists
+        if not rows:
+            # Check if run exists in workflow_runs
+            run_check = conn.execute("SELECT 1 FROM workflow_runs WHERE id = ?", (args.run_id,)).fetchone()
+            if not run_check:
+                print(f"Error: Run not found: {args.run_id}", file=sys.stderr)
+                sys.exit(1)
+            else:
+                print(f"No artifacts for run {args.run_id}", file=sys.stderr)
+                sys.exit(0)
+
+        # Convert to dicts
+        columns = ["id", "execution_id", "name", "artifact_type", "path", "content", "created_at", "url", "node_name"]
+        artifacts = [dict(zip(columns, row)) for row in rows]
+
+        if args.json_output:
+            print(json.dumps({"artifacts": artifacts}, indent=2))
+        else:
+            # Pretty table output
+            print(f"{'TYPE':<10} {'NAME':<30} {'NODE':<20} {'URL':<50} {'CREATED':<25}")
+            print("-" * 135)
+            for a in artifacts:
+                print(_format_artifact_row(a))
     finally:
         conn.close()
