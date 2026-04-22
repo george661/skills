@@ -33,6 +33,13 @@ class NodeDetailPanel {
             this.panel.remove();
         }
 
+        // Tear down any prior StepLogs to avoid leaking its EventSource
+        // when switching between nodes without closing the panel first.
+        if (this.stepLogsInstance) {
+            this.stepLogsInstance.destroy();
+            this.stepLogsInstance = null;
+        }
+
         // Check if retry history exists for this node
         const retryHistory = window.retryHistoryStore && window.retryHistoryStore[node.node_name];
         const hasRetryHistory = retryHistory && retryHistory.length > 0;
@@ -1005,6 +1012,12 @@ class NodeDetailPanel {
             if (this.countdownInterval) {
                 clearInterval(this.countdownInterval);
                 this.countdownInterval = null;
+            }
+            // Close SSE connection opened by the StepLogs tab so we don't
+            // leak EventSources past the 50-connection cap.
+            if (this.stepLogsInstance) {
+                this.stepLogsInstance.destroy();
+                this.stepLogsInstance = null;
             }
             setTimeout(() => {
                 this.panel.remove();
