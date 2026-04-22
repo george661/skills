@@ -1,15 +1,5 @@
 """Test rerun-form.js uses confirm dialog."""
-import pytest
 from pathlib import Path
-from fastapi.testclient import TestClient
-from dag_dashboard.server import create_app
-
-
-@pytest.fixture
-def client(tmp_path: Path) -> TestClient:
-    """Create test client with temporary database."""
-    app = create_app(tmp_path)
-    return TestClient(app)
 
 
 def test_rerun_form_uses_confirm_dialog() -> None:

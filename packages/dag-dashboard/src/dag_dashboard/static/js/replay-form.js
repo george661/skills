@@ -115,20 +115,6 @@ window.showReplayModal = async function(workflow, runId) {
         const workflowPath = document.getElementById('replay-workflow-path').value.trim();
         const errorDiv = document.getElementById('replay-error');
 
-        // Show confirmation dialog
-        const confirmed = await window.showConfirmDialog({
-            title: 'Confirm Replay',
-            message: 'Are you sure you want to replay this workflow from the selected checkpoint?',
-            confirmLabel: 'Start Replay',
-            cancelLabel: 'Cancel',
-            confirmTone: 'primary'
-        });
-
-        if (!confirmed) {
-            errorDiv.style.display = 'none';
-            return;
-        }
-
         // Client-side validation
         if (!fromNode) {
             errorDiv.textContent = 'Please select a node to replay from.';
@@ -139,6 +125,20 @@ window.showReplayModal = async function(workflow, runId) {
         if (!workflowPath) {
             errorDiv.textContent = 'Please provide a workflow path.';
             errorDiv.style.display = 'block';
+            return;
+        }
+
+        // Show confirmation dialog
+        const confirmed = await window.showConfirmDialog({
+            title: 'Confirm Replay',
+            message: `Replay workflow from node "${fromNode}"? A new run will start with the selected overrides.`,
+            confirmLabel: 'Start Replay',
+            cancelLabel: 'Cancel',
+            confirmTone: 'primary'
+        });
+
+        if (!confirmed) {
+            errorDiv.style.display = 'none';
             return;
         }
 

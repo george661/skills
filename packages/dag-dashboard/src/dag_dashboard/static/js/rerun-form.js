@@ -103,7 +103,7 @@ window.showRerunModal = async function(runId) {
         // Show confirmation dialog
         const confirmed = await window.showConfirmDialog({
             title: 'Confirm Re-run',
-            message: 'Are you sure you want to re-run this workflow with the modified inputs?',
+            message: `Re-run workflow ${runId} with the modified inputs? A new execution will start.`,
             confirmLabel: 'Re-run',
             cancelLabel: 'Cancel',
             confirmTone: 'primary'
