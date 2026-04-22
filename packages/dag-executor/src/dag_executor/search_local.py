@@ -154,7 +154,7 @@ def search_all(
         if fts_available:
             # Delegate to FTS module
             from dag_executor.search_fts import search_all_fts
-            return search_all_fts(conn, q, limit)
+            return search_all_fts(conn, q, kinds=kinds, limit=limit)
         # Otherwise, fall through to LIKE-based search
 
     all_results = []

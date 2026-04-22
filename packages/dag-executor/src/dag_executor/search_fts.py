@@ -52,14 +52,15 @@ def search_events_fts(
     
     results = []
     for row in cursor.fetchall():
-        event_id, run_id, event_type, snippet, rank = row
+        _event_id, run_id, event_type, snippet, rank = row
         results.append({
             "kind": "event",
             "run_id": run_id,
             "event_type": event_type,
             "snippet": snippet[:120],  # Truncate to 120 chars
+            "relevance": rank,
         })
-    
+
     return results
 
 
@@ -107,8 +108,9 @@ def search_runs_fts(
             "run_id": run_id,
             "workflow_name": workflow_name,
             "snippet": snippet[:120] if snippet else "",
+            "relevance": rank,
         })
-    
+
     return results
 
 
@@ -151,38 +153,48 @@ def search_nodes_fts(
     
     results = []
     for row in cursor.fetchall():
-        node_id, run_id, node_name, snippet, rank = row
+        _node_id, run_id, node_name, snippet, rank = row
         results.append({
             "kind": "node",
             "run_id": run_id,
             "node_name": node_name,
             "snippet": snippet[:120] if snippet else "",
+            "relevance": rank,
         })
-    
+
     return results
 
 
 def search_all_fts(
     conn: sqlite3.Connection,
     query: str,
+    kinds: List[str] = None,
     limit: int = 20
 ) -> List[Dict[str, Any]]:
     """Search across all tables using FTS5 indexes.
-    
+
     Args:
         conn: Database connection
         query: Search query string
+        kinds: List of kinds to search (e.g., ['event', 'run', 'node']). If None, search all.
         limit: Maximum total results to return
-        
+
     Returns:
         Combined list of results from all search surfaces
     """
-    per_kind_limit = max(limit // 3, 10)  # Distribute limit across kinds
-    
+    if kinds is None:
+        kinds = ['event', 'run', 'node']
+
+    # Distribute limit across requested kinds
+    per_kind_limit = max(limit // len(kinds), 10) if kinds else limit
+
     results = []
-    results.extend(search_events_fts(conn, query, limit=per_kind_limit))
-    results.extend(search_runs_fts(conn, query, limit=per_kind_limit))
-    results.extend(search_nodes_fts(conn, query, limit=per_kind_limit))
-    
+    if 'event' in kinds:
+        results.extend(search_events_fts(conn, query, limit=per_kind_limit))
+    if 'run' in kinds:
+        results.extend(search_runs_fts(conn, query, limit=per_kind_limit))
+    if 'node' in kinds:
+        results.extend(search_nodes_fts(conn, query, limit=per_kind_limit))
+
     # Sort by relevance (if we stored rank) and cap at limit
     return results[:limit]
