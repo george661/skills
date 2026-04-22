@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 
 from .broadcast import Broadcaster
 from .cancel import create_cancel_router
+from .retry import create_retry_router
 from .chat_relay import ChatRelay
 from .chat_routes import create_chat_router
 from .checkpoint_routes import router as checkpoint_router
@@ -123,6 +124,11 @@ def create_app(
     cancel_settings = type('Settings', (), {'events_dir': events_dir})()
     cancel_router = create_cancel_router(cancel_settings, db_path)
     app.include_router(cancel_router)
+
+    # Register retry routes (requires settings with workflows_dir)
+    if settings:
+        retry_router = create_retry_router(settings, db_path)
+        app.include_router(retry_router)
 
     # Mount static files
     static_dir = Path(__file__).parent / "static"

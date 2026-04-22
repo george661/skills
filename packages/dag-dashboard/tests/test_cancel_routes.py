@@ -137,3 +137,41 @@ def test_cancel_api_rejects_run_id_with_dot(test_app):
     response = client.post("/api/workflows/foo.bar/cancel")
     assert response.status_code == 400
     assert not list(events_dir.glob("*.cancel"))
+
+
+def test_cancel_api_writes_marker_for_resuming_run():
+    """Test that cancel works on resuming runs (defensive contract)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        events_dir = Path(tmpdir) / "events"
+        events_dir.mkdir()
+        
+        init_db(db_path)
+        
+        # Insert resuming run
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO workflow_runs 
+               (id, workflow_name, status, started_at, workflow_definition)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("test-run-resuming", "test-workflow", "resuming", 
+             "2026-04-21T11:00:00Z", '{"nodes": [], "edges": []}')
+        )
+        conn.commit()
+        conn.close()
+        
+        app = create_app(db_path=db_path, events_dir=events_dir)
+        client = TestClient(app)
+        
+        response = client.post("/api/workflows/test-run-resuming/cancel")
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert data["run_id"] == "test-run-resuming"
+        assert data["status"] == "resuming"  # Status unchanged until executor processes marker
+        
+        # Verify marker was written
+        marker_path = events_dir / "test-run-resuming.cancel"
+        assert marker_path.exists()
