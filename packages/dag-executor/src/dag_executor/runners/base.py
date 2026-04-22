@@ -4,9 +4,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
-from dag_executor.schema import NodeDef, NodeResult
+from dag_executor.schema import NodeDef, NodeResult, WorkflowDef
 
 if TYPE_CHECKING:
+    from dag_executor.schema import WorkflowDef
     from dag_executor.events import EventEmitter
     from dag_executor.executor import SubprocessRegistry
 
@@ -34,6 +35,7 @@ class RunnerContext:
     resolved_inputs: Dict[str, Any] = field(default_factory=dict)
     node_outputs: Dict[str, Any] = field(default_factory=dict)
     workflow_inputs: Dict[str, Any] = field(default_factory=dict)
+    workflow_def: Optional["WorkflowDef"] = None
     workflow_id: str = ""
     skills_dir: Optional[Path] = None
     max_output_bytes: int = 10 * 1024 * 1024  # 10MB

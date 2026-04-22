@@ -5,6 +5,7 @@ from pathlib import Path
 
 from dag_executor.artifacts import detect_artifacts
 from dag_executor.events import EventType, WorkflowEvent
+from dag_executor.model_resolver import resolve_model
 from dag_executor.schema import NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 
@@ -28,12 +29,15 @@ class PromptRunner(BaseRunner):
             NodeResult with execution status and LLM response
         """
         node = ctx.node_def
-        if node.model is None:
-            raise ValueError("model field is required for type=prompt")
+
+        # Resolve model using 4-tier resolution: override > node > workflow default > local
+        if ctx.workflow_def is None:
+            raise ValueError("workflow_def is required in RunnerContext for prompt nodes")
+        resolved_model = resolve_model(node, ctx.workflow_def, ctx.workflow_inputs)
 
         # Dispatcher is installed by scripts/install.sh into ~/.claude/hooks/.
         dispatch_script = Path.home() / ".claude" / "hooks" / "dispatch-local.sh"
-        cmd = [str(dispatch_script), "--model", node.model.value]
+        cmd = [str(dispatch_script), "--model", resolved_model.value]
 
         # Handle prompt vs prompt_file. Inline prompts go via stdin (avoids arg
         # length limits); prompt_file is passed through --file.

@@ -252,12 +252,18 @@ class WorkflowExecutor:
         workflow_started_at = datetime.now(timezone.utc)
         started_at = workflow_started_at.isoformat()
 
-        # Emit WORKFLOW_STARTED event
+        # Emit WORKFLOW_STARTED event with model_override metadata if present
+        metadata: Dict[str, Any] = {}
+        model_override = inputs.get("__model_override__")
+        if model_override:
+            metadata["model_override"] = model_override
+
         if event_emitter:
             event_emitter.emit(WorkflowEvent(
                 event_type=EventType.WORKFLOW_STARTED,
                 workflow_id=workflow_def.name,
                 status=WorkflowStatus.RUNNING,
+                metadata=metadata,
                 timestamp=workflow_started_at
             ))
 
@@ -734,6 +740,13 @@ class WorkflowExecutor:
         ctx.node_statuses[node_id] = NodeStatus.RUNNING
         started_at = datetime.now(timezone.utc)
 
+        # Resolve model for prompt nodes (includes override logic)
+        resolved_model_str = None
+        if node_def.type == "prompt":
+            from dag_executor.model_resolver import resolve_model
+            resolved_model = resolve_model(node_def, workflow_def, ctx.workflow_inputs)
+            resolved_model_str = resolved_model.value
+
         # Emit NODE_STARTED event
         if event_emitter:
             event_emitter.emit(WorkflowEvent(
@@ -741,7 +754,7 @@ class WorkflowExecutor:
                 workflow_id=workflow_def.name,
                 node_id=node_id,
                 status=NodeStatus.RUNNING,
-                model=node_def.model.value if node_def.model else None,
+                model=resolved_model_str or (node_def.model.value if node_def.model else None),
                 dispatch=node_def.dispatch.value if node_def.dispatch else None,
                 timestamp=started_at
             ))
@@ -795,6 +808,7 @@ class WorkflowExecutor:
                 resolved_inputs=resolved_inputs,
                 node_outputs=filtered_node_outputs,
                 workflow_inputs=filtered_workflow_inputs,
+                workflow_def=workflow_def,
                 workflow_id=workflow_def.name,
                 max_output_bytes=10 * 1024 * 1024,
                 progress_callback=progress_callback,
@@ -1408,6 +1422,7 @@ class WorkflowExecutor:
                     resolved_inputs={},
                     node_outputs=ctx.node_outputs,
                     workflow_inputs=exit_hook_inputs,
+                    workflow_def=workflow_def,
                     workflow_id=workflow_def.name,
                 )
 

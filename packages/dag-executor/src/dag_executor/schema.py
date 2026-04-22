@@ -345,6 +345,7 @@ class NodeDef(BaseModel):
     prompt: Optional[str] = Field(default=None, description="Prompt text (for type=prompt)")
     prompt_file: Optional[str] = Field(default=None, description="Prompt file (for type=prompt)")
     model: Optional[ModelTier] = Field(default=None, description="Model tier (for type=prompt)")
+    strict_model: bool = Field(default=False, description="Block model_override (for type=prompt)")
     
     # Bash node
     script: Optional[str] = Field(default=None, description="Bash script (for type=bash)")
@@ -374,8 +375,7 @@ class NodeDef(BaseModel):
                 raise ValueError("Either prompt or prompt_file is required for type=prompt")
             if self.prompt is not None and self.prompt_file is not None:
                 raise ValueError("prompt and prompt_file are mutually exclusive for type=prompt")
-            if self.model is None:
-                raise ValueError("model field is required for type=prompt")
+            # model is optional — can be set at workflow level via default_model
         elif self.type == "bash":
             if self.script is None:
                 raise ValueError("script field is required for type=bash")
@@ -535,6 +535,7 @@ class WorkflowDef(BaseModel):
 
     name: str = Field(..., description="Workflow name")
     config: WorkflowConfig = Field(..., description="Workflow configuration")
+    default_model: Optional[ModelTier] = Field(default=None, description="Default model for prompt nodes")
     inputs: Dict[str, InputDef] = Field(default_factory=dict, description="Input definitions")
     nodes: List[NodeDef] = Field(..., min_length=1, description="Workflow nodes (at least one required)")
     outputs: Dict[str, OutputDef] = Field(default_factory=dict, description="Output definitions")

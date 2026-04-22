@@ -565,3 +565,70 @@ def test_trigger_passes_events_dir_env_var(client: TestClient, events_dir: Path)
         # trigger/collector wiring divergence outside GW-5186 scope. What
         # matters here is that the env var is set and resolved.
         assert Path(call_env["DAG_EVENTS_DIR"]).is_absolute()
+
+
+def test_trigger_with_model_override_sonnet_passes_flag(client: TestClient):
+    """POST /api/trigger with model_override='sonnet' spawns dag-exec with --model-override sonnet."""
+    with patch(
+        "dag_dashboard.trigger.asyncio.create_subprocess_exec",
+        new_callable=AsyncMock,
+    ) as mock_subprocess:
+        mock_process = AsyncMock()
+        mock_subprocess.return_value = mock_process
+
+        response = client.post(
+            "/api/trigger",
+            json={
+                "workflow": "test-workflow",
+                "inputs": {"issue_key": "TEST-123"},
+                "source": "test",
+                "model_override": "sonnet"
+            },
+        )
+        assert response.status_code == 200
+
+        # Verify subprocess was called with --model-override sonnet
+        mock_subprocess.assert_called_once()
+        args = list(mock_subprocess.call_args.args)
+        assert "--model-override" in args
+        override_idx = args.index("--model-override")
+        assert args[override_idx + 1] == "sonnet"
+
+
+def test_trigger_with_model_override_invalid_returns_422(client: TestClient):
+    """POST /api/trigger with model_override='bogus' returns 422."""
+    response = client.post(
+        "/api/trigger",
+        json={
+            "workflow": "test-workflow",
+            "inputs": {"issue_key": "TEST-123"},
+            "source": "test",
+            "model_override": "bogus"
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_trigger_without_model_override_omits_flag(client: TestClient):
+    """POST /api/trigger without model_override omits --model-override flag."""
+    with patch(
+        "dag_dashboard.trigger.asyncio.create_subprocess_exec",
+        new_callable=AsyncMock,
+    ) as mock_subprocess:
+        mock_process = AsyncMock()
+        mock_subprocess.return_value = mock_process
+
+        response = client.post(
+            "/api/trigger",
+            json={
+                "workflow": "test-workflow",
+                "inputs": {"issue_key": "TEST-123"},
+                "source": "test"
+            },
+        )
+        assert response.status_code == 200
+
+        # Verify subprocess was called without --model-override
+        mock_subprocess.assert_called_once()
+        args = list(mock_subprocess.call_args.args)
+        assert "--model-override" not in args
