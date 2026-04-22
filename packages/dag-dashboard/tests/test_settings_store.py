@@ -116,3 +116,8 @@ def test_mask_empty_secret_returns_empty_string(tmp_path: Path) -> None:
     """Test that empty secrets are returned as empty string."""
     assert mask_secret("") == ""
     assert mask_secret(None) == ""
+
+
+def test_node_log_line_cap_is_whitelisted() -> None:
+    """Test that node_log_line_cap is in WHITELISTED_KEYS."""
+    assert "node_log_line_cap" in WHITELISTED_KEYS

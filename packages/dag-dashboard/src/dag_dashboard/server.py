@@ -84,6 +84,10 @@ def create_app(
         else:
             app.state.workflows_dirs = [Path("workflows")]
 
+        # Reload settings from db to pick up dashboard_settings overrides
+        if settings:
+            settings.reload_from_db(db_path)
+
         # Create and start event collector
         loop = asyncio.get_running_loop()
         collector = EventCollector(
@@ -93,6 +97,7 @@ def create_app(
             loop=loop,
             slack_notifier=slack_notifier,
             dashboard_url=dashboard_url,
+            node_log_line_cap=settings.node_log_line_cap if settings else 50000,
         )
         collector.start()
         app.state.collector = collector
