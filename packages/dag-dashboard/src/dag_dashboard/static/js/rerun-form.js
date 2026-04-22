@@ -99,7 +99,21 @@ window.showRerunModal = async function(runId) {
     form.addEventListener('submit', async function(e) {
         e.preventDefault();
         errorDiv.style.display = 'none';
-        
+
+        // Show confirmation dialog
+        const confirmed = await window.showConfirmDialog({
+            title: 'Confirm Re-run',
+            message: `Re-run workflow ${runId} with the modified inputs? A new execution will start.`,
+            confirmLabel: 'Re-run',
+            cancelLabel: 'Cancel',
+            confirmTone: 'primary'
+        });
+
+        if (!confirmed) {
+            errorDiv.style.display = 'none';
+            return;
+        }
+
         // Collect inputs from form fields
         const inputs = {};
         const inputElements = document.querySelectorAll('.rerun-input-field');
