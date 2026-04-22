@@ -924,6 +924,27 @@ def count_pending_gates(db_path: Path) -> int:
         conn.close()
 
 
+def get_pending_gates_for_run(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
+    """Get interrupted nodes for a specific workflow run (pending gate approvals)."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT ne.*
+            FROM node_executions ne
+            JOIN workflow_runs wr ON ne.run_id = wr.id
+            WHERE ne.status = 'interrupted'
+            AND wr.status = 'running'
+            AND ne.run_id = ?
+            ORDER BY ne.started_at
+            """,
+            (run_id,)
+        )
+        return [_row_to_dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
 def get_interrupt_checkpoint(
     db_path: Path,
     workflow_name: str,

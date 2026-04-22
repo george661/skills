@@ -138,3 +138,30 @@ def format_gate_pending(
         )
     blocks.append(_dashboard_button(dashboard_url, run_id))
     return {"text": text, "blocks": blocks}
+
+
+def format_approval_resolved(
+    workflow_name: str,
+    run_id: str,
+    node_name: str,
+    decision: str,
+    decided_by: str,
+    source: str,
+    dashboard_url: str,
+) -> Dict[str, Any]:
+    """Build card for approval_resolved event (gate approved/rejected)."""
+    emoji = ":white_check_mark:" if decision == "approved" else ":x:"
+    text = f"Gate {decision}: {workflow_name} / {node_name}"
+    blocks: List[Dict[str, Any]] = [
+        _header(f"{emoji} Gate {decision}: {workflow_name}"),
+        _context_fields(
+            [
+                ("Run ID", f"`{run_id}`"),
+                ("Gate node", f"`{node_name}`"),
+                ("Decided by", decided_by),
+                ("Source", source),
+            ]
+        ),
+    ]
+    blocks.append(_dashboard_button(dashboard_url, run_id))
+    return {"text": text, "blocks": blocks}

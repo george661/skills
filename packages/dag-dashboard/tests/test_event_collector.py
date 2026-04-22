@@ -793,6 +793,71 @@ def test_event_collector_skips_self_referential_parent_run_id(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["cli", "api", "slack"])
+async def test_collector_handles_approval_resolved_from_all_sources(
+    test_db: Path,
+    events_dir: Path,
+    broadcaster: Broadcaster,
+    source: str,
+) -> None:
+    """Test that approval_resolved events are handled identically regardless of source."""
+    # Insert workflow run
+    conn = sqlite3.connect(test_db)
+    conn.execute(
+        "INSERT INTO workflow_runs (id, workflow_name, status, started_at) VALUES (?, ?, ?, ?)",
+        ("run-1", "test-wf", "running", "2026-04-22T12:00:00Z"),
+    )
+    conn.execute(
+        "INSERT INTO node_executions (id, run_id, node_name, status) VALUES (?, ?, ?, ?)",
+        ("run-1:gate-1", "run-1", "gate-1", "interrupted"),
+    )
+    conn.commit()
+    conn.close()
+
+    # Create event file with approval_resolved event
+    event_file = events_dir / "run-1.ndjson"
+    event = {
+        "event_type": "approval_resolved",
+        "payload": json.dumps({
+            "node_name": "gate-1",
+            "decision": "approved",
+            "decided_by": "alice",
+            "source": source,
+        }),
+        "created_at": "2026-04-22T12:05:00Z",
+    }
+    with open(event_file, "w") as f:
+        f.write(json.dumps(event) + "\n")
+
+    # Start collector
+    loop = asyncio.get_event_loop()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop,
+    )
+    collector.start()
+
+    try:
+        # Wait for processing
+        await asyncio.sleep(0.2)
+
+        # Verify identical handling regardless of source
+        # The event should be processed and no errors should occur
+        conn = sqlite3.connect(test_db)
+        cursor = conn.execute("SELECT status FROM node_executions WHERE id = ?", ("run-1:gate-1",))
+        row = cursor.fetchone()
+        conn.close()
+
+        # Node should remain in interrupted state until workflow executor processes resume_values
+        assert row is not None
+        assert row[0] == "interrupted"
+    finally:
+        collector.stop()
+
+
+@pytest.mark.asyncio
 async def test_node_started_writes_model_to_node_executions(test_db: Path, events_dir: Path, broadcaster: Broadcaster):
     """node_started event with model='sonnet' writes to node_executions.model."""
     loop = asyncio.get_event_loop()
@@ -802,13 +867,13 @@ async def test_node_started_writes_model_to_node_executions(test_db: Path, event
         broadcaster=broadcaster,
         loop=loop
     )
-    
+
     collector.start()
-    
+
     try:
         run_id = "test-run"
         ndjson_file = events_dir / f"{run_id}.ndjson"
-        
+
         # Emit workflow_started to create the run and node_executions rows
         workflow_started = {
             "event_type": "workflow_started",
@@ -823,7 +888,7 @@ nodes:
 """
             }
         }
-        
+
         # Emit node_started with model='sonnet'
         node_started = {
             "event_type": "node_started",
@@ -832,22 +897,22 @@ nodes:
             "model": "sonnet",
             "timestamp": "2026-01-01T00:00:01.000Z"
         }
-        
+
         ndjson_file.write_text(
             json.dumps(workflow_started) + "\n" +
             json.dumps(node_started) + "\n"
         )
-        
+
         # Wait for collector to process
         await asyncio.sleep(0.5)
-        
+
         # Verify node_executions.model = 'sonnet'
         conn = sqlite3.connect(test_db)
         cursor = conn.cursor()
         cursor.execute("SELECT model, status FROM node_executions WHERE id = ?", (f"{run_id}:node1",))
         row = cursor.fetchone()
         conn.close()
-        
+
         assert row is not None, "node_executions row not found"
         assert row[0] == "sonnet", f"Expected model='sonnet', got {row[0]}"
         assert row[1] == "running", f"Expected status='running', got {row[1]}"
@@ -865,13 +930,13 @@ async def test_node_completed_does_not_overwrite_model(test_db: Path, events_dir
         broadcaster=broadcaster,
         loop=loop
     )
-    
+
     collector.start()
-    
+
     try:
         run_id = "test-run"
         ndjson_file = events_dir / f"{run_id}.ndjson"
-        
+
         # Emit workflow_started
         workflow_started = {
             "event_type": "workflow_started",
@@ -886,7 +951,7 @@ nodes:
 """
             }
         }
-        
+
         # Emit node_started with model='opus'
         node_started = {
             "event_type": "node_started",
@@ -895,7 +960,7 @@ nodes:
             "model": "opus",
             "timestamp": "2026-01-01T00:00:01.000Z"
         }
-        
+
         # Emit node_completed (no model field in metadata)
         node_completed = {
             "event_type": "node_completed",
@@ -904,23 +969,23 @@ nodes:
             "status": "success",
             "timestamp": "2026-01-01T00:00:02.000Z"
         }
-        
+
         ndjson_file.write_text(
             json.dumps(workflow_started) + "\n" +
             json.dumps(node_started) + "\n" +
             json.dumps(node_completed) + "\n"
         )
-        
+
         # Wait for collector to process
         await asyncio.sleep(0.5)
-        
+
         # Verify model remains 'opus' (not overwritten by node_completed)
         conn = sqlite3.connect(test_db)
         cursor = conn.cursor()
         cursor.execute("SELECT model FROM node_executions WHERE id = ?", (f"{run_id}:node1",))
         row = cursor.fetchone()
         conn.close()
-        
+
         assert row is not None
         assert row[0] == "opus"
     finally:
