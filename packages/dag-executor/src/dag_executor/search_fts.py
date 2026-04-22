@@ -83,18 +83,17 @@ def search_runs_fts(
         return []
     
     cursor = conn.cursor()
+    # External content - note: need to join via rowid since FTS doesn't store id column
     cursor.execute("""
-        SELECT 
+        SELECT
             workflow_runs.id,
             workflow_runs.workflow_name,
-            COALESCE(
-                snippet(workflow_runs_fts, 0, '', '', '...', 32),
-                snippet(workflow_runs_fts, 1, '', '', '...', 32),
-                snippet(workflow_runs_fts, 2, '', '', '...', 32)
-            ) as snippet,
+            COALESCE(workflow_runs.workflow_name, '') || ' ' ||
+            COALESCE(workflow_runs.inputs, '') || ' ' ||
+            COALESCE(workflow_runs.error, '') as snippet,
             bm25(workflow_runs_fts) as rank
         FROM workflow_runs_fts
-        JOIN workflow_runs ON workflow_runs.id = workflow_runs_fts.rowid
+        JOIN workflow_runs ON workflow_runs.rowid = workflow_runs_fts.rowid
         WHERE workflow_runs_fts MATCH ?
         ORDER BY rank
         LIMIT ?
@@ -133,19 +132,18 @@ def search_nodes_fts(
         return []
     
     cursor = conn.cursor()
+    # External content - join via rowid
     cursor.execute("""
-        SELECT 
+        SELECT
             node_executions.id,
             node_executions.run_id,
             node_executions.node_name,
-            COALESCE(
-                snippet(node_executions_fts, 0, '', '', '...', 32),
-                snippet(node_executions_fts, 1, '', '', '...', 32),
-                snippet(node_executions_fts, 2, '', '', '...', 32)
-            ) as snippet,
+            COALESCE(node_executions.node_name, '') || ' ' ||
+            COALESCE(node_executions.inputs, '') || ' ' ||
+            COALESCE(node_executions.error, '') as snippet,
             bm25(node_executions_fts) as rank
         FROM node_executions_fts
-        JOIN node_executions ON node_executions.id = node_executions_fts.rowid
+        JOIN node_executions ON node_executions.rowid = node_executions_fts.rowid
         WHERE node_executions_fts MATCH ?
         ORDER BY rank
         LIMIT ?
