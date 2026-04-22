@@ -81,6 +81,7 @@ def run_list(directory: str, json_output: bool = False) -> None:
     from pathlib import Path
 
     # If directory is "." (default), check env var for multiple dirs
+    explicit_single_dir = False
     if directory == ".":
         env_dirs = os.environ.get("DAG_DASHBOARD_WORKFLOWS_DIR", "")
         if env_dirs:
@@ -90,16 +91,22 @@ def run_list(directory: str, json_output: bool = False) -> None:
     else:
         # Explicit directory provided, scan only that one
         scan_dirs = [Path(directory)]
+        explicit_single_dir = True
 
     workflows: List[Dict[str, Any]] = []
     seen_names: set[str] = set()
 
     for scan_dir in scan_dirs:
-        if not scan_dir.exists():
-            print(f"Warning: '{scan_dir}' does not exist, skipping", file=sys.stderr)
-            continue
-        if not scan_dir.is_dir():
-            print(f"Warning: '{scan_dir}' is not a directory, skipping", file=sys.stderr)
+        if not scan_dir.exists() or not scan_dir.is_dir():
+            # Preserve pre-existing behavior: hard-fail when the user passed a
+            # single explicit directory. Multi-dir env-var mode skips with a warning.
+            if explicit_single_dir:
+                print(f"Error: '{scan_dir}' is not a directory", file=sys.stderr)
+                sys.exit(1)
+            if not scan_dir.exists():
+                print(f"Warning: '{scan_dir}' does not exist, skipping", file=sys.stderr)
+            else:
+                print(f"Warning: '{scan_dir}' is not a directory, skipping", file=sys.stderr)
             continue
 
         for yaml_file in sorted(scan_dir.glob("*.yaml")):

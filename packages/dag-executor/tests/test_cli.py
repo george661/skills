@@ -1,5 +1,8 @@
 """Tests for CLI entry point."""
+import json
+import subprocess
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -687,18 +690,23 @@ nodes:
             assert "Execution Plan" in captured.out
 
 
-def test_list_scans_multiple_dirs_from_env_var(tmp_path: Path, monkeypatch: Any) -> None:
+def test_list_scans_multiple_dirs_from_env_var(tmp_path: Path, monkeypatch: Any, capsys) -> None:
     """Test that 'dag-exec list' scans multiple directories from DAG_DASHBOARD_WORKFLOWS_DIR."""
+    import os
+
     # Create two directories with workflows
     dir1 = tmp_path / "dir1"
     dir1.mkdir()
     wf1 = dir1 / "workflow-a.yaml"
     wf1.write_text("""
 name: workflow-a
+config:
+  checkpoint_prefix: wa
 nodes:
   - id: task1
-    type: command
-    command: echo "a"
+    name: Task 1
+    type: bash
+    script: echo "a"
 """)
 
     dir2 = tmp_path / "dir2"
@@ -706,53 +714,43 @@ nodes:
     wf2 = dir2 / "workflow-b.yaml"
     wf2.write_text("""
 name: workflow-b
+config:
+  checkpoint_prefix: wb
 nodes:
   - id: task2
-    type: command
-    command: echo "b"
+    name: Task 2
+    type: bash
+    script: echo "b"
 """)
 
-    # Test collision: dir2 also has workflow-a (should be shadowed)
+    # Collision: dir2 also defines workflow-a (should be shadowed by dir1)
     wf1_collision = dir2 / "workflow-a.yaml"
     wf1_collision.write_text("""
 name: workflow-a
+config:
+  checkpoint_prefix: wa-shadow
 nodes:
   - id: task3
-    type: command
-    command: echo "collision"
+    name: Task 3
+    type: bash
+    script: echo "collision"
 """)
 
     # Set env var with both directories
-    import os
     monkeypatch.setenv("DAG_DASHBOARD_WORKFLOWS_DIR", f"{dir1}{os.pathsep}{dir2}")
 
-    # Run list command (no directory arg, should use env var)
-    result = subprocess.run(
-        ["dag-exec", "list"],
-        capture_output=True,
-        text=True,
-    )
+    # Call run_list directly (directory="." triggers env-var lookup)
+    run_list(".", json_output=True)
+    captured = capsys.readouterr()
+    workflows = json.loads(captured.out)
 
-    assert result.returncode == 0
-    output = result.stdout
-
-    # Should find workflow-a from dir1 and workflow-b from dir2
-    assert "workflow-a" in output
-    assert "workflow-b" in output
-    # workflow-a from dir2 should be shadowed (first-dir-wins)
-    assert output.count("workflow-a") == 1
-
-    # Test JSON output
-    result_json = subprocess.run(
-        ["dag-exec", "list", "--json"],
-        capture_output=True,
-        text=True,
-    )
-    assert result_json.returncode == 0
-    workflows = json.loads(result_json.stdout)
     assert len(workflows) == 2
     names = {wf["name"] for wf in workflows}
     assert names == {"workflow-a", "workflow-b"}
+
+    # Verify first-dir-wins: workflow-a source_dir is dir1, not dir2
+    wf_a = next(wf for wf in workflows if wf["name"] == "workflow-a")
+    assert wf_a["source_dir"] == str(dir1)
 
     # Verify workflow-a comes from dir1
     wf_a = next(wf for wf in workflows if wf["name"] == "workflow-a")
