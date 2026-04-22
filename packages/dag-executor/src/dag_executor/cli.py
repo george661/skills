@@ -1067,6 +1067,18 @@ def run_artifacts(argv: List[str]) -> None:
     import sqlite3
     from pathlib import Path
 
+    def _format_artifact_row(artifact: Dict[str, Any]) -> str:
+        """Format artifact data into a table row with truncation."""
+        artifact_type = artifact.get("artifact_type", "")
+        name = artifact.get("name", "")
+        name = (name[:27] + "...") if len(name) > 30 else name
+        node = artifact.get("node_name", "")
+        node = (node[:17] + "...") if len(node) > 20 else node
+        url = artifact.get("url") or ""
+        url = (url[:47] + "...") if len(url) > 50 else url
+        created = artifact.get("created_at", "")
+        return f"{artifact_type:<10} {name:<30} {node:<20} {url:<50} {created:<25}"
+
     parser = argparse.ArgumentParser(prog="dag-exec artifacts")
     parser.add_argument("run_id", help="Workflow run ID")
     parser.add_argument(
@@ -1101,29 +1113,33 @@ def run_artifacts(argv: List[str]) -> None:
             headers={"Authorization": f"Bearer {token}"}
         )
 
-        if response.status_code != 200:
+        if response.status_code == 404:
+            print(f"Error: Run not found: {args.run_id}", file=sys.stderr)
+            sys.exit(1)
+        elif response.status_code != 200:
             print(f"Error: {response.status_code} {response.text}", file=sys.stderr)
             sys.exit(1)
 
         data = response.json()
         artifacts = data.get("artifacts", [])
 
+        # Client-side filter for type since server doesn't consume query param yet
+        if args.type:
+            artifacts = [a for a in artifacts if a.get("artifact_type") == args.type]
+            data = {"artifacts": artifacts}
+
         if args.json_output:
             print(json.dumps(data, indent=2))
         else:
             if not artifacts:
                 print(f"No artifacts for run {args.run_id}", file=sys.stderr)
+                sys.exit(0)
             else:
                 # Pretty table output
                 print(f"{'TYPE':<10} {'NAME':<30} {'NODE':<20} {'URL':<50} {'CREATED':<25}")
                 print("-" * 135)
                 for a in artifacts:
-                    artifact_type = a.get("artifact_type", "")
-                    name = (a.get("name", "")[:27] + "...") if len(a.get("name", "")) > 30 else a.get("name", "")
-                    node = (a.get("node_name", "")[:17] + "...") if len(a.get("node_name", "")) > 20 else a.get("node_name", "")
-                    url = (a.get("url", "")[:47] + "...") if len(a.get("url", "")) > 50 else a.get("url", "")
-                    created = a.get("created_at", "")
-                    print(f"{artifact_type:<10} {name:<30} {node:<20} {url:<50} {created:<25}")
+                    print(_format_artifact_row(a))
         return
 
     # Local mode
@@ -1180,12 +1196,6 @@ def run_artifacts(argv: List[str]) -> None:
             print(f"{'TYPE':<10} {'NAME':<30} {'NODE':<20} {'URL':<50} {'CREATED':<25}")
             print("-" * 135)
             for a in artifacts:
-                artifact_type = a["artifact_type"]
-                name = (a["name"][:27] + "...") if len(a["name"]) > 30 else a["name"]
-                node = (a["node_name"][:17] + "...") if len(a["node_name"]) > 20 else a["node_name"]
-                url = (a.get("url") or "")
-                url = (url[:47] + "...") if len(url) > 50 else url
-                created = a["created_at"]
-                print(f"{artifact_type:<10} {name:<30} {node:<20} {url:<50} {created:<25}")
+                print(_format_artifact_row(a))
     finally:
         conn.close()

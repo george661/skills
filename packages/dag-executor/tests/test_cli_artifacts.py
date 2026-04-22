@@ -270,13 +270,75 @@ def test_cli_artifacts_remote_mode():
     assert 'http://localhost:8100/api/workflows/run_001/artifacts' in mock_get.call_args.args[0]
 
 
+def test_cli_artifacts_remote_mode_type_filter(capsys):
+    """Test remote mode applies client-side type filter correctly."""
+    from dag_executor.cli import main
+
+    # Mock API returns all 4 types
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "artifacts": [
+            {"name": "PR #1", "artifact_type": "pr", "node_name": "deploy", "created_at": "2026-04-22T10:00:00Z", "url": "https://example.com/pr/1"},
+            {"name": "commit1", "artifact_type": "commit", "node_name": "build", "created_at": "2026-04-22T10:01:00Z", "url": "https://example.com/commit/1"},
+            {"name": "branch-main", "artifact_type": "branch", "node_name": "test", "created_at": "2026-04-22T10:02:00Z", "url": "https://example.com/branch/1"},
+            {"name": "data.csv", "artifact_type": "file", "node_name": "process", "created_at": "2026-04-22T10:03:00Z", "url": "https://example.com/file/1"}
+        ]
+    }
+
+    with patch('httpx.get', return_value=mock_response):
+        main(['artifacts', 'run_001', '--remote', 'http://localhost:8100', '--token', 'SECRET', '--type', 'pr'])
+
+    captured = capsys.readouterr()
+    # Only PR artifact should appear in output
+    assert "PR #1" in captured.out
+    assert "commit1" not in captured.out
+    assert "branch-main" not in captured.out
+    assert "data.csv" not in captured.out
+
+
+def test_cli_artifacts_remote_mode_empty_state(capsys):
+    """Test remote mode exits 0 on empty artifacts (parity with local mode)."""
+    from dag_executor.cli import main
+
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"artifacts": []}
+
+    with patch('httpx.get', return_value=mock_response):
+        with pytest.raises(SystemExit) as exc_info:
+            main(['artifacts', 'run_001', '--remote', 'http://localhost:8100', '--token', 'SECRET'])
+
+    # Should exit 0 on empty, not fall through
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert "No artifacts for run run_001" in captured.err
+
+
+def test_cli_artifacts_remote_mode_404_not_found(capsys):
+    """Test remote mode exits 1 with specific message on 404."""
+    from dag_executor.cli import main
+
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_response.text = "Not found"
+
+    with patch('httpx.get', return_value=mock_response):
+        with pytest.raises(SystemExit) as exc_info:
+            main(['artifacts', 'run_001', '--remote', 'http://localhost:8100', '--token', 'SECRET'])
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "Error: Run not found: run_001" in captured.err
+
+
 def test_cli_artifacts_remote_mode_missing_token():
     """Test --remote without token or env var exits 2."""
     from dag_executor.cli import main
 
     with pytest.raises(SystemExit) as exc_info:
         main(['artifacts', 'run_123', '--remote', 'http://localhost:8100'])
-    
+
     assert exc_info.value.code == 2
 
 
