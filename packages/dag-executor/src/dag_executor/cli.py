@@ -26,7 +26,7 @@ from dag_executor import (
 from dag_executor.replay import execute_replay
 from dag_executor.validator import WorkflowValidator
 
-SUBCOMMANDS = {"replay", "history", "inspect", "cancel", "search", "logs", "rerun", "gates", "artifacts"}
+SUBCOMMANDS = {"replay", "history", "inspect", "cancel", "search", "logs", "rerun", "gates", "artifacts", "drafts"}
 
 
 def _build_list_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -806,6 +806,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 return
             elif subcmd == "artifacts":
                 run_artifacts(argv[1:])
+                return
+            elif subcmd == "drafts":
+                from dag_executor.drafts_cli import run_drafts
+                run_drafts(argv[1:])
                 return
 
         args = parse_args(argv)
