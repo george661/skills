@@ -126,32 +126,50 @@ def search_all(
     conn: sqlite3.Connection,
     q: str,
     kinds: List[str],
-    limit: int
+    limit: int,
+    use_fts: bool = False
 ) -> List[Dict[str, Any]]:
     """Compose per-kind queries and apply global limit.
-    
+
     Args:
         conn: SQLite connection
         q: Search query string
         kinds: List of kinds to search (e.g., ["runs", "nodes", "events"])
         limit: Maximum total results across all kinds
-    
+        use_fts: If True, use FTS5 indexes (falls back to LIKE if FTS tables missing)
+
     Returns:
         List of result dicts, capped at limit
     """
+    # Check if FTS5 is requested and available
+    if use_fts:
+        # Check if FTS tables exist
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='events_fts'
+        """)
+        fts_available = cursor.fetchone() is not None
+
+        if fts_available:
+            # Delegate to FTS module
+            from dag_executor.search_fts import search_all_fts
+            return search_all_fts(conn, q, limit)
+        # Otherwise, fall through to LIKE-based search
+
     all_results = []
-    
+
     # Query each kind with a per-kind limit of 50 to allow interleaving
     per_kind_limit = 50
-    
+
     if "runs" in kinds:
         all_results.extend(search_runs(conn, q, per_kind_limit))
-    
+
     if "nodes" in kinds:
         all_results.extend(search_nodes(conn, q, per_kind_limit))
-    
+
     if "events" in kinds:
         all_results.extend(search_events(conn, q, per_kind_limit))
-    
+
     # Apply global limit
     return all_results[:limit]
