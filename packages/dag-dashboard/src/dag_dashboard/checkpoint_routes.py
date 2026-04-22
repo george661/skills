@@ -13,10 +13,10 @@ from dag_dashboard.models import (
     ReplayRequest,
     ReplaySummary,
 )
-from dag_executor.checkpoint import CheckpointMetadata, CheckpointStore  # type: ignore[import-untyped]
-from dag_executor.replay import execute_replay  # type: ignore[import-untyped]
-from dag_executor.schema import WorkflowDef  # type: ignore[import-untyped]
-from dag_executor import load_workflow  # type: ignore[import-untyped]
+from dag_executor.checkpoint import CheckpointMetadata, CheckpointStore
+from dag_executor.replay import execute_replay
+from dag_executor.schema import WorkflowDef
+from dag_executor import load_workflow
 
 logger = logging.getLogger(__name__)
 

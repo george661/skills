@@ -779,7 +779,7 @@ def get_interrupt_checkpoint(
     """
     import os
     import yaml
-    from dag_executor.checkpoint import CheckpointStore  # type: ignore[import-untyped]
+    from dag_executor.checkpoint import CheckpointStore
 
     conn = get_connection(db_path)
     try:

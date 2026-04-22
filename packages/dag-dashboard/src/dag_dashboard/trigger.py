@@ -114,7 +114,7 @@ def validate_workflow_inputs(workflow_file: Path, inputs: Dict[str, Any]) -> Non
     Uses dag_executor.parser to parse workflow and Pydantic validation.
     """
     try:
-        from dag_executor.parser import load_workflow  # type: ignore[import-untyped]
+        from dag_executor.parser import load_workflow
         from pydantic import ValidationError
     except ImportError as e:
         raise HTTPException(

@@ -72,7 +72,7 @@ def build_search_router(
         q: str = Query(..., description="Search query"),
         kinds: str = Query("runs,nodes,events", description="Comma-separated kinds"),
         limit: int = Query(50, ge=1, le=50, description="Max results")
-    ):
+    ) -> SearchResponse:
         """Search across runs, nodes, and events.
         
         Rate limit: 30 requests per minute per bearer token.
