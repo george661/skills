@@ -332,17 +332,22 @@ def test_post_gate_approve_success(client: TestClient, test_db: Path, events_dir
     assert len(decisions) == 1
     assert decisions[0]["decision"] == "approved"
 
-    # Verify NDJSON event appended
+    # Verify NDJSON events appended (dual-emit: gate.decided + approval_resolved)
     event_file = events_dir / "run-1.ndjson"
     assert event_file.exists()
     with open(event_file) as f:
         lines = f.readlines()
-        assert len(lines) == 1
-        event = json.loads(lines[0])
-        assert event["event_type"] == "gate.decided"
-        payload = json.loads(event["payload"])
+        assert len(lines) == 2
+        events = [json.loads(line) for line in lines]
+
+        # First event: gate.decided
+        assert events[0]["event_type"] == "gate.decided"
+        payload = json.loads(events[0]["payload"])
         assert payload["node_name"] == "gate-1"
         assert payload["decision"] == "approved"
+
+        # Second event: approval_resolved
+        assert events[1]["event_type"] == "approval_resolved"
 
 
 def test_post_gate_reject_success(client: TestClient, test_db: Path, events_dir: Path):
@@ -367,6 +372,23 @@ def test_post_gate_reject_success(client: TestClient, test_db: Path, events_dir:
     decisions = get_gate_decisions(test_db, "run-1")
     assert len(decisions) == 1
     assert decisions[0]["decision"] == "rejected"
+
+    # Verify NDJSON events appended (dual-emit: gate.decided + approval_resolved)
+    event_file = events_dir / "run-1.ndjson"
+    assert event_file.exists()
+    with open(event_file) as f:
+        lines = f.readlines()
+        assert len(lines) == 2
+        events = [json.loads(line) for line in lines]
+
+        # First event: gate.decided
+        assert events[0]["event_type"] == "gate.decided"
+        payload = json.loads(events[0]["payload"])
+        assert payload["node_name"] == "gate-1"
+        assert payload["decision"] == "rejected"
+
+        # Second event: approval_resolved
+        assert events[1]["event_type"] == "approval_resolved"
 
 
 def test_post_gate_approve_run_not_found(client: TestClient, test_db: Path):
