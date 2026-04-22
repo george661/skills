@@ -5,8 +5,6 @@ import hashlib
 import json
 import os
 import re
-import time
-from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict
 from uuid import uuid4
@@ -17,6 +15,7 @@ import yaml
 
 from .config import Settings
 from .queries import insert_run
+from .rate_limit import RateLimiter  # Back-compat re-export
 
 
 class TriggerRequest(BaseModel):
@@ -29,32 +28,6 @@ class TriggerRequest(BaseModel):
 class TriggerResponse(BaseModel):
     """Response model for trigger endpoint."""
     run_id: str
-
-
-class RateLimiter:
-    """In-memory sliding-window rate limiter keyed by source."""
-
-    def __init__(self, requests_per_minute: int):
-        self.requests_per_minute = requests_per_minute
-        self.requests: Dict[str, list[float]] = defaultdict(list)
-
-    def is_allowed(self, source: str) -> bool:
-        """Check if request from source is allowed under rate limit."""
-        now = time.time()
-        window_start = now - 60  # 60 seconds sliding window
-
-        # Remove expired timestamps
-        self.requests[source] = [
-            ts for ts in self.requests[source] if ts > window_start
-        ]
-
-        # Check if under limit
-        if len(self.requests[source]) >= self.requests_per_minute:
-            return False
-
-        # Record this request
-        self.requests[source].append(now)
-        return True
 
 
 def verify_hmac_signature(request: Request, body: bytes, secret: str) -> None:

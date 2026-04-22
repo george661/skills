@@ -18,6 +18,7 @@ from .config import Settings
 from .database import ensure_dir, init_db
 from .event_collector import EventCollector
 from .notifier import SlackNotifier
+from .search import build_search_router
 from .sse import create_sse_router
 from .routes import router
 from .trigger import create_trigger_router
@@ -157,5 +158,17 @@ def create_app(
         trigger_router = create_trigger_router(settings, db_path)
         app.include_router(trigger_router)
         logger.info("Trigger endpoint enabled")
+
+    # Mount search router (always mounted; auth handled by endpoint)
+    if settings:
+        search_router = build_search_router(
+            settings=settings,
+            db_path_provider=lambda: db_path
+        )
+        app.include_router(search_router)
+        if settings.search_token:
+            logger.info("Search endpoint enabled")
+        else:
+            logger.info("Search endpoint available but not configured (503)")
 
     return app
