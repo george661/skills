@@ -455,8 +455,7 @@ def test_step_logs_fits_at_320px(page: Page) -> None:
     # Click on a failed node to open step logs
     # Use same selector pattern as test_error_detail_fits_at_320px
     failed_node = page.locator(".node.failed, .node-failed, [data-status='failed']")
-    if failed_node.count() == 0:
-        pytest.skip("No failed nodes found in fixture")
+    assert failed_node.count() > 0, "No failed nodes found in failed_node_workflow fixture"
 
     failed_node.first.click()
     page.wait_for_timeout(1000)
