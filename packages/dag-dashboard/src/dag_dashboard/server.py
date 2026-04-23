@@ -136,6 +136,7 @@ def create_app(
     app.state.events_dir = events_dir
     app.state.checkpoint_prefix = checkpoint_prefix
     app.state.checkpoint_dir_fallback = checkpoint_dir_fallback
+    app.state.settings = settings
 
     # Store workflows_dirs up front so routes can access it without waiting for lifespan
     # (TestClient does not always trigger lifespan startup).
@@ -194,11 +195,6 @@ def create_app(
     async def health() -> Dict[str, str]:
         """Health check endpoint."""
         return {"status": "ok"}
-
-    @app.get("/api/config")
-    async def api_config() -> Dict[str, bool]:
-        """Return feature flag configuration."""
-        return {"builder_enabled": settings.builder_enabled if settings else False}
 
     @app.get("/builder-config.js")
     async def builder_config_js() -> Response:

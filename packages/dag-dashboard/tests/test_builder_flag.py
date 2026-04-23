@@ -47,7 +47,7 @@ def test_config_endpoint_default_false(client_with_flag_off) -> None:
     response = client_with_flag_off.get("/api/config")
     assert response.status_code == 200
     data = response.json()
-    assert data == {"builder_enabled": False}
+    assert data["builder_enabled"] is False
 
 
 def test_config_endpoint_respects_env(client_with_flag_on) -> None:
@@ -55,7 +55,7 @@ def test_config_endpoint_respects_env(client_with_flag_on) -> None:
     response = client_with_flag_on.get("/api/config")
     assert response.status_code == 200
     data = response.json()
-    assert data == {"builder_enabled": True}
+    assert data["builder_enabled"] is True
 
 
 def test_builder_config_js_reflects_flag_off(client_with_flag_off) -> None:
