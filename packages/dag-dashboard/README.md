@@ -37,6 +37,144 @@ This script:
 - Checks that static assets (HTML/CSS/JS) are packaged correctly
 - Starts the server and tests HTTP endpoints (`/health`, `/`, `/css/styles.css`, `/js/app.js`)
 
+## Builder UI
+
+The dag-dashboard includes a visual workflow builder for creating and editing DAG workflow YAML files. The builder provides a drag-and-drop canvas, real-time validation, and integrated version management via drafts.
+
+> **Note:** Screenshots of the canvas, inspector, and version drawer are tracked as a follow-up once the Builder React bootstrap is hardened (current main still requires inlined React globals). See PRP-PLAT-008 Tier F follow-up.
+
+### Enabling the Builder
+
+Set the `DAG_DASHBOARD_BUILDER_ENABLED` environment variable to enable the builder UI:
+
+```bash
+DAG_DASHBOARD_BUILDER_ENABLED=true dag-dashboard
+```
+
+When enabled:
+- The feature flag is exposed via `/api/config` as `window.DAG_DASHBOARD_BUILDER_ENABLED`
+- Builder routes are mounted at `/#/builder/*`
+- The builder interface becomes accessible from the dashboard navigation
+
+### Drafts Lifecycle
+
+The builder uses a drafts system to manage workflow edits without overwriting the canonical workflow file until explicitly published. Drafts are stored in `<workflows_dir>/.drafts/<workflow_name>/` with timestamp-based filenames.
+
+**Lifecycle stages:**
+
+1. **Autosave** — Changes are automatically saved every 30 seconds to a draft file (format: `YYYYMMDD_HHMMSS.yaml`)
+2. **Save** — Manual save via `Cmd+S` (Mac) / `Ctrl+S` (Windows/Linux) bypasses the autosave debounce and immediately writes a timestamped draft
+3. **Current pointer** — A `.current` pointer file tracks the active draft being edited
+4. **Publish** — Promotes the current draft to the canonical `workflow.yaml` file via atomic rename (see Publish Flow below)
+
+Drafts are pruned to keep the most recent 50 per workflow. Old drafts can be restored or compared using the version drawer or CLI.
+
+### Publish Flow
+
+Clicking **Publish** in the builder toolbar triggers the following steps:
+
+1. **Validation** — The draft is validated against the workflow schema (node types, required fields, edge connectivity)
+2. **Temporary write** — If validation passes, the content is written to `<workflow_name>.yaml.tmp` in the same directory
+3. **Atomic rename** — `os.replace()` renames the `.tmp` file to `<workflow_name>.yaml`, ensuring readers never see a partial file
+
+This atomic rename guarantees that:
+- Concurrent readers see either the old or new version, never a half-written file
+- The publish operation is idempotent and crash-safe
+- No manual locking or coordination is required
+
+### Destructive Node Editing (builder.allow_destructive_nodes)
+
+By default, the builder restricts editing of certain "destructive" node types to prevent accidental code execution or side effects. When `allow_destructive_nodes=False` (default), the flag applies a card-level read-only visual state (dimmed appearance + not-allowed cursor) to destructive node types. Per-field editing lockdowns for bash/skill/command node internals are in-progress under FR-8 and will land in a follow-up.
+
+**Rationale:** The builder is commonly used by multiple operators in shared environments. Fields that execute arbitrary code or shell commands can introduce security risks (e.g., unintentional data deletion, credential leakage). The default read-only mode ensures safe editing of workflow structure while preventing foot-guns.
+
+**To enable destructive field editing:**
+
+Set `allow_destructive_nodes=True` in the dashboard configuration:
+
+```bash
+DAG_DASHBOARD_ALLOW_DESTRUCTIVE_NODES=true dag-dashboard
+```
+
+Enable this setting only when:
+- The operator population is trusted
+- Workflow security is managed via external controls (e.g., code review, RBAC)
+- Destructive editing is required for legitimate workflow design tasks
+
+### Keyboard Shortcuts
+
+The builder supports keyboard shortcuts for common actions. All shortcuts use `Cmd` on macOS and `Ctrl` on Windows/Linux (referred to as `mod` below). Shortcuts are suppressed when typing in text inputs, textareas, or contenteditable elements.
+
+| Shortcut | Action |
+|----------|--------|
+| `mod+s` | Force save (bypasses autosave debounce) |
+| `mod+z` | Undo |
+| `mod+shift+z` | Redo |
+| `mod+/` | Toggle YAML code view |
+| `mod+.` | Toggle validation panel |
+| `mod+enter` | Run workflow |
+| `mod+l` | Toggle node library |
+| `mod+d` | Duplicate selected node |
+| `delete` / `backspace` | Delete selected node or edge |
+
+### dag-exec drafts CLI
+
+The `dag-executor` package provides a `dag-exec drafts` subcommand for managing workflow drafts from the command line. This is useful for scripting, CI/CD pipelines, or debugging draft state outside the UI.
+
+**Subcommands:**
+
+```bash
+# List all drafts for a workflow (local mode)
+dag-exec drafts list <workflow_name> [--json]
+
+# Show diff between two drafts, or between a draft and canonical
+dag-exec drafts diff <workflow_name> <timestamp_a> [<timestamp_b>]
+
+# Restore a draft as the canonical workflow (atomic rename)
+dag-exec drafts restore <workflow_name> <timestamp> [--yes]
+
+# Publish a draft (same as UI Publish button: validate + atomic rename)
+dag-exec drafts publish <workflow_name> <timestamp>
+
+# Delete a specific draft
+dag-exec drafts delete <workflow_name> <timestamp> [--yes]
+```
+
+**Local mode** (default) reads/writes drafts directly from the filesystem:
+- Use `--workflows-dir <path>` to specify the workflows directory
+- Or set `$DAG_DASHBOARD_WORKFLOWS_DIR` environment variable
+- Defaults to current directory if neither is set
+
+**Remote mode** sends HTTP requests to a running dashboard API:
+- Use `--remote <url>` to specify the dashboard base URL (e.g., `http://localhost:8100`)
+- Provide authentication via `--token <bearer_token>` or `$DAG_EXEC_DRAFTS_TOKEN` environment variable
+- Useful for managing drafts on a remote dashboard instance without filesystem access
+
+**Examples:**
+
+```bash
+# List drafts for 'work' workflow
+dag-exec drafts list work --json
+
+# Compare current draft to canonical workflow
+dag-exec drafts diff work 20260423_143022
+
+# Compare two drafts
+dag-exec drafts diff work 20260423_143022 20260423_150133
+
+# Restore a specific draft (prompts for confirmation unless --yes)
+dag-exec drafts restore work 20260423_143022 --yes
+
+# Publish a draft (runs validation first)
+dag-exec drafts publish work 20260423_143022
+
+# Delete an old draft
+dag-exec drafts delete work 20260420_091533 --yes
+
+# Remote mode: list drafts on a remote dashboard
+dag-exec drafts list work --remote http://dashboard.example.com:8100 --token $MY_TOKEN
+```
+
 ## Configuration
 
 All settings are configured via environment variables with the `DAG_DASHBOARD_` prefix:
