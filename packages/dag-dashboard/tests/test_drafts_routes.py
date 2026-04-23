@@ -439,3 +439,109 @@ def test_drafts_dir_not_listed_as_definition(client, workflows_dir):
     for definition in definitions:
         assert not definition["name"].startswith(".")
         assert ".drafts" not in definition["path"]
+
+# Test 24: Get current pointer returns 404 when unset
+def test_get_current_404_when_unset(client):
+    """GET /api/workflows/{name}/drafts/current returns 404 when no .current file exists."""
+    response = client.get("/api/workflows/test-workflow/drafts/current")
+    assert response.status_code == 404
+
+
+# Test 25: Put current sets pointer
+def test_put_current_sets_pointer(client, workflows_dir):
+    """PUT /api/workflows/{name}/drafts/current sets pointer, GET returns same timestamp."""
+    # Create a draft first
+    timestamp = "20260101T120000_000000Z"
+    create_draft(workflows_dir, "test-workflow", timestamp, "content: test")
+    
+    # Set current pointer
+    response = client.put(
+        "/api/workflows/test-workflow/drafts/current",
+        json={"timestamp": timestamp}
+    )
+    assert response.status_code == 204
+    
+    # Verify GET returns the same timestamp
+    response = client.get("/api/workflows/test-workflow/drafts/current")
+    assert response.status_code == 200
+    assert response.json()["timestamp"] == timestamp
+
+
+# Test 26: Put current rejects malformed timestamp
+def test_put_current_rejects_malformed_timestamp(client):
+    """PUT /api/workflows/{name}/drafts/current returns 422 for malformed timestamp (Pydantic validation)."""
+    response = client.put(
+        "/api/workflows/test-workflow/drafts/current",
+        json={"timestamp": "not-a-timestamp"}
+    )
+    assert response.status_code == 422
+
+
+# Test 27: Put current returns 404 when draft missing
+def test_put_current_404_when_draft_missing(client):
+    """PUT /api/workflows/{name}/drafts/current returns 404 when draft doesn't exist."""
+    response = client.put(
+        "/api/workflows/test-workflow/drafts/current",
+        json={"timestamp": "20260101T120000_000000Z"}
+    )
+    assert response.status_code == 404
+
+
+# Test 28: Put current overwrites previous pointer
+def test_put_current_overwrites_previous_pointer(client, workflows_dir):
+    """Second PUT replaces first pointer cleanly."""
+    ts1 = "20260101T120000_000000Z"
+    ts2 = "20260102T120000_000000Z"
+    create_draft(workflows_dir, "test-workflow", ts1, "content: v1")
+    create_draft(workflows_dir, "test-workflow", ts2, "content: v2")
+    
+    # Set first pointer
+    client.put("/api/workflows/test-workflow/drafts/current", json={"timestamp": ts1})
+    response = client.get("/api/workflows/test-workflow/drafts/current")
+    assert response.json()["timestamp"] == ts1
+    
+    # Overwrite with second pointer
+    client.put("/api/workflows/test-workflow/drafts/current", json={"timestamp": ts2})
+    response = client.get("/api/workflows/test-workflow/drafts/current")
+    assert response.status_code == 200
+    assert response.json()["timestamp"] == ts2
+
+
+# Test 29: Get current survives across directories
+def test_get_current_survives_across_directories(tmp_path):
+    """GET /api/workflows/{name}/drafts/current finds .current in any configured workflows_dirs."""
+    # Create two separate workflows directories
+    dir_a = tmp_path / "workflows_a"
+    dir_b = tmp_path / "workflows_b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    
+    # Create draft in dir_b
+    timestamp = "20260101T120000_000000Z"
+    drafts_dir = dir_b / ".drafts" / "test-workflow"
+    drafts_dir.mkdir(parents=True)
+    draft_path = drafts_dir / f"{timestamp}.yaml"
+    draft_path.write_text("content: test")
+    
+    # Create .current pointer in dir_b
+    current_path = drafts_dir / ".current"
+    current_path.write_text(timestamp)
+    
+    # Create app with both directories (dir_a is primary, dir_b is secondary)
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    events_dir = tmp_path / "events"
+    events_dir.mkdir()
+    
+    app = create_app(
+        db_path=db_path,
+        events_dir=events_dir,
+        workflows_dirs=[dir_a, dir_b],
+        checkpoint_prefix=None,
+    )
+    client = TestClient(app)
+    
+    # Verify .current is found in dir_b even though dir_a is primary
+    response = client.get("/api/workflows/test-workflow/drafts/current")
+    assert response.status_code == 200
+    assert response.json()["timestamp"] == timestamp
