@@ -41,7 +41,7 @@ This script:
 
 The dag-dashboard includes a visual workflow builder for creating and editing DAG workflow YAML files. The builder provides a drag-and-drop canvas, real-time validation, and integrated version management via drafts.
 
-![Builder Canvas](docs/screenshots/canvas.png)
+> **Note:** Screenshots of the canvas, inspector, and version drawer are tracked as a follow-up once the Builder React bootstrap is hardened (current main still requires inlined React globals). See PRP-PLAT-008 Tier F follow-up.
 
 ### Enabling the Builder
 
@@ -69,8 +69,6 @@ The builder uses a drafts system to manage workflow edits without overwriting th
 
 Drafts are pruned to keep the most recent 50 per workflow. Old drafts can be restored or compared using the version drawer or CLI.
 
-![Node Inspector](docs/screenshots/inspector.png)
-
 ### Publish Flow
 
 Clicking **Publish** in the builder toolbar triggers the following steps:
@@ -83,8 +81,6 @@ This atomic rename guarantees that:
 - Concurrent readers see either the old or new version, never a half-written file
 - The publish operation is idempotent and crash-safe
 - No manual locking or coordination is required
-
-![Version Drawer](docs/screenshots/version-drawer.png)
 
 ### Destructive Node Editing (builder.allow_destructive_nodes)
 
