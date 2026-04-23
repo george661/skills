@@ -130,6 +130,25 @@ CREATE TABLE IF NOT EXISTS dashboard_settings (
     updated_at TEXT NOT NULL,
     updated_by TEXT
 );
+
+-- 11. conversations: Conversation grouping for chat messages and workflow runs
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    origin TEXT NOT NULL
+);
+
+-- 12. sessions: Session tracking within conversations (immutable except active flag)
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    parent_session_id TEXT REFERENCES sessions(id),
+    transition_reason TEXT,
+    created_at TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_conv ON sessions(conversation_id);
 """
 
 
@@ -396,6 +415,21 @@ def init_db(db_path: Path, fts5_enabled: bool = False) -> None:
 
         try:
             cursor.execute("ALTER TABLE node_executions ADD COLUMN cache_hit INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE chat_messages ADD COLUMN conversation_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE chat_messages ADD COLUMN session_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE workflow_runs ADD COLUMN conversation_id TEXT")
         except sqlite3.OperationalError:
             pass
 

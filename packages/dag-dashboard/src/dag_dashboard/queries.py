@@ -624,6 +624,8 @@ def insert_chat_message(
     metadata: Optional[Dict[str, Any]] = None,
     run_id: Optional[str] = None,
     operator_username: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> Optional[int]:
     """Insert a chat message for a node execution or workflow.
 
@@ -635,13 +637,15 @@ def insert_chat_message(
         metadata: Optional JSON metadata
         run_id: Optional workflow run ID (for workflow-level messages)
         operator_username: Optional username of operator who sent message
+        conversation_id: Optional conversation ID for grouping messages
+        session_id: Optional session ID within a conversation
     """
     conn = get_connection(db_path)
     try:
         cursor = conn.execute(
             """
-            INSERT INTO chat_messages (execution_id, role, content, created_at, metadata, run_id, operator_username)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO chat_messages (execution_id, role, content, created_at, metadata, run_id, operator_username, conversation_id, session_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 execution_id,
@@ -650,7 +654,9 @@ def insert_chat_message(
                 created_at,
                 json.dumps(metadata) if metadata else None,
                 run_id,
-                operator_username
+                operator_username,
+                conversation_id,
+                session_id,
             )
         )
         conn.commit()
@@ -1280,5 +1286,196 @@ def count_node_log_lines(
         cursor.execute(query, tuple(params))
         row = cursor.fetchone()
         return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+# ============================================================================
+# Conversations and Sessions
+# ============================================================================
+
+
+def insert_conversation(
+    db_path: Path,
+    conversation_id: str,
+    origin: str,
+    created_at: str,
+) -> None:
+    """Insert a new conversation row."""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO conversations (id, created_at, closed_at, origin) VALUES (?, ?, NULL, ?)",
+            (conversation_id, created_at, origin)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_conversation_row(db_path: Path, conversation_id: str) -> Optional[Dict[str, Any]]:
+    """Get conversation row by ID."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT id, created_at, closed_at, origin FROM conversations WHERE id = ?",
+            (conversation_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "id": row[0],
+                "created_at": row[1],
+                "closed_at": row[2],
+                "origin": row[3],
+            }
+        return None
+    finally:
+        conn.close()
+
+
+def update_conversation_closed_at(db_path: Path, conversation_id: str, closed_at: str) -> None:
+    """Update conversation closed_at timestamp."""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "UPDATE conversations SET closed_at = ? WHERE id = ?",
+            (closed_at, conversation_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_session_row(
+    db_path: Path,
+    session_id: str,
+    conversation_id: str,
+    created_at: str,
+    parent_session_id: Optional[str] = None,
+    transition_reason: Optional[str] = None,
+    active: int = 1,
+) -> None:
+    """Insert a new session row."""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO sessions (id, conversation_id, parent_session_id, transition_reason, created_at, active)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, conversation_id, parent_session_id, transition_reason, created_at, active)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_session_row(db_path: Path, session_id: str) -> Optional[Dict[str, Any]]:
+    """Get session row by ID."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT id, conversation_id, parent_session_id, transition_reason, created_at, active
+            FROM sessions WHERE id = ?
+            """,
+            (session_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "id": row[0],
+                "conversation_id": row[1],
+                "parent_session_id": row[2],
+                "transition_reason": row[3],
+                "created_at": row[4],
+                "active": bool(row[5]),
+            }
+        return None
+    finally:
+        conn.close()
+
+
+def set_session_inactive(db_path: Path, session_id: str) -> None:
+    """Set session active flag to 0."""
+    conn = get_connection(db_path)
+    try:
+        conn.execute("UPDATE sessions SET active = 0 WHERE id = ?", (session_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_active_session_row(db_path: Path, conversation_id: str) -> Optional[Dict[str, Any]]:
+    """Get the active session for a conversation."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT id, conversation_id, parent_session_id, transition_reason, created_at, active
+            FROM sessions WHERE conversation_id = ? AND active = 1
+            """,
+            (conversation_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "id": row[0],
+                "conversation_id": row[1],
+                "parent_session_id": row[2],
+                "transition_reason": row[3],
+                "created_at": row[4],
+                "active": bool(row[5]),
+            }
+        return None
+    finally:
+        conn.close()
+
+
+def get_sessions_in_chain(db_path: Path, session_id: str) -> List[Dict[str, Any]]:
+    """Get all sessions in the chain from session_id to root, in reverse order."""
+    conn = get_connection(db_path)
+    try:
+        sessions = []
+        current_id: Optional[str] = session_id
+        
+        while current_id:
+            cursor = conn.execute(
+                """
+                SELECT id, conversation_id, parent_session_id, transition_reason, created_at, active
+                FROM sessions WHERE id = ?
+                """,
+                (current_id,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                break
+            
+            sessions.append({
+                "id": row[0],
+                "conversation_id": row[1],
+                "parent_session_id": row[2],
+                "transition_reason": row[3],
+                "created_at": row[4],
+                "active": bool(row[5]),
+            })
+            current_id = row[2]  # parent_session_id
+        
+        return sessions
+    finally:
+        conn.close()
+
+
+def get_conversation_id_from_run(db_path: Path, run_id: str) -> Optional[str]:
+    """Get conversation_id from a workflow_run row."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT conversation_id FROM workflow_runs WHERE id = ?",
+            (run_id,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
     finally:
         conn.close()
