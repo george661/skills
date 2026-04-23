@@ -5,19 +5,67 @@ import { createRoot } from 'react-dom/client';
 import '@xyflow/react/dist/style.css';
 
 import { WorkflowCanvas } from './WorkflowCanvas.jsx';
+import { useAutosave } from './useAutosave.js';
 
 /**
- * Builder root. Mounts the React Flow-based canvas into the container
- * provided by the dashboard router. The NodeLibrary palette (GW-5245)
- * and NodeInspector form (GW-5244) are separate components; wiring
- * them together into a full three-pane layout is a later Tier B task.
- *
- * For now, the canvas stands alone and accepts drops in the library's
- * `application/x-dag-node` format so that when the integration task
- * lands it is a wiring change, not a refactor.
+ * Builder root with autosave. Reads workflow name from ?workflow= query param
+ * (defaults to "untitled"), loads the most recent draft via .current pointer,
+ * and autosaves every 30s after the last edit. Cmd/Ctrl+S triggers a manual
+ * save (creates a new timestamp).
  */
 function Builder() {
-    const [, setDag] = React.useState([]);
+    const [initialDag, setInitialDag] = React.useState([]);
+    const dagRef = React.useRef([]);
+    
+    // Read workflow name from URL
+    const workflowName = React.useMemo(() => {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('workflow') || 'untitled';
+    }, []);
+    
+    // Autosave hook
+    const { status, forceSave, lastSavedAt, markDirty } = useAutosave({
+        workflowName,
+        getDag: () => dagRef.current,
+        onLoad: (dag) => {
+            setInitialDag(dag);
+        }
+    });
+    
+    // Keyboard handler for Cmd/Ctrl+S
+    React.useEffect(() => {
+        const handleKeyDown = (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+                e.preventDefault();
+                forceSave();
+            }
+        };
+        
+        document.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [forceSave]);
+    
+    // Handle graph changes
+    const handleGraphChange = React.useCallback((dag) => {
+        dagRef.current = dag;
+        markDirty();
+    }, [markDirty]);
+    
+    // Save status indicator
+    const saveStatus = React.useMemo(() => {
+        if (status === 'saving') return 'Saving...';
+        if (status === 'saved' && lastSavedAt) {
+            const elapsed = Math.floor((Date.now() - lastSavedAt) / 1000);
+            if (elapsed < 60) return `Saved ${elapsed}s ago`;
+            return 'Saved';
+        }
+        if (status === 'unsaved') return 'Unsaved changes';
+        if (status === 'error') return 'Save failed';
+        return '';
+    }, [status, lastSavedAt]);
+    
     return (
         <div
             style={{
@@ -30,10 +78,22 @@ function Builder() {
                 color: 'var(--text-primary)',
             }}
         >
+            {saveStatus && (
+                <div
+                    style={{
+                        padding: '4px 8px',
+                        fontSize: '12px',
+                        color: 'var(--text-secondary, #888)',
+                        borderBottom: '1px solid var(--border-primary, #333)',
+                    }}
+                >
+                    {saveStatus}
+                </div>
+            )}
             <WorkflowCanvas
-                initialDag={[]}
+                initialDag={initialDag}
                 readOnly={false}
-                onGraphChange={setDag}
+                onGraphChange={handleGraphChange}
             />
         </div>
     );
