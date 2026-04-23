@@ -73,7 +73,12 @@ jobs:
       - name: Install builder dependencies
         run: |
           cd packages/dag-dashboard/builder
-          npm ci
+          npm ci --legacy-peer-deps
+
+      - name: Run builder unit tests
+        run: |
+          cd packages/dag-dashboard/builder
+          npm test
 
       - name: Build builder bundle
         run: |
