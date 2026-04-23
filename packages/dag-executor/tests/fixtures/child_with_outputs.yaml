@@ -1,0 +1,18 @@
+name: child_with_outputs
+config:
+  checkpoint_prefix: child-outputs
+
+inputs: {}
+
+nodes:
+  - id: produce_output
+    name: Produce Output
+    type: bash
+    script: |
+      echo '{"result": "success_from_child"}'
+    output_format: json
+
+outputs:
+  result:
+    node: produce_output
+    field: result

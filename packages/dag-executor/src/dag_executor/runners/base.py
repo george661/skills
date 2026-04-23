@@ -43,6 +43,7 @@ class RunnerContext:
     event_emitter: Optional["EventEmitter"] = None
     subprocess_registry: Optional["SubprocessRegistry"] = None
     parent_run_id: Optional[str] = None
+    _recursion_depth: int = 0
 
 
 class BaseRunner(ABC):
