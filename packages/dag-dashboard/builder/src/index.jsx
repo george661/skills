@@ -10,6 +10,8 @@ import useToolbarActions from './useToolbarActions.js';
 import { dagToYaml } from './dagToYaml.js';
 import { useAutosave } from './useAutosave.js';
 import { YamlCodeView } from './YamlCodeView.jsx';
+import VersionDrawer from './VersionDrawer.jsx';
+import useVersionDrawer from './useVersionDrawer.js';
 
 function serializeMetadata({ name, description, provider, model }) {
     const lines = [];
@@ -44,6 +46,7 @@ function Builder() {
     const [dag, setDag] = React.useState([]);
     const dagRef = React.useRef([]);
     const [isLoaded, setIsLoaded] = React.useState(false);
+    const [restoreKey, setRestoreKey] = React.useState(0);
     const [viewMode, setViewMode] = React.useState('hidden');
     const [description, setDescription] = React.useState('');
     const [provider, setProvider] = React.useState('');
@@ -86,6 +89,24 @@ function Builder() {
         getDag,
         onLoad,
     });
+
+    // Version drawer hook (GW-5251) — manage version browser state and actions.
+    // Pass JSON format to match draft storage format for apples-to-apples diff
+    const currentCanvasJson = React.useMemo(
+        () => JSON.stringify({ nodes: dag }),
+        [dag]
+    );
+    const versionDrawer = useVersionDrawer(workflowName, currentCanvasJson);
+
+    // Restore handler — loads draft nodes and forces canvas remount via restoreKey.
+    const handleRestore = React.useCallback(async (timestamp) => {
+        const nodes = await versionDrawer.handleRestore(timestamp);
+        if (nodes) {
+            setInitialDag(nodes);
+            setRestoreKey(prev => prev + 1);
+            versionDrawer.close();
+        }
+    }, [versionDrawer]);
 
     // Keyboard handler for Cmd/Ctrl+S — force save.
     React.useEffect(() => {
@@ -192,6 +213,7 @@ function Builder() {
                 onValidate={handleValidate}
                 onUndo={handleUndo}
                 onViewModeChange={setViewMode}
+                onOpenVersions={versionDrawer.open}
             />
 
             {saveStatus && (
@@ -237,7 +259,7 @@ function Builder() {
                         }}
                     >
                         <WorkflowCanvas
-                            key={isLoaded ? 'loaded' : 'loading'}
+                            key={`${isLoaded ? 'loaded' : 'loading'}-${restoreKey}`}
                             initialDag={initialDag}
                             readOnly={false}
                             onGraphChange={handleGraphChange}
@@ -261,6 +283,17 @@ function Builder() {
 
             {/* Placeholder for ValidationPanel (feature-flagged global script) */}
             <div id="validation-panel-mount"></div>
+
+            {/* Version Drawer (GW-5251) */}
+            <VersionDrawer
+                isOpen={versionDrawer.isOpen}
+                drafts={versionDrawer.drafts}
+                hoveredDiff={versionDrawer.hoveredDiff}
+                onClose={versionDrawer.close}
+                onRestore={handleRestore}
+                onDelete={versionDrawer.handleDelete}
+                onHover={versionDrawer.handleHover}
+            />
         </div>
     );
 }

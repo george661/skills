@@ -238,6 +238,8 @@ class WorkflowExecutor:
         _recursion_depth: int = 0,
         parent_run_id: Optional[str] = None,
         subprocess_registry: Optional["SubprocessRegistry"] = None,
+        conversation_id: Optional[str] = None,
+        db_path: Optional["Path"] = None,
     ) -> WorkflowResult:
         """Execute workflow from start to completion.
 
@@ -255,6 +257,8 @@ class WorkflowExecutor:
             _recursion_depth: Internal recursion depth counter for command nodes
             parent_run_id: Optional parent workflow run_id for event lineage
             subprocess_registry: Optional subprocess registry to share with parent
+            conversation_id: Optional conversation ID for session grouping
+            db_path: Optional database path for conversation/session storage
 
         Returns:
             WorkflowResult with execution status and node results
@@ -380,7 +384,8 @@ class WorkflowExecutor:
                 break
 
             await self._execute_layer(
-                layer, nodes_map, ctx, workflow_def, event_emitter, checkpoint_store, run_id, channel_store
+                layer, nodes_map, ctx, workflow_def, event_emitter, checkpoint_store, run_id, channel_store,
+                conversation_id, db_path
             )
 
             # Reset channel writers at layer boundary for next layer
@@ -553,7 +558,9 @@ class WorkflowExecutor:
         event_emitter: Optional["EventEmitter"] = None,
         checkpoint_store: Optional["CheckpointStore"] = None,
         run_id: str = "",
-        channel_store: Optional["ChannelStore"] = None
+        channel_store: Optional["ChannelStore"] = None,
+        conversation_id: Optional[str] = None,
+        db_path: Optional["Path"] = None,
     ) -> None:
         """Execute all nodes in a layer concurrently.
 
@@ -572,7 +579,8 @@ class WorkflowExecutor:
         for node_id in layer_node_ids:
             node_def = nodes_map[node_id]
             task = self._execute_node(
-                node_def, ctx, nodes_map, workflow_def, event_emitter, checkpoint_store, run_id, channel_store
+                node_def, ctx, nodes_map, workflow_def, event_emitter, checkpoint_store, run_id, channel_store,
+                conversation_id, db_path
             )
             tasks.append(task)
 
@@ -632,7 +640,9 @@ class WorkflowExecutor:
         event_emitter: Optional["EventEmitter"] = None,
         checkpoint_store: Optional["CheckpointStore"] = None,
         run_id: str = "",
-        channel_store: Optional["ChannelStore"] = None
+        channel_store: Optional["ChannelStore"] = None,
+        conversation_id: Optional[str] = None,
+        db_path: Optional["Path"] = None,
     ) -> None:
         """Execute a single node with all pre/post checks.
 
@@ -845,6 +855,8 @@ class WorkflowExecutor:
                 event_emitter=event_emitter,
                 subprocess_registry=ctx.subprocess_registry,
                 parent_run_id=run_id,
+                conversation_id=conversation_id,
+                db_path=db_path,
                 _recursion_depth=ctx._recursion_depth,
             )
 
