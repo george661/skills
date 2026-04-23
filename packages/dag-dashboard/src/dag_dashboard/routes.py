@@ -52,12 +52,13 @@ def get_events_dir(request: Request) -> Path:
 
 
 @router.get("/config")
-async def get_config(request: Request) -> dict:
+async def get_config(request: Request) -> Dict[str, bool]:
     """Return UI-relevant configuration flags."""
-    # Defensive: if settings not in app state, return safe defaults
     settings = getattr(request.app.state, 'settings', None)
-    allow_destructive = getattr(settings, 'allow_destructive_nodes', False) if settings else False
-    return {"allow_destructive_nodes": allow_destructive}
+    return {
+        "allow_destructive_nodes": getattr(settings, 'allow_destructive_nodes', False) if settings else False,
+        "builder_enabled": getattr(settings, 'builder_enabled', False) if settings else False,
+    }
 
 
 @router.get("/workflows/summary")
