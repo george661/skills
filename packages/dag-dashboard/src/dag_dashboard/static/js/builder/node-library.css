@@ -161,3 +161,67 @@
 .node-library-collapsed .toggle-button {
     padding: 8px 12px;
 }
+
+/* --- GW-5253: mobile drawer (max-width: 767px) ---
+ * On phones/iPad-portrait the resizable side panel is too narrow to be useful.
+ * Collapse the library into a slide-in drawer toggled by `node-library--mobile-open`.
+ * The builder layout skips the library entirely below 767px (see builder bundle),
+ * so these rules only apply when a host chooses to render the library on mobile.
+ */
+@media (max-width: 767px) {
+    .node-library {
+        width: 100% !important;
+        max-width: 100%;
+        border-right: none;
+        border-bottom: 1px solid #dee2e6;
+    }
+
+    .node-library .resize-handle {
+        /* No point resizing a drawer on a phone — also prevents accidental drag gestures. */
+        display: none;
+    }
+
+    .node-library-header h2 {
+        font-size: 18px;
+    }
+
+    .node-library-header .toggle-button {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 10px 16px;
+        touch-action: manipulation;
+    }
+
+    .node-library-item {
+        /* Larger tap targets; iOS recommends 44px minimum. */
+        padding: 14px 12px;
+        font-size: 15px;
+    }
+
+    .search-input {
+        /* 16px prevents iOS auto-zoom on focus. */
+        font-size: 16px;
+        min-height: 44px;
+        padding: 10px 12px;
+    }
+
+    /* Slide-in drawer variant for callers that opt in. The host toggles
+     * `.node-library--mobile-open` on the root when the drawer should be visible. */
+    .node-library--mobile {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        max-width: 320px;
+        z-index: 50;
+        transform: translateX(-100%);
+        transition: transform 0.2s ease-in-out;
+        box-shadow: 2px 0 12px rgba(0, 0, 0, 0.15);
+    }
+
+    .node-library--mobile.node-library--mobile-open {
+        transform: translateX(0);
+    }
+}
+
