@@ -29,8 +29,10 @@ class VariableResolutionError(Exception):
         self.channel_version = channel_version
 
 
-# Regex to match $variable or $node.field.nested
+# Regex to match $variable or $node.field.nested or $function(args)
 VARIABLE_PATTERN = re.compile(r'\$([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*)')
+# Regex to match callable references like $repo_path(slug)
+CALLABLE_PATTERN = re.compile(r'\$([a-zA-Z0-9_-]+)\(([^)]+)\)')
 
 
 def resolve_variables(
@@ -74,21 +76,41 @@ def _resolve_string(
 
     If the string is a pure reference (e.g., "$node.output"), return the resolved object directly.
     If the string contains mixed content (e.g., "Hello $name"), perform string interpolation.
+    Supports callable references like $repo_path(slug).
     """
-    matches = list(VARIABLE_PATTERN.finditer(value))
+    # First check for callable patterns (like $repo_path(...))
+    callable_matches = list(CALLABLE_PATTERN.finditer(value))
+    
+    # Process callables first
+    result = value
+    for match in callable_matches:
+        full_match = match.group(0)  # e.g., "$repo_path(skills)"
+        func_name = match.group(1)   # e.g., "repo_path"
+        arg = match.group(2).strip() # e.g., "skills"
+        
+        resolved = _resolve_callable(func_name, arg, node_outputs, workflow_inputs, channel_store)
+        result = result.replace(full_match, str(resolved))
+    
+    # If we processed callables and nothing else remains, return early
+    if callable_matches and result == value.replace(callable_matches[0].group(0), str(_resolve_callable(callable_matches[0].group(1), callable_matches[0].group(2).strip(), node_outputs, workflow_inputs, channel_store))):
+        # Pure callable reference
+        if len(callable_matches) == 1 and callable_matches[0].group(0) == value:
+            return _resolve_callable(callable_matches[0].group(1), callable_matches[0].group(2).strip(), node_outputs, workflow_inputs, channel_store)
+    
+    # Now handle regular variable patterns
+    matches = list(VARIABLE_PATTERN.finditer(result))
 
-    if not matches:
+    if not matches and not callable_matches:
         # No references, return unchanged
         return value
 
     # Check if this is a pure reference (entire string is just the reference)
-    if len(matches) == 1 and matches[0].group(0) == value:
+    if len(matches) == 1 and matches[0].group(0) == result and not callable_matches:
         # Pure reference - return the resolved object directly
         reference = matches[0].group(1)
         return _resolve_reference(reference, node_outputs, workflow_inputs, channel_store)
 
     # Mixed content - perform string interpolation
-    result = value
     for match in matches:
         full_match = match.group(0)  # e.g., "$node.output.field"
         reference = match.group(1)    # e.g., "node.output.field"
@@ -97,6 +119,49 @@ def _resolve_string(
         result = result.replace(full_match, str(resolved))
 
     return result
+
+
+
+def _resolve_callable(
+    func_name: str,
+    arg: str,
+    node_outputs: Dict[str, Dict[str, Any]],
+    workflow_inputs: Dict[str, Any],
+    channel_store: Optional["ChannelStore"] = None
+) -> Any:
+    """Resolve a callable reference like repo_path(slug).
+    
+    Args:
+        func_name: The function name (e.g., "repo_path")
+        arg: The argument to the function
+        node_outputs: Available node outputs (for error context)
+        workflow_inputs: Available workflow inputs (for error context)
+        channel_store: Optional channel store
+    
+    Returns:
+        The resolved value from the callable
+    
+    Raises:
+        VariableResolutionError: If the callable is unknown or fails
+    """
+    if func_name == "repo_path":
+        from dag_executor.repo_paths import resolve_repo_path, RepoPathError
+        try:
+            return resolve_repo_path(arg)
+        except RepoPathError as e:
+            raise VariableResolutionError(
+                f"Cannot resolve $repo_path({arg}): {e}",
+                f"repo_path({arg})",
+                list(node_outputs.keys()),
+                list(workflow_inputs.keys())
+            )
+    else:
+        raise VariableResolutionError(
+            f"Unknown callable reference: ${func_name}(...)",
+            f"{func_name}({arg})",
+            list(node_outputs.keys()),
+            list(workflow_inputs.keys())
+        )
 
 
 def _resolve_reference(
