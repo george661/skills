@@ -43,7 +43,7 @@ def validate_setting_value(key: str, value: Any) -> Optional[str]:
     Returns:
         Error message if invalid, None if valid
     """
-    if key == "slack_enabled" or key == "trigger_enabled":
+    if key == "slack_enabled" or key == "trigger_enabled" or key == "allow_destructive_nodes":
         if not isinstance(value, bool):
             return f"must be boolean, got {type(value).__name__}"
 

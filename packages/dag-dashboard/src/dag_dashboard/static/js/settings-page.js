@@ -46,6 +46,13 @@
                 { key: 'node_log_line_cap', label: 'Node log line cap', type: 'number', min: 1, max: 10000000, placeholder: '50000' },
             ],
         },
+        {
+            id: 'builder',
+            title: 'Builder',
+            fields: [
+                { key: 'allow_destructive_nodes', label: 'Allow editing bash/skill/command node fields', type: 'checkbox', help: 'Keep OFF unless you trust everyone with dashboard access. When enabled, users can edit bash commands, skill references, and command node fields in the workflow builder.' },
+            ],
+        },
     ];
 
     function escapeHtml(unsafe) {
@@ -109,10 +116,12 @@
         }
 
         const sourceBadge = `<span class="settings-source settings-source-${escapeHtml(source)}">${escapeHtml(source)}</span>`;
+        const helpText = field.help ? `<div class="settings-help-text">${escapeHtml(field.help)}</div>` : '';
 
         return `
             <div class="settings-field" data-field="${escapeHtml(field.key)}">
                 <label for="${fieldId}" class="settings-label">${escapeHtml(field.label)}</label>
+                ${helpText}
                 <div class="settings-field-control">${inputHtml}</div>
                 <div class="settings-field-meta">${sourceBadge}</div>
                 <div id="${errorId}" class="settings-error" role="alert" aria-live="polite"></div>
