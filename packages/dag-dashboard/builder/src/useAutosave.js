@@ -25,9 +25,10 @@ export function useAutosave({
     const [status, setStatus] = useState('idle');
     const [currentTimestamp, setCurrentTimestamp] = useState(null);
     const [lastSavedAt, setLastSavedAt] = useState(null);
-    
+
     const timerRef = useRef(null);
     const lastDagHashRef = useRef(null);
+    const autosaveRef = useRef(null);
 
     // Bootstrap: load or create draft
     useEffect(() => {
@@ -87,15 +88,15 @@ export function useAutosave({
         bootstrap();
     }, [workflowName, fetch, onLoad]);
 
-    // Autosave logic
-    const autosave = async () => {
+    // Autosave logic - store in ref for stable reference
+    autosaveRef.current = async () => {
         if (!currentTimestamp) return;
-        
+
         try {
             setStatus('saving');
             const dag = getDag();
             const content = JSON.stringify({ nodes: dag });
-            
+
             await fetch(
                 `/api/workflows/${workflowName}/drafts/${currentTimestamp}`,
                 {
@@ -104,7 +105,7 @@ export function useAutosave({
                     body: JSON.stringify({ content })
                 }
             );
-            
+
             lastDagHashRef.current = JSON.stringify(dag);
             setLastSavedAt(Date.now());
             setStatus('saved');
@@ -133,7 +134,7 @@ export function useAutosave({
 
         // Schedule new autosave
         timerRef.current = setTimer(() => {
-            autosave();
+            autosaveRef.current();
             timerRef.current = null;
         }, delayMs);
     }, [getDag, clearTimer, setTimer, delayMs]);
