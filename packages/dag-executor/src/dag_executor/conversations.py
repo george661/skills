@@ -17,6 +17,7 @@ Immutability contract:
   transition_reason, or created_at on sessions
 """
 
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -329,6 +330,55 @@ def get_conversation_id_from_parent_run(db_path: Path, parent_run_id: str) -> Op
 
     result: Optional[str] = get_conversation_id_from_run(db_path, parent_run_id)
     return result
+
+
+def list_messages(db_path: Path, conversation_id: str) -> List[Message]:
+    """List all messages in a conversation in chronological order.
+
+    Returns messages across all sessions for the given conversation,
+    ordered by created_at and id.
+
+    Args:
+        db_path: Path to SQLite database
+        conversation_id: Conversation ID to list messages for
+
+    Returns:
+        List of Message objects in chronological order
+    """
+    conn = sqlite3.connect(db_path)
+    cursor = conn.execute("""
+        SELECT id, execution_id, run_id, conversation_id, session_id,
+               role, content, created_at, metadata
+        FROM chat_messages
+        WHERE conversation_id = ?
+        ORDER BY created_at, id
+    """, (conversation_id,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    messages = []
+    for row in rows:
+        metadata = None
+        if row[8]:  # metadata column
+            try:
+                metadata = json.loads(row[8]) if isinstance(row[8], str) else row[8]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        messages.append(Message(
+            id=row[0],
+            execution_id=row[1],
+            run_id=row[2],
+            conversation_id=row[3],
+            session_id=row[4],
+            role=row[5],
+            content=row[6],
+            created_at=row[7],
+            metadata=metadata,
+        ))
+
+    return messages
 
 
 def build_conversation_message_appended_event(
