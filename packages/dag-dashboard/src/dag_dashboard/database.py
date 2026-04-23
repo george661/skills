@@ -433,6 +433,12 @@ def init_db(db_path: Path, fts5_enabled: bool = False) -> None:
         except sqlite3.OperationalError:
             pass
 
+        # Add index for conversation_id queries on chat_messages
+        try:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_conv_created ON chat_messages(conversation_id, created_at)")
+        except sqlite3.OperationalError:
+            pass
+
         # Create FTS5 indexes if enabled
         if fts5_enabled:
             init_fts5_index(conn)
