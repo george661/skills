@@ -7,8 +7,8 @@ a .drafts/{workflow_name}/ directory structure.
 Path-traversal defense is the responsibility of callers (REST layer).
 This module trusts the workflow name parameter.
 
-All timestamp operations use UTC timezone and format YYYYMMDDTHHMMSSZ
-(basic ISO-8601, no colons) for filesystem compatibility.
+All timestamp operations use UTC timezone and format YYYYMMDDTHHMMSS_uuuuuuZ
+(basic ISO-8601 with microsecond precision, no colons) for filesystem compatibility.
 """
 
 import os
@@ -20,7 +20,8 @@ from typing import List
 
 # Constants
 KEEP_DEFAULT = 50
-TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
+TIMESTAMP_FORMAT = "%Y%m%dT%H%M%S_%fZ"
+TIMESTAMP_PATTERN = r"^[0-9]{8}T[0-9]{6}_[0-9]{6}Z$"
 LOG_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 FILE_MODE = 0o644
 DIR_MODE = 0o755

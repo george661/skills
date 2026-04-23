@@ -5,7 +5,6 @@ import os
 import re
 import socket
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -25,6 +24,7 @@ from dag_dashboard.models import (
     DraftPublishResponse,
     DraftUpdateRequest,
 )
+from dag_executor import drafts_fs
 from dag_executor.parser import load_workflow_from_string
 from dag_executor.drafts_fs import (
     list_drafts as fs_list_drafts,
@@ -39,7 +39,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/workflows", tags=["drafts"])
 
 # Timestamp format: YYYYMMDDTHHMMSS_uuuuuuZ (UTC with microseconds, sortable)
-TIMESTAMP_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}_[0-9]{6}Z$")
+# Import canonical pattern from drafts_fs (single source of truth)
+TIMESTAMP_PATTERN = re.compile(drafts_fs.TIMESTAMP_PATTERN)
 
 
 def _validate_workflow_name(name: str) -> None:
@@ -370,9 +371,6 @@ async def create_draft(
 ) -> DraftCreateResponse:
     """Create a new draft with generated timestamp.
 
-    TODO(GW-5331): Migrate to drafts_fs.write_draft once format is normalized.
-    For now: keep inline to preserve existing 23-char microsecond format.
-
     Returns:
         Response with generated timestamp
     """
@@ -381,25 +379,13 @@ async def create_draft(
     workflows_dirs: List[Path] = request.app.state.workflows_dirs
     primary_dir = _primary_workflows_dir(workflows_dirs)
 
-    # Create drafts directory
-    drafts_dir = primary_dir / ".drafts" / name
-    drafts_dir.mkdir(parents=True, exist_ok=True)
+    # Delegate to drafts_fs.write_draft for atomic write with collision handling
+    # (single source of truth for timestamp format and collision retry logic)
+    timestamp = drafts_fs.write_draft(primary_dir, name, body.content)
 
-    # Generate timestamp with microsecond precision and collision protection
-    # Keep regenerating with fresh timestamps until we get a unique one
-    while True:
-        now = datetime.now(timezone.utc)
-        timestamp = now.strftime("%Y%m%dT%H%M%S_%fZ")
-        draft_path = drafts_dir / f"{timestamp}.yaml"
-        if not draft_path.exists():
-            break
+    logger.info(f"Created draft: {primary_dir / '.drafts' / name / f'{timestamp}.yaml'}")
 
-    # Write draft
-    draft_path.write_text(body.content)
-
-    logger.info(f"Created draft: {draft_path}")
-
-    # Prune old drafts - delegate to drafts_fs.prune
+    # Prune old drafts (delegates to drafts_fs.prune via _prune_drafts wrapper)
     _prune_drafts(primary_dir, name, keep=50)
 
     return DraftCreateResponse(timestamp=timestamp)
