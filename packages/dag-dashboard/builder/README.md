@@ -72,3 +72,7 @@ All pinned to exact versions for reproducible builds.
 ## CI
 
 The `.github/workflows/ci.yml` `builder-bundle` job builds the bundle on every PR and asserts the output exists and is non-empty.
+
+## User Documentation
+
+For user-facing documentation on using the Builder UI (feature flags, drafts lifecycle, keyboard shortcuts, CLI reference), see the **[Builder UI section](../README.md#builder-ui)** in the main dag-dashboard README.
