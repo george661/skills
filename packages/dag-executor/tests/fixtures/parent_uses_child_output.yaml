@@ -1,0 +1,25 @@
+name: parent_uses_child_output
+description: Parent workflow that references child output
+version: 1.0.0
+
+inputs: {}
+
+outputs:
+  final:
+    description: Final value after using child output
+    type: string
+
+nodes:
+  - id: call_child
+    name: Call Child
+    type: command
+    command: child_with_outputs
+
+  - id: use_output
+    name: Use Child Output
+    type: bash
+    depends_on: [call_child]
+    script: |
+      echo "Child returned: $child_result"
+      echo '{"final": "parent_used_'"$child_result"'"}'
+    output_format: json

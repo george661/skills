@@ -1,0 +1,30 @@
+name: recursive_child
+description: Child that recursively invokes itself
+version: 1.0.0
+
+inputs:
+  depth:
+    description: Current recursion depth
+    type: integer
+    default: 0
+
+outputs:
+  depth_reached:
+    description: Maximum depth reached
+    type: integer
+
+nodes:
+  - id: recurse
+    name: Recurse
+    type: command
+    command: recursive_child
+    args: [$depth + 1]
+    when: $depth < 10
+    
+  - id: report_depth
+    name: Report Depth
+    type: bash
+    depends_on: [recurse]
+    script: |
+      echo '{"depth_reached": '"$depth"'}'
+    output_format: json

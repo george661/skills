@@ -146,6 +146,7 @@ class ExecutionContext:
     pool: Optional[ThreadPoolExecutor] = field(default=None, repr=False)
     semaphore: Optional[asyncio.Semaphore] = field(default=None, repr=False)
     subprocess_registry: Optional[SubprocessRegistry] = field(default=None, repr=False)
+    parent_run_id: Optional[str] = None
 
     @property
     def workflow_state(self) -> Dict[str, Any]:
@@ -224,6 +225,9 @@ class WorkflowExecutor:
         run_id: Optional[str] = None,
         channel_store: Optional["ChannelStore"] = None,
         events_dir: Optional["Path"] = None,
+        _recursion_depth: int = 0,
+        parent_run_id: Optional[str] = None,
+        subprocess_registry: Optional["SubprocessRegistry"] = None,
     ) -> WorkflowResult:
         """Execute workflow from start to completion.
 
@@ -238,6 +242,9 @@ class WorkflowExecutor:
             events_dir: Optional directory for cancel marker files. When provided,
                 a background task polls {events_dir}/{run_id}.cancel every 1s and
                 triggers SIGTERM/SIGKILL termination on marker detection.
+            _recursion_depth: Internal recursion depth counter for command nodes
+            parent_run_id: Optional parent workflow run_id for event lineage
+            subprocess_registry: Optional subprocess registry to share with parent
 
         Returns:
             WorkflowResult with execution status and node results
@@ -257,6 +264,8 @@ class WorkflowExecutor:
         model_override = inputs.get("__model_override__")
         if model_override:
             event_metadata["model_override"] = model_override
+        if parent_run_id:
+            event_metadata["parent_run_id"] = parent_run_id
 
         if event_emitter:
             event_emitter.emit(WorkflowEvent(
@@ -286,7 +295,8 @@ class WorkflowExecutor:
             concurrency_limit=concurrency_limit,
             pool=pool,
             semaphore=asyncio.Semaphore(concurrency_limit),
-            subprocess_registry=SubprocessRegistry(),
+            subprocess_registry=subprocess_registry or SubprocessRegistry(),
+            parent_run_id=parent_run_id,
         )
 
         # Spawn cancel-marker polling task if events_dir is provided
