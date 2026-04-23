@@ -64,7 +64,7 @@ The builder uses a drafts system to manage workflow edits without overwriting th
 
 1. **Autosave** — Changes are automatically saved every 30 seconds to a draft file (format: `YYYYMMDD_HHMMSS.yaml`)
 2. **Save** — Manual save via `Cmd+S` (Mac) / `Ctrl+S` (Windows/Linux) bypasses the autosave debounce and immediately writes a timestamped draft
-3. **Current pointer** — A `.current` symlink tracks the active draft being edited
+3. **Current pointer** — A `.current` pointer file tracks the active draft being edited
 4. **Publish** — Promotes the current draft to the canonical `workflow.yaml` file via atomic rename (see Publish Flow below)
 
 Drafts are pruned to keep the most recent 50 per workflow. Old drafts can be restored or compared using the version drawer or CLI.
@@ -88,12 +88,7 @@ This atomic rename guarantees that:
 
 ### Destructive Node Editing (builder.allow_destructive_nodes)
 
-By default, the builder restricts editing of certain "destructive" node fields to prevent accidental code execution or side effects:
-
-- **Restricted fields when `allow_destructive_nodes=False` (default):**
-  - `bash` node: `command` field is read-only
-  - `skill` node: `skill_name` and `arguments` are read-only
-  - `command` node: `command` field is read-only
+By default, the builder restricts editing of certain "destructive" node types to prevent accidental code execution or side effects. When `allow_destructive_nodes=False` (default), the flag applies a card-level read-only visual state (dimmed appearance + not-allowed cursor) to destructive node types. Per-field editing lockdowns for bash/skill/command node internals are in-progress under FR-8 and will land in a follow-up.
 
 **Rationale:** The builder is commonly used by multiple operators in shared environments. Fields that execute arbitrary code or shell commands can introduce security risks (e.g., unintentional data deletion, credential leakage). The default read-only mode ensures safe editing of workflow structure while preventing foot-guns.
 
@@ -104,8 +99,6 @@ Set `allow_destructive_nodes=True` in the dashboard configuration:
 ```bash
 DAG_DASHBOARD_ALLOW_DESTRUCTIVE_NODES=true dag-dashboard
 ```
-
-Or in Python configuration (e.g., via environment or config file with `env_prefix="DAG_DASHBOARD_"`).
 
 Enable this setting only when:
 - The operator population is trusted
