@@ -1,0 +1,19 @@
+name: Prompt Writes JSON Test
+config:
+  checkpoint_prefix: test
+  worktree: false
+
+state:
+  result:
+    type: channel
+    default: null
+
+nodes:
+  - id: prompt1
+    name: JSON Prompt
+    type: prompt
+    prompt: "Generate JSON with result field"
+    model: sonnet
+    output_format: json
+    writes:
+      - result
