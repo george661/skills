@@ -146,7 +146,6 @@ async def test_sse_isolates_run_ids(broadcaster: Broadcaster) -> None:
 
     assert events_run1[0]["event_type"] == "a"
     assert events_run2[0]["event_type"] == "b"
-    assert events_run2[0]["event_type"] == "b"
 
 
 # ========== Tests for /logs/stream endpoint ==========
