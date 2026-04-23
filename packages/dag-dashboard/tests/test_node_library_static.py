@@ -1,32 +1,16 @@
-"""Test node-library.js static file.
+"""Test NodeLibrary.jsx source file.
 
-Note: Unlike test_search_bar_static.py, this test does NOT assert on a script tag
-in index.html. The node-library.js will be imported by the React builder bundle
-(GW-5242), not directly by index.html. This boundary is intentional.
+Note: NodeLibrary was ported from a classic-React script to an ESM module inside
+the builder bundle (GW-5333). The old node-library.js file is deleted. These tests
+now read from builder/src/NodeLibrary.jsx.
 """
 import pytest
 from pathlib import Path
-from fastapi.testclient import TestClient
-from dag_dashboard.server import create_app
-
-
-@pytest.fixture
-def client(tmp_path: Path) -> TestClient:
-    """Create test client with temporary database."""
-    app = create_app(tmp_path)
-    return TestClient(app)
-
-
-def test_node_library_js_served(client: TestClient) -> None:
-    """Test that node-library.js is served correctly."""
-    response = client.get("/js/builder/node-library.js")
-    assert response.status_code == 200
-    assert "javascript" in response.headers["content-type"]
 
 
 def test_node_library_has_categories() -> None:
-    """Test that node-library.js contains all three category labels."""
-    node_library_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "builder" / "node-library.js"
+    """Test that NodeLibrary.jsx contains all three category labels."""
+    node_library_path = Path(__file__).parent.parent / "builder" / "src" / "NodeLibrary.jsx"
     content = node_library_path.read_text()
     
     # Should have category labels
@@ -36,8 +20,8 @@ def test_node_library_has_categories() -> None:
 
 
 def test_node_library_has_search_input() -> None:
-    """Test that node-library.js has a search input."""
-    node_library_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "builder" / "node-library.js"
+    """Test that NodeLibrary.jsx has a search input."""
+    node_library_path = Path(__file__).parent.parent / "builder" / "src" / "NodeLibrary.jsx"
     content = node_library_path.read_text()
     
     # Should have input for search
@@ -46,8 +30,8 @@ def test_node_library_has_search_input() -> None:
 
 
 def test_node_library_has_draggable_items() -> None:
-    """Test that node-library.js marks items as draggable."""
-    node_library_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "builder" / "node-library.js"
+    """Test that NodeLibrary.jsx marks items as draggable."""
+    node_library_path = Path(__file__).parent.parent / "builder" / "src" / "NodeLibrary.jsx"
     content = node_library_path.read_text()
     
     # Should set draggable attribute
@@ -55,8 +39,8 @@ def test_node_library_has_draggable_items() -> None:
 
 
 def test_node_library_uses_drag_data_transfer() -> None:
-    """Test that node-library.js uses dataTransfer for drag data."""
-    node_library_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "builder" / "node-library.js"
+    """Test that NodeLibrary.jsx uses dataTransfer for drag data."""
+    node_library_path = Path(__file__).parent.parent / "builder" / "src" / "NodeLibrary.jsx"
     content = node_library_path.read_text()
     
     # Should use dataTransfer API
@@ -66,8 +50,8 @@ def test_node_library_uses_drag_data_transfer() -> None:
 
 
 def test_node_library_persists_width_to_localstorage() -> None:
-    """Test that node-library.js persists width to localStorage."""
-    node_library_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "builder" / "node-library.js"
+    """Test that NodeLibrary.jsx persists width to localStorage."""
+    node_library_path = Path(__file__).parent.parent / "builder" / "src" / "NodeLibrary.jsx"
     content = node_library_path.read_text()
     
     # Should use localStorage for width persistence
@@ -76,8 +60,8 @@ def test_node_library_persists_width_to_localstorage() -> None:
 
 
 def test_node_library_fetches_definitions() -> None:
-    """Test that node-library.js fetches from /api/definitions."""
-    node_library_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "builder" / "node-library.js"
+    """Test that NodeLibrary.jsx fetches from /api/definitions."""
+    node_library_path = Path(__file__).parent.parent / "builder" / "src" / "NodeLibrary.jsx"
     content = node_library_path.read_text()
     
     # Should fetch commands from definitions endpoint
@@ -85,8 +69,8 @@ def test_node_library_fetches_definitions() -> None:
 
 
 def test_node_library_fetches_skills() -> None:
-    """Test that node-library.js fetches from /api/skills."""
-    node_library_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "builder" / "node-library.js"
+    """Test that NodeLibrary.jsx fetches from /api/skills."""
+    node_library_path = Path(__file__).parent.parent / "builder" / "src" / "NodeLibrary.jsx"
     content = node_library_path.read_text()
     
     # Should fetch skills from skills endpoint
@@ -94,8 +78,8 @@ def test_node_library_fetches_skills() -> None:
 
 
 def test_node_library_has_resize_handle() -> None:
-    """Test that node-library.js has a resize handle."""
-    node_library_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "builder" / "node-library.js"
+    """Test that NodeLibrary.jsx has a resize handle."""
+    node_library_path = Path(__file__).parent.parent / "builder" / "src" / "NodeLibrary.jsx"
     content = node_library_path.read_text()
     
     # Should have resize handle with mouse event handlers
@@ -104,8 +88,8 @@ def test_node_library_has_resize_handle() -> None:
 
 
 def test_node_library_has_six_node_types() -> None:
-    """Test that node-library.js defines all 6 runner types."""
-    node_library_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "builder" / "node-library.js"
+    """Test that NodeLibrary.jsx defines all 6 runner types."""
+    node_library_path = Path(__file__).parent.parent / "builder" / "src" / "NodeLibrary.jsx"
     content = node_library_path.read_text()
     
     # Should have all 6 runner types in a constant or list
@@ -115,3 +99,18 @@ def test_node_library_has_six_node_types() -> None:
     assert "interrupt" in content
     assert "prompt" in content
     assert "skill" in content
+
+
+def test_node_library_is_esm_module() -> None:
+    """Test that NodeLibrary.jsx is an ESM module (not classic React)."""
+    node_library_path = Path(__file__).parent.parent / "builder" / "src" / "NodeLibrary.jsx"
+    content = node_library_path.read_text()
+    
+    # Should import React (ESM style)
+    assert "import React from 'react'" in content
+    
+    # Should export default (not module.exports)
+    assert "export default NodeLibrary" in content
+    
+    # Should NOT use global React or module.exports
+    assert "module.exports" not in content
