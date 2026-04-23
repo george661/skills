@@ -1,13 +1,8 @@
 name: child_with_outputs
-description: Child workflow that emits concrete outputs
-version: 1.0.0
+config:
+  checkpoint_prefix: child-outputs
 
 inputs: {}
-
-outputs:
-  result:
-    description: Result value from the child
-    type: string
 
 nodes:
   - id: produce_output
@@ -16,3 +11,8 @@ nodes:
     script: |
       echo '{"result": "success_from_child"}'
     output_format: json
+
+outputs:
+  result:
+    node: produce_output
+    field: result

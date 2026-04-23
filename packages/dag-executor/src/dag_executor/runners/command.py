@@ -1,8 +1,31 @@
 """Command runner for recursive workflow execution nodes."""
 import asyncio
+import concurrent.futures
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Coroutine, Dict, TypeVar
+
+_T = TypeVar("_T")
+
+
+def _run_coroutine_sync(coro: "Coroutine[Any, Any, _T]") -> _T:
+    """Run an async coroutine from a synchronous context, regardless of loop state.
+
+    CommandRunner.run() is synchronous but calls WorkflowExecutor.execute() which is async.
+    In production this runs on a ThreadPoolExecutor worker with no loop, so a fresh loop
+    works directly. In tests (pytest-asyncio), it may run on a thread that already owns
+    a running loop, which would make asyncio.run() / loop.run_until_complete() raise.
+    Shunting execution onto a fresh worker thread with its own loop sidesteps both cases.
+    """
+    def _worker() -> _T:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_worker).result()
 
 from dag_executor.schema import NodeResult, NodeStatus, WorkflowStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
@@ -82,12 +105,13 @@ class CommandRunner(BaseRunner):
         # Generate a unique run_id for the sub-workflow
         sub_run_id = str(uuid.uuid4())
 
-        # Execute sub-workflow with real WorkflowExecutor
+        # Execute sub-workflow with real WorkflowExecutor. See _run_coroutine_sync for
+        # why this goes through a worker thread — it handles both production (no loop
+        # on current thread) and test (pytest-asyncio loop already running) cases.
         try:
             from dag_executor.executor import WorkflowExecutor
             executor = WorkflowExecutor()
-            # Call asyncio.run to execute the async method from sync context
-            workflow_result = asyncio.run(
+            workflow_result = _run_coroutine_sync(
                 executor.execute(
                     workflow_def=workflow_def,
                     inputs=sub_workflow_inputs,

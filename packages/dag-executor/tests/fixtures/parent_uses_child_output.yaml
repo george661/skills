@@ -1,13 +1,8 @@
 name: parent_uses_child_output
-description: Parent workflow that references child output
-version: 1.0.0
+config:
+  checkpoint_prefix: parent-uses-child
 
 inputs: {}
-
-outputs:
-  final:
-    description: Final value after using child output
-    type: string
 
 nodes:
   - id: call_child
@@ -20,6 +15,10 @@ nodes:
     type: bash
     depends_on: [call_child]
     script: |
-      echo "Child returned: $child_result"
-      echo '{"final": "parent_used_'"$child_result"'"}'
+      echo '{"final": "parent_used_$call_child.result"}'
     output_format: json
+
+outputs:
+  final:
+    node: use_output
+    field: final
