@@ -13,6 +13,8 @@ from pydantic import ValidationError
 
 from dag_dashboard.definitions import WORKFLOW_NAME_PATTERN
 from dag_dashboard.models import (
+    CurrentDraftResponse,
+    CurrentDraftUpdateRequest,
     DraftCreateRequest,
     DraftCreateResponse,
     DraftListItem,
@@ -101,7 +103,7 @@ def _primary_workflows_dir(workflows_dirs: List[Path]) -> Path:
 
 def _prune_drafts(drafts_dir: Path, keep: int = 50) -> None:
     """Delete oldest drafts if count exceeds limit.
-    
+
     Args:
         drafts_dir: Directory containing draft files
         keep: Maximum number of drafts to keep
@@ -112,6 +114,67 @@ def _prune_drafts(drafts_dir: Path, keep: int = 50) -> None:
         for draft_file in to_delete:
             draft_file.unlink()
             logger.info(f"Pruned old draft: {draft_file}")
+
+
+def _resolve_current_pointer(
+    workflows_dirs: List[Path], name: str
+) -> Tuple[Path, Path]:
+    """Find .current pointer file across multiple directories.
+
+    Args:
+        workflows_dirs: List of workflow directories to search
+        name: Workflow name
+
+    Returns:
+        Tuple of (current_path, workflows_dir) where .current was found
+
+    Raises:
+        HTTPException: 404 if .current not found
+    """
+    for workflows_dir in workflows_dirs:
+        current_path = workflows_dir / ".drafts" / name / ".current"
+        if current_path.exists():
+            return current_path, workflows_dir
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"No current draft pointer found for workflow {name}"
+    )
+
+
+def _write_current_pointer(
+    workflows_dir: Path, name: str, timestamp: str
+) -> None:
+    """Write .current pointer file atomically.
+
+    Args:
+        workflows_dir: Workflows directory (primary)
+        name: Workflow name
+        timestamp: Draft timestamp to point to
+    """
+    drafts_dir = workflows_dir / ".drafts" / name
+    drafts_dir.mkdir(parents=True, exist_ok=True)
+    current_path = drafts_dir / ".current"
+
+    # Use tempfile + os.replace for atomic write
+    with tempfile.NamedTemporaryFile(
+        mode='w',
+        delete=False,
+        dir=drafts_dir,
+        prefix=".tmp-current-",
+        suffix=""
+    ) as tmp:
+        tmp_path = Path(tmp.name)
+
+    try:
+        tmp_path.write_text(timestamp)
+        os.replace(str(tmp_path), str(current_path))
+        logger.info(f"Updated .current pointer for {name} to {timestamp}")
+    except Exception:
+        # Clean up temp file on error
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
 
 
 @router.get("/{name}/drafts")
@@ -152,6 +215,54 @@ async def list_drafts(name: str, request: Request) -> List[DraftListItem]:
     # Sort newest first
     drafts.sort(key=lambda d: d.timestamp, reverse=True)
     return drafts
+
+
+@router.get("/{name}/drafts/current")
+async def get_current_draft_pointer(
+    name: str, request: Request
+) -> CurrentDraftResponse:
+    """Get the current draft pointer timestamp.
+
+    Returns:
+        Response with timestamp of the current draft
+
+    Raises:
+        HTTPException: 404 if no .current pointer exists
+    """
+    _validate_workflow_name(name)
+
+    workflows_dirs: List[Path] = request.app.state.workflows_dirs
+    current_path, _ = _resolve_current_pointer(workflows_dirs, name)
+
+    timestamp = current_path.read_text().strip()
+    return CurrentDraftResponse(timestamp=timestamp)
+
+
+@router.put("/{name}/drafts/current", status_code=204)
+async def update_current_draft_pointer(
+    name: str, body: CurrentDraftUpdateRequest, request: Request
+) -> None:
+    """Update the current draft pointer to a specific timestamp.
+
+    Args:
+        name: Workflow name
+        body: Request with timestamp to point to
+
+    Raises:
+        HTTPException: 400 if timestamp format invalid
+        HTTPException: 404 if referenced draft doesn't exist
+    """
+    _validate_workflow_name(name)
+    _validate_timestamp(body.timestamp)
+
+    workflows_dirs: List[Path] = request.app.state.workflows_dirs
+
+    # Verify the draft exists before setting pointer
+    _ = _resolve_draft(workflows_dirs, name, body.timestamp)
+
+    # Write pointer to primary directory
+    primary = _primary_workflows_dir(workflows_dirs)
+    _write_current_pointer(primary, name, body.timestamp)
 
 
 @router.get("/{name}/drafts/{timestamp}")

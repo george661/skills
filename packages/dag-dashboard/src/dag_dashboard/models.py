@@ -302,6 +302,20 @@ class DraftPublishResponse(BaseModel):
     source_timestamp: str
 
 
+class CurrentDraftResponse(BaseModel):
+    """Response from getting the current draft pointer."""
+    model_config = {"extra": "forbid"}
+
+    timestamp: str = Field(pattern=r"^[0-9]{8}T[0-9]{6}_[0-9]{6}Z$")
+
+
+class CurrentDraftUpdateRequest(BaseModel):
+    """Request body for updating the current draft pointer."""
+    model_config = {"extra": "forbid"}
+
+    timestamp: str = Field(pattern=r"^[0-9]{8}T[0-9]{6}_[0-9]{6}Z$")
+
+
 class ValidationIssueOut(BaseModel):
     """Validation issue (error or warning) for a workflow node or workflow-level."""
     model_config = {"extra": "forbid"}

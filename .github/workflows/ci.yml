@@ -155,3 +155,33 @@ jobs:
         run: |
           yamllint -d '{extends: default, rules: {line-length: disable, truthy: disable}}' \
             agents/ teams/
+
+  dag-workflow-lint:
+    name: DAG Workflow Lint
+    runs-on: ubuntu-latest
+    needs: [python-packages]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+
+      - name: Install dag-executor
+        run: |
+          uv venv .venv --python 3.12
+          source .venv/bin/activate
+          uv pip install -e packages/dag-executor
+
+      - name: Lint all DAG workflows
+        run: |
+          source .venv/bin/activate
+          failures=0
+          for wf in packages/dag-executor/workflows/*.yaml; do
+            echo "Linting $wf..."
+            dag-exec --dry-run "$wf" || failures=$((failures + 1))
+          done
+          if [ $failures -gt 0 ]; then
+            echo "ERROR: $failures workflow(s) failed lint"
+            exit 1
+          fi
+          echo "✓ All workflows passed lint"

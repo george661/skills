@@ -1087,20 +1087,56 @@ if (window.DAG_DASHBOARD_BUILDER_ENABLED) {
             return;
         }
 
-        // Lazy-load builder bundle
-        const script = document.createElement('script');
-        script.src = '/js/builder/builder.js';
-        script.onload = () => {
-            if (window.DAGDashboardBuilder) {
-                window.DAGDashboardBuilder.mount(container);
-            } else {
-                container.innerHTML = '<div class="error">Builder bundle loaded but not initialized</div>';
+        // Load validation scripts first, then builder bundle
+        // This ensures window.DAGDashboardValidation is available when toolbar mounts
+        function loadValidationScripts(callback) {
+            const scripts = [
+                '/js/builder/validation-rules.js',
+                '/js/builder/use-builder-validation.js',
+                '/js/builder/validation-panel.js'
+            ];
+
+            let loadedCount = 0;
+
+            function loadNext() {
+                if (loadedCount >= scripts.length) {
+                    callback();
+                    return;
+                }
+
+                const script = document.createElement('script');
+                script.src = scripts[loadedCount];
+                script.onload = () => {
+                    loadedCount++;
+                    loadNext();
+                };
+                script.onerror = () => {
+                    console.warn('Failed to load validation script:', scripts[loadedCount]);
+                    loadedCount++;
+                    loadNext();
+                };
+                document.head.appendChild(script);
             }
-        };
-        script.onerror = () => {
-            container.innerHTML = '<div class="error">Failed to load builder bundle</div>';
-        };
-        document.head.appendChild(script);
+
+            loadNext();
+        }
+
+        // Load validation scripts, then builder bundle
+        loadValidationScripts(() => {
+            const script = document.createElement('script');
+            script.src = '/js/builder/builder.js';
+            script.onload = () => {
+                if (window.DAGDashboardBuilder) {
+                    window.DAGDashboardBuilder.mount(container);
+                } else {
+                    container.innerHTML = '<div class="error">Builder bundle loaded but not initialized</div>';
+                }
+            };
+            script.onerror = () => {
+                container.innerHTML = '<div class="error">Failed to load builder bundle</div>';
+            };
+            document.head.appendChild(script);
+        });
     });
 }
 

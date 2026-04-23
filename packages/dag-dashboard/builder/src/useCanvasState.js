@@ -7,12 +7,12 @@
  * The <WorkflowCanvas> component wraps this hook and passes state to
  * React Flow's own components.
  *
- * Single-level undo (last delete only) ships in this task; full 50-step
- * history per PRP-PLAT-008 FR-10 is a later task.
+ * Full 50-step undo/redo history per PRP-PLAT-008 FR-10.
  */
-import { useState, useRef, useCallback } from 'react';
+import { useCallback } from 'react';
 
 import { dagToReactFlow, reactFlowToDag, applyDagreLayout } from './dagToReactFlow.js';
+import { useBuilderUndo } from './useBuilderUndo.js';
 
 let idCounter = 0;
 function generateId(prefix) {
@@ -31,50 +31,54 @@ function generateId(prefix) {
  *   onEdgesDelete: Function,
  *   onDrop: Function,
  *   undo: Function,
+ *   redo: Function,
  *   canUndo: boolean,
+ *   canRedo: boolean,
  *   toDag: Function,
  * }}
  */
 export function useCanvasState(initialDag = [], opts = {}) {
     const initial = applyDagreLayout(dagToReactFlow(initialDag));
-    const [graph, setGraph] = useState(initial);
-    const lastDeleteRef = useRef(null);
+    const history = useBuilderUndo(initial, { limit: 50 });
+    const graph = history.state;
 
     const onConnect = useCallback((params) => {
         if (!params || !params.source || !params.target) return;
         const { source, target } = params;
-        setGraph(prev => {
-            if (prev.edges.some(e => e.source === source && e.target === target)) return prev;
-            if (source === target) return prev; // no self-loops
-            return {
-                ...prev,
-                edges: [...prev.edges, { id: `${source}->${target}`, source, target }],
-            };
-        });
-    }, []);
+        const prev = history.state;
+        if (prev.edges.some(e => e.source === source && e.target === target)) return;
+        if (source === target) return; // no self-loops
+        
+        const next = {
+            ...prev,
+            edges: [...prev.edges, { id: `${source}->${target}`, source, target }],
+        };
+        history.push(next);
+    }, [history]);
 
     const onNodesDelete = useCallback((deleted) => {
         if (!Array.isArray(deleted) || deleted.length === 0) return;
         const deletedIds = new Set(deleted.map(n => n.id));
-        setGraph(prev => {
-            const removedNodes = prev.nodes.filter(n => deletedIds.has(n.id));
-            const removedEdges = prev.edges.filter(e => deletedIds.has(e.source) || deletedIds.has(e.target));
-            lastDeleteRef.current = { nodes: removedNodes, edges: removedEdges };
-            return {
-                nodes: prev.nodes.filter(n => !deletedIds.has(n.id)),
-                edges: prev.edges.filter(e => !deletedIds.has(e.source) && !deletedIds.has(e.target)),
-            };
-        });
-    }, []);
+        const prev = history.state;
+        
+        const next = {
+            nodes: prev.nodes.filter(n => !deletedIds.has(n.id)),
+            edges: prev.edges.filter(e => !deletedIds.has(e.source) && !deletedIds.has(e.target)),
+        };
+        history.push(next);
+    }, [history]);
 
     const onEdgesDelete = useCallback((deleted) => {
         if (!Array.isArray(deleted) || deleted.length === 0) return;
         const deletedIds = new Set(deleted.map(e => e.id));
-        setGraph(prev => ({
+        const prev = history.state;
+        
+        const next = {
             ...prev,
             edges: prev.edges.filter(e => !deletedIds.has(e.id)),
-        }));
-    }, []);
+        };
+        history.push(next);
+    }, [history]);
 
     /**
      * Accepts a drop event whose dataTransfer carries either NodeLibrary's
@@ -104,7 +108,8 @@ export function useCanvasState(initialDag = [], opts = {}) {
         if (!nodeShape) return;
 
         const position = resolveDropPosition(event, opts.flowToPosition);
-        setGraph(prev => ({
+        const prev = history.state;
+        const next = {
             ...prev,
             nodes: [
                 ...prev.nodes,
@@ -121,20 +126,18 @@ export function useCanvasState(initialDag = [], opts = {}) {
                     },
                 },
             ],
-        }));
-    }, [opts.flowToPosition]);
+        };
+        history.push(next);
+    }, [opts.flowToPosition, history]);
 
-    const undo = useCallback(() => {
-        const last = lastDeleteRef.current;
-        if (!last) return;
-        lastDeleteRef.current = null;
-        setGraph(prev => ({
-            nodes: [...prev.nodes, ...last.nodes],
-            edges: [...prev.edges, ...last.edges],
-        }));
-    }, []);
-
-    const canUndo = lastDeleteRef.current != null;
+    const setGraph = useCallback((graphOrFn) => {
+        if (typeof graphOrFn === 'function') {
+            const next = graphOrFn(history.state);
+            history.reset(next);
+        } else {
+            history.reset(graphOrFn);
+        }
+    }, [history]);
 
     const toDag = useCallback(() => reactFlowToDag(graph), [graph]);
 
@@ -146,8 +149,10 @@ export function useCanvasState(initialDag = [], opts = {}) {
         onNodesDelete,
         onEdgesDelete,
         onDrop,
-        undo,
-        canUndo,
+        undo: history.undo,
+        redo: history.redo,
+        canUndo: history.canUndo,
+        canRedo: history.canRedo,
         toDag,
     };
 }
