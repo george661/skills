@@ -171,3 +171,225 @@ def test_run_logs_dispatches_to_local(test_events_dir: Path, capsys):
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "[stdout]" in captured.out
+
+
+# ========== Tests for remote mode /logs/stream ==========
+
+
+def test_tail_logs_remote_follow_uses_logs_stream_endpoint():
+    """Test that tail_logs_remote --follow hits /logs/stream instead of /events."""
+    from unittest.mock import Mock, MagicMock, patch, call
+    import sys
+    
+    # Create mock modules
+    mock_httpx = MagicMock()
+    mock_httpx_sse = MagicMock()
+    
+    # Setup client and SSE mocks
+    mock_client = MagicMock()
+    mock_sse_context = MagicMock()
+    mock_sse = MagicMock()
+    
+    mock_sse.iter_sse.return_value = iter([])
+    mock_sse_context.__enter__.return_value = mock_sse
+    mock_sse_context.__exit__.return_value = None
+    
+    mock_httpx_sse.connect_sse = Mock(return_value=mock_sse_context)
+    
+    mock_client_context = MagicMock()
+    mock_client_context.__enter__.return_value = mock_client
+    mock_client_context.__exit__.return_value = None
+    
+    mock_httpx.Client = Mock(return_value=mock_client_context)
+    mock_httpx.HTTPError = Exception
+    
+    # Inject the mocks into sys.modules before importing
+    sys.modules['httpx'] = mock_httpx
+    sys.modules['httpx_sse'] = mock_httpx_sse
+    
+    try:
+        from dag_executor.logs import tail_logs_remote
+        
+        result = tail_logs_remote(
+            run_id="test-run",
+            dashboard_url="http://localhost:8100",
+            follow=True
+        )
+        
+        # Verify the URL contains /logs/stream
+        assert mock_httpx_sse.connect_sse.called
+        call_args = mock_httpx_sse.connect_sse.call_args
+        url = call_args[0][2]  # Third positional arg is the URL
+        assert "/logs/stream" in url
+        assert result == 0
+    finally:
+        # Cleanup
+        if 'httpx' in sys.modules:
+            del sys.modules['httpx']
+        if 'httpx_sse' in sys.modules:
+            del sys.modules['httpx_sse']
+
+
+def test_tail_logs_remote_passes_node_and_stream_query_params():
+    """Test that --node and --stream are forwarded as query params."""
+    from unittest.mock import Mock, MagicMock, patch
+    import sys
+    
+    mock_httpx = MagicMock()
+    mock_httpx_sse = MagicMock()
+    
+    mock_client = MagicMock()
+    mock_sse_context = MagicMock()
+    mock_sse = MagicMock()
+    
+    mock_sse.iter_sse.return_value = iter([])
+    mock_sse_context.__enter__.return_value = mock_sse
+    mock_sse_context.__exit__.return_value = None
+    
+    mock_httpx_sse.connect_sse = Mock(return_value=mock_sse_context)
+    
+    mock_client_context = MagicMock()
+    mock_client_context.__enter__.return_value = mock_client
+    mock_client_context.__exit__.return_value = None
+    
+    mock_httpx.Client = Mock(return_value=mock_client_context)
+    mock_httpx.HTTPError = Exception
+    
+    sys.modules['httpx'] = mock_httpx
+    sys.modules['httpx_sse'] = mock_httpx_sse
+    
+    try:
+        from dag_executor.logs import tail_logs_remote
+        
+        result = tail_logs_remote(
+            run_id="test-run",
+            dashboard_url="http://localhost:8100",
+            node_filter="alpha",
+            stream_filter="stdout",
+            follow=True
+        )
+        
+        # Verify query params are in the URL
+        assert mock_httpx_sse.connect_sse.called
+        call_args = mock_httpx_sse.connect_sse.call_args
+        url = call_args[0][2]
+        assert "node=alpha" in url
+        assert "stream=stdout" in url
+        assert result == 0
+    finally:
+        if 'httpx' in sys.modules:
+            del sys.modules['httpx']
+        if 'httpx_sse' in sys.modules:
+            del sys.modules['httpx_sse']
+
+
+def test_tail_logs_remote_exits_on_terminal_event(capsys):
+    """Test that terminal event closes the stream with exit code 0."""
+    from unittest.mock import Mock, MagicMock
+    import sys
+    
+    mock_httpx = MagicMock()
+    mock_httpx_sse = MagicMock()
+    
+    mock_client = MagicMock()
+    mock_sse_context = MagicMock()
+    mock_sse = MagicMock()
+    
+    # Create a mock SSE event with a terminal event
+    mock_sse_event = MagicMock()
+    mock_sse_event.data = json.dumps({
+        "event_type": "workflow_completed",
+        "payload": json.dumps({"status": "success"})
+    })
+    
+    mock_sse.iter_sse.return_value = iter([mock_sse_event])
+    mock_sse_context.__enter__.return_value = mock_sse
+    mock_sse_context.__exit__.return_value = None
+    
+    mock_httpx_sse.connect_sse = Mock(return_value=mock_sse_context)
+    
+    mock_client_context = MagicMock()
+    mock_client_context.__enter__.return_value = mock_client
+    mock_client_context.__exit__.return_value = None
+    
+    mock_httpx.Client = Mock(return_value=mock_client_context)
+    mock_httpx.HTTPError = Exception
+    
+    sys.modules['httpx'] = mock_httpx
+    sys.modules['httpx_sse'] = mock_httpx_sse
+    
+    try:
+        from dag_executor.logs import tail_logs_remote
+        
+        result = tail_logs_remote(
+            run_id="test-run",
+            dashboard_url="http://localhost:8100",
+            follow=True
+        )
+        
+        # Terminal event should cause exit 0
+        assert result == 0
+    finally:
+        if 'httpx' in sys.modules:
+            del sys.modules['httpx']
+        if 'httpx_sse' in sys.modules:
+            del sys.modules['httpx_sse']
+
+
+def test_tail_logs_remote_handles_bare_workflow_event_payload(capsys):
+    """Test that a direct WorkflowEvent (no dashboard wrapper) still works."""
+    from unittest.mock import Mock, MagicMock
+    import sys
+    
+    mock_httpx = MagicMock()
+    mock_httpx_sse = MagicMock()
+    
+    mock_client = MagicMock()
+    mock_sse_context = MagicMock()
+    mock_sse = MagicMock()
+    
+    # Create a mock SSE event with bare WorkflowEvent (no wrapper)
+    mock_sse_event = MagicMock()
+    mock_sse_event.data = json.dumps({
+        "event_type": "node_log_line",
+        "node_id": "test-node",
+        "metadata": {
+            "stream": "stdout",
+            "line": "Test output"
+        }
+    })
+    
+    mock_sse.iter_sse.return_value = iter([mock_sse_event])
+    mock_sse_context.__enter__.return_value = mock_sse
+    mock_sse_context.__exit__.return_value = None
+    
+    mock_httpx_sse.connect_sse = Mock(return_value=mock_sse_context)
+    
+    mock_client_context = MagicMock()
+    mock_client_context.__enter__.return_value = mock_client
+    mock_client_context.__exit__.return_value = None
+    
+    mock_httpx.Client = Mock(return_value=mock_client_context)
+    mock_httpx.HTTPError = Exception
+    
+    sys.modules['httpx'] = mock_httpx
+    sys.modules['httpx_sse'] = mock_httpx_sse
+    
+    try:
+        from dag_executor.logs import tail_logs_remote
+        
+        result = tail_logs_remote(
+            run_id="test-run",
+            dashboard_url="http://localhost:8100",
+            follow=True
+        )
+        
+        # Should process the bare event successfully
+        captured = capsys.readouterr()
+        assert "Test output" in captured.out
+        assert result == 0
+    finally:
+        if 'httpx' in sys.modules:
+            del sys.modules['httpx']
+        if 'httpx_sse' in sys.modules:
+            del sys.modules['httpx_sse']

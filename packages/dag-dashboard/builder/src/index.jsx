@@ -1,44 +1,40 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { ReactFlow } from '@xyflow/react';
-import dagre from 'dagre';
 
 // Import @xyflow/react styles (will be bundled)
 import '@xyflow/react/dist/style.css';
 
+import { WorkflowCanvas } from './WorkflowCanvas.jsx';
+
 /**
- * Placeholder Builder component.
- * Task 4 (GW-5242) delivers only the vendored bundle plumbing.
- * Task 5+ (GW-5243 onward) will port Archon components.
+ * Builder root. Mounts the React Flow-based canvas into the container
+ * provided by the dashboard router. The NodeLibrary palette (GW-5245)
+ * and NodeInspector form (GW-5244) are separate components; wiring
+ * them together into a full three-pane layout is a later Tier B task.
+ *
+ * For now, the canvas stands alone and accepts drops in the library's
+ * `application/x-dag-node` format so that when the integration task
+ * lands it is a wiring change, not a refactor.
  */
 function Builder() {
+    const [, setDag] = React.useState([]);
     return (
-        <div style={{
-            padding: '2rem',
-            fontFamily: 'system-ui, -apple-system, sans-serif',
-            maxWidth: '800px',
-            margin: '0 auto'
-        }}>
-            <h1 style={{ fontSize: '2rem', marginBottom: '1rem' }}>
-                DAG Builder
-            </h1>
-            <p style={{ fontSize: '1rem', color: '#666', marginBottom: '1rem' }}>
-                Coming soon. This placeholder proves the React + React Flow + dagre bundle is loaded.
-            </p>
-            <div style={{
-                padding: '1rem',
-                background: '#f0f0f0',
-                borderRadius: '4px',
-                fontSize: '0.875rem',
-                fontFamily: 'monospace'
-            }}>
-                <div>✓ React: {React.version}</div>
-                <div>✓ @xyflow/react: loaded</div>
-                <div>✓ dagre: loaded</div>
-            </div>
-            <p style={{ fontSize: '0.875rem', color: '#999', marginTop: '1rem' }}>
-                Feature flag: DAG_DASHBOARD_BUILDER_ENABLED = true
-            </p>
+        <div
+            style={{
+                display: 'flex',
+                flexDirection: 'column',
+                height: '100%',
+                minHeight: '600px',
+                width: '100%',
+                background: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+            }}
+        >
+            <WorkflowCanvas
+                initialDag={[]}
+                readOnly={false}
+                onGraphChange={setDag}
+            />
         </div>
     );
 }
@@ -52,7 +48,9 @@ export function mount(container) {
         console.error('DAGDashboardBuilder.mount: no container element provided');
         return;
     }
-
+    // Give the container height so React Flow can size itself.
+    container.style.height = '100%';
+    container.style.minHeight = '600px';
     const root = createRoot(container);
     root.render(<Builder />);
 }
