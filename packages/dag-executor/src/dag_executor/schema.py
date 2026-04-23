@@ -74,6 +74,12 @@ class ModelTier(str, Enum):
     LOCAL = "local"
 
 
+class ContextMode(str, Enum):
+    """Context mode for prompt nodes - shared or fresh session."""
+    SHARED = "shared"  # Resume existing conversation session (default)
+    FRESH = "fresh"  # Mint new session chained to prior
+
+
 class DispatchMode(str, Enum):
     """Execution dispatch mode for nodes."""
     INLINE = "inline"  # Execute in current process
@@ -347,7 +353,8 @@ class NodeDef(BaseModel):
     prompt_file: Optional[str] = Field(default=None, description="Prompt file (for type=prompt)")
     model: Optional[ModelTier] = Field(default=None, description="Model tier (for type=prompt)")
     strict_model: bool = Field(default=False, description="Block model_override (for type=prompt)")
-    
+    context: ContextMode = Field(default=ContextMode.SHARED, description="Session context mode (for type=prompt)")
+
     # Bash node
     script: Optional[str] = Field(default=None, description="Bash script (for type=bash)")
     
@@ -365,6 +372,10 @@ class NodeDef(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         """Validate type-specific required fields."""
+        # Validate context field is only used on prompt nodes
+        if self.type != "prompt" and self.context != ContextMode.SHARED:
+            raise ValueError("context field is only allowed on type=prompt nodes")
+
         if self.type == "skill":
             if self.skill is None:
                 raise ValueError("skill field is required for type=skill")
