@@ -6,8 +6,8 @@ from pathlib import Path
 
 def test_builder_bundle_contains_node_library():
     """Verify NodeLibrary-specific constants appear in compiled bundle"""
-    src/dag_dashboard/static/js/builder/builder.js
-    
+    builder_js = Path(__file__).parent.parent / 'src' / 'dag_dashboard' / 'static' / 'js' / 'builder' / 'builder.js'
+
     if not builder_js.exists():
         # Bundle not built yet in dev — skip or fail
         raise FileNotFoundError(
@@ -26,8 +26,8 @@ def test_builder_bundle_contains_node_library():
 
 def test_builder_bundle_mounts_node_library():
     """Verify bundle includes API endpoints NodeLibrary fetches from"""
-    src/dag_dashboard/static/js/builder/builder.js
-    
+    builder_js = Path(__file__).parent.parent / 'src' / 'dag_dashboard' / 'static' / 'js' / 'builder' / 'builder.js'
+
     if not builder_js.exists():
         raise FileNotFoundError(
             f"Bundle not found at {builder_js}. Run 'cd builder && npm run build' first."
