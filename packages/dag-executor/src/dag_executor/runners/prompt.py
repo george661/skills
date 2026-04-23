@@ -44,12 +44,17 @@ class PromptRunner(BaseRunner):
         # Handle prompt vs prompt_file. Inline prompts go via stdin (avoids arg
         # length limits); prompt_file is passed through --file.
         prompt_input = None
-        if node.prompt is not None:
-            cmd.append("--prompt-stdin")
-            prompt_input = node.prompt
-        elif node.prompt_file is not None:
+
+        # prompt_file takes precedence (never resolved, always direct file reference)
+        if node.prompt_file is not None:
             cmd.extend(["--file", node.prompt_file])
-        
+        elif node.prompt is not None:
+            # Use resolved prompt from executor if available, else fall back to node.prompt
+            resolved_prompt = ctx.resolved_inputs.get("prompt") if ctx.resolved_inputs else None
+            effective_prompt = resolved_prompt if resolved_prompt is not None else node.prompt
+            cmd.append("--prompt-stdin")
+            prompt_input = effective_prompt
+
         # Execute CLI with streaming support
         process = None
         try:
@@ -78,7 +83,6 @@ class PromptRunner(BaseRunner):
                     output_lines.append(line)
                     # Emit stream token event if emitter is available
                     if ctx.event_emitter:
-                        from dag_executor.events import EventType, WorkflowEvent
                         ctx.event_emitter.emit(WorkflowEvent(
                             event_type=EventType.NODE_STREAM_TOKEN,
                             workflow_id=ctx.workflow_id,
