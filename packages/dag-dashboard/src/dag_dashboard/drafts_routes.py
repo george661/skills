@@ -24,6 +24,7 @@ from dag_dashboard.models import (
     DraftPublishResponse,
     DraftUpdateRequest,
 )
+from dag_executor import drafts_fs
 from dag_executor.parser import load_workflow_from_string
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/workflows", tags=["drafts"])
 
 # Timestamp format: YYYYMMDDTHHMMSS_uuuuuuZ (UTC with microseconds, sortable)
-TIMESTAMP_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}_[0-9]{6}Z$")
+# Import canonical pattern from drafts_fs (single source of truth)
+TIMESTAMP_PATTERN = re.compile(drafts_fs.TIMESTAMP_PATTERN)
 
 
 def _validate_workflow_name(name: str) -> None:
@@ -349,36 +351,25 @@ async def create_draft(
     name: str, body: DraftCreateRequest, request: Request
 ) -> DraftCreateResponse:
     """Create a new draft with generated timestamp.
-    
+
     Returns:
         Response with generated timestamp
     """
     _validate_workflow_name(name)
-    
+
     workflows_dirs: List[Path] = request.app.state.workflows_dirs
     primary_dir = _primary_workflows_dir(workflows_dirs)
-    
-    # Create drafts directory
-    drafts_dir = primary_dir / ".drafts" / name
-    drafts_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Generate timestamp with microsecond precision and collision protection
-    # Keep regenerating with fresh timestamps until we get a unique one
-    while True:
-        now = datetime.now(timezone.utc)
-        timestamp = now.strftime("%Y%m%dT%H%M%S_%fZ")
-        draft_path = drafts_dir / f"{timestamp}.yaml"
-        if not draft_path.exists():
-            break
 
-    # Write draft
-    draft_path.write_text(body.content)
-    
-    logger.info(f"Created draft: {draft_path}")
-    
+    # Delegate to drafts_fs.write_draft for atomic write with collision handling
+    # (single source of truth for timestamp format and collision retry logic)
+    timestamp = drafts_fs.write_draft(primary_dir, name, body.content)
+
+    logger.info(f"Created draft: {primary_dir / '.drafts' / name / f'{timestamp}.yaml'}")
+
     # Prune old drafts
+    drafts_dir = primary_dir / ".drafts" / name
     _prune_drafts(drafts_dir, keep=50)
-    
+
     return DraftCreateResponse(timestamp=timestamp)
 
 
