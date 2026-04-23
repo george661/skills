@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dag_executor.artifacts import detect_artifacts
+from dag_executor.events import EventType, WorkflowEvent
 from dag_executor.model_resolver import resolve_model
 from dag_executor.schema import ModelTier, NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
@@ -82,7 +83,6 @@ class PromptRunner(BaseRunner):
                     output_lines.append(line)
                     # Emit stream token event if emitter is available
                     if ctx.event_emitter:
-                        from dag_executor.events import EventType, WorkflowEvent
                         ctx.event_emitter.emit(WorkflowEvent(
                             event_type=EventType.NODE_STREAM_TOKEN,
                             workflow_id=ctx.workflow_id,
