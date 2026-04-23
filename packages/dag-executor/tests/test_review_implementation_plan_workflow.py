@@ -218,11 +218,13 @@ class TestReviewIntegrationWithMockExecution:
                 node["type"] = "bash"
                 node["script"] = 'echo "status=PASS"'
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
                 node.pop("config", None)
             elif node["id"] == "produce_verdict":
                 node["type"] = "bash"
                 node["script"] = 'echo "verdict=APPROVED"'
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
                 node.pop("config", None)
             elif node["id"] == "post_jira_verdict":
                 node["script"] = 'echo "Posted verdict"'
@@ -272,11 +274,13 @@ class TestReviewIntegrationWithMockExecution:
                 node["type"] = "bash"
                 node["script"] = 'echo "status=FAIL"'
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
                 node.pop("config", None)
             elif node["id"] == "produce_verdict":
                 node["type"] = "bash"
                 node["script"] = 'echo "verdict=NEEDS_FIXES"'
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
                 node.pop("config", None)
             elif node["id"] == "post_jira_verdict":
                 node["script"] = 'echo "Posted verdict"'

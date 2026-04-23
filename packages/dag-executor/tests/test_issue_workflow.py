@@ -144,14 +144,17 @@ class TestIssueIntegrationWithMockExecution:
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"refined_summary": "Test", "refined_description": "Test"}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "classify_issue_type":
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"issue_type": "standalone"}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "duplicate_detection":
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"is_duplicate": true, "duplicate_key": "GW-0000"}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "create_and_link":
                 node["script"] = 'echo "Should not execute"'
 
@@ -196,14 +199,17 @@ class TestIssueIntegrationWithMockExecution:
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"refined_summary": "Refined", "refined_description": "Refined desc"}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "classify_issue_type":
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"issue_type": "standalone"}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "duplicate_detection":
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"is_duplicate": false}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "duplicate_gate":
                 # Gate should pass when is_duplicate is false
                 node["type"] = "bash"

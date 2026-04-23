@@ -14,6 +14,7 @@ from dag_executor.schema import (
     ReducerDef,
     ReducerStrategy,
     ModelTier,
+    DispatchMode,
 )
 from dag_executor.validator import WorkflowValidator
 
@@ -122,6 +123,43 @@ def test_invalid_node_type():
     assert any(e.code == "invalid_node_type" for e in result.errors)
     error = next(e for e in result.errors if e.code == "invalid_node_type")
     assert "INVALID_TYPE" in error.message
+
+
+def test_dispatch_informational_warning_on_prompt():
+    """AC-18: dispatch on prompt nodes produces a dispatch_informational warning."""
+    workflow = WorkflowDef(
+        name="dispatch-warn-workflow",
+        nodes=[
+            NodeDef(
+                id="p1",
+                type="prompt",
+                name="P",
+                prompt="hi",
+                model=ModelTier.SONNET,
+                dispatch=DispatchMode.INLINE,
+            ),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    result = WorkflowValidator().validate(workflow)
+
+    assert result.passed  # warnings don't fail
+    warns = [w for w in result.warnings if w.code == "dispatch_informational"]
+    assert len(warns) == 1
+    assert "PRP-PLAT-006" in warns[0].message
+
+
+def test_dispatch_no_warning_without_dispatch_field():
+    """No warning when dispatch is unset."""
+    workflow = WorkflowDef(
+        name="no-dispatch-workflow",
+        nodes=[
+            NodeDef(id="p1", type="prompt", name="P", prompt="hi", model=ModelTier.SONNET),
+        ],
+        config=WorkflowConfig(checkpoint_prefix="test"),
+    )
+    result = WorkflowValidator().validate(workflow)
+    assert not any(w.code == "dispatch_informational" for w in result.warnings)
 
 
 def test_valid_node_types():
