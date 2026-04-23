@@ -413,3 +413,186 @@ def test_init_db_is_idempotent_with_new_schema(tmp_path: Path) -> None:
     assert 'chat_messages' in tables
     assert 'workflow_runs' in tables
     conn.close()
+
+
+def test_future_prp009_migration_is_additive_only(tmp_path: Path) -> None:
+    """Simulates PRP-009 migration landing after PRP-010 (GW-5303).
+
+    GW-5323: Ensures that future PRP-009 (GW-5269) migration that adds
+    source/source_ref columns is purely additive and does NOT modify
+    existing conversation_id/session_id values.
+
+    This test encodes the coordination contract: PRP-009's migration MUST
+    use ALTER TABLE ADD COLUMN and MUST NOT backfill or overwrite
+    conversation_id or session_id columns.
+    """
+    db_path = tmp_path / "prp009-additive.db"
+
+    # Step 1: Initialize DB with PRP-010 schema (conversation_id, session_id)
+    init_db(db_path)
+
+    # Step 2: Insert a test row with non-null conversation_id and session_id
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    test_conversation_id = "test-conv-123"
+    test_session_id = "test-session-456"
+    cursor.execute(
+        "INSERT INTO chat_messages (role, content, created_at, conversation_id, session_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("user", "test message", "2026-04-23T00:00:00Z", test_conversation_id, test_session_id)
+    )
+    conn.commit()
+
+    # Get the auto-generated ID
+    msg_id = cursor.lastrowid
+
+    # Step 3: Simulate future PRP-009 migration (ALTER TABLE ADD COLUMN)
+    try:
+        cursor.execute("ALTER TABLE chat_messages ADD COLUMN source TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    try:
+        cursor.execute("ALTER TABLE chat_messages ADD COLUMN source_ref TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    conn.commit()
+
+    # Step 4: Assert that conversation_id and session_id are PRESERVED
+    cursor.execute(
+        "SELECT conversation_id, session_id FROM chat_messages WHERE id = ?",
+        (msg_id,)
+    )
+    row = cursor.fetchone()
+
+    assert row is not None, "Test row disappeared after PRP-009 migration"
+    assert row[0] == test_conversation_id, (
+        f"conversation_id was modified: expected {test_conversation_id}, got {row[0]}"
+    )
+    assert row[1] == test_session_id, (
+        f"session_id was modified: expected {test_session_id}, got {row[1]}"
+    )
+
+    # Step 5: Verify new columns exist
+    cursor.execute("PRAGMA table_info(chat_messages)")
+    columns = {row[1] for row in cursor.fetchall()}
+    assert 'source' in columns
+    assert 'source_ref' in columns
+    assert 'conversation_id' in columns
+    assert 'session_id' in columns
+
+    conn.close()
+
+
+def test_web_origin_source_ref_rule_documented(tmp_path: Path) -> None:
+    """Verifies coordination docstring exists in database.py.
+
+    GW-5323: Ensures the coordination rule for web-origin rows is documented
+    so the future GW-5269 implementer understands:
+    - For web-origin: source='web', source_ref=hostname, conversation_id is dedicated
+    - For slack-origin: source='slack', source_ref=thread_ts
+    - For cli-origin: source='cli', source_ref=hostname
+
+    This is a documentation contract test.
+    """
+    from dag_dashboard import database
+
+    # Check module-level docstring exists and contains coordination rule
+    module_doc = database.__doc__
+    assert module_doc is not None, "database.py module docstring is missing"
+
+    # Required keywords that must appear in the coordination documentation
+    required_keywords = [
+        "GW-5269",  # Reference to the sibling PRP issue
+        "source",   # Column name
+        "source_ref",  # Column name
+        "conversation_id",  # Column name
+        "web",  # Origin type
+    ]
+
+    module_doc_lower = module_doc.lower()
+    missing_keywords = [kw for kw in required_keywords if kw.lower() not in module_doc_lower]
+
+    assert not missing_keywords, (
+        f"Coordination rule not documented in database.py. "
+        f"Missing keywords: {missing_keywords}. "
+        f"See GW-5323 implementation plan for required documentation."
+    )
+
+
+def test_merge_order_convergence(tmp_path: Path) -> None:
+    """Verifies schema converges regardless of PRP merge order.
+
+    GW-5323: Tests both merge orders produce identical final schema:
+    - Order A: PRP-010 first (init_db with conversation_id/session_id),
+               then PRP-009 (ALTER ADD source/source_ref)
+    - Order B: Simulated empty DB with PRP-009 columns → then PRP-010 (init_db)
+
+    Both orders should result in the same column set on chat_messages.
+    """
+    # Order A: PRP-010 first, then simulated PRP-009
+    db_a = tmp_path / "order-a.db"
+    init_db(db_a)
+    conn_a = sqlite3.connect(db_a)
+    cursor_a = conn_a.cursor()
+
+    try:
+        cursor_a.execute("ALTER TABLE chat_messages ADD COLUMN source TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor_a.execute("ALTER TABLE chat_messages ADD COLUMN source_ref TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    conn_a.commit()
+
+    cursor_a.execute("PRAGMA table_info(chat_messages)")
+    schema_a = {row[1] for row in cursor_a.fetchall()}
+    conn_a.close()
+
+    # Order B: Simulated PRP-009 first (same base schema as init_db creates),
+    # then PRP-010 (init_db which is idempotent)
+    db_b = tmp_path / "order-b.db"
+    conn_b = sqlite3.connect(db_b)
+    cursor_b = conn_b.cursor()
+
+    # Create chat_messages table matching the base schema from database.py
+    cursor_b.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            execution_id TEXT REFERENCES node_executions(id),
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            metadata TEXT,
+            run_id TEXT REFERENCES workflow_runs(id),
+            operator_username TEXT
+        )
+    """)
+
+    # Simulate PRP-009 columns added first
+    cursor_b.execute("ALTER TABLE chat_messages ADD COLUMN source TEXT")
+    cursor_b.execute("ALTER TABLE chat_messages ADD COLUMN source_ref TEXT")
+    conn_b.commit()
+    conn_b.close()
+
+    # Now run init_db which will add PRP-010 columns (conversation_id, session_id)
+    init_db(db_b)
+    conn_b = sqlite3.connect(db_b)
+    cursor_b = conn_b.cursor()
+
+    cursor_b.execute("PRAGMA table_info(chat_messages)")
+    schema_b = {row[1] for row in cursor_b.fetchall()}
+    conn_b.close()
+
+    # Assert both orders produce the same column set
+    assert schema_a == schema_b, (
+        f"Schema divergence detected. "
+        f"Order A (PRP-010 first) columns: {sorted(schema_a)}. "
+        f"Order B (PRP-009 first) columns: {sorted(schema_b)}. "
+        f"Difference: {schema_a.symmetric_difference(schema_b)}"
+    )
