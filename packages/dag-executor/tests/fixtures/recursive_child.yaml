@@ -1,0 +1,11 @@
+name: recursive_child
+config:
+  checkpoint_prefix: recursive-child
+
+inputs: {}
+
+nodes:
+  - id: recurse
+    name: Recurse Into Self
+    type: command
+    command: recursive_child
