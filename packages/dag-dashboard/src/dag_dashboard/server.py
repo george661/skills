@@ -7,7 +7,7 @@ from typing import AsyncIterator, Dict, List, Optional
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from .broadcast import Broadcaster
 from .cancel import create_cancel_router
@@ -175,6 +175,18 @@ def create_app(
     async def health() -> Dict[str, str]:
         """Health check endpoint."""
         return {"status": "ok"}
+
+    @app.get("/api/config")
+    async def api_config() -> Dict[str, bool]:
+        """Return feature flag configuration."""
+        return {"builder_enabled": settings.builder_enabled if settings else False}
+
+    @app.get("/builder-config.js")
+    async def builder_config_js() -> Response:
+        """Return inline JavaScript that sets window.DAG_DASHBOARD_BUILDER_ENABLED."""
+        enabled = settings.builder_enabled if settings else False
+        js_content = f"window.DAG_DASHBOARD_BUILDER_ENABLED = {'true' if enabled else 'false'};"
+        return Response(content=js_content, media_type="application/javascript")
 
     @app.get("/")
     async def root() -> FileResponse:

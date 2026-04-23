@@ -61,6 +61,45 @@ jobs:
             echo "::endgroup::"
           done <<< "$pkgs"
 
+  builder-bundle:
+    name: Builder Bundle (React + React Flow)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install builder dependencies
+        run: |
+          cd packages/dag-dashboard/builder
+          npm ci
+
+      - name: Build builder bundle
+        run: |
+          cd packages/dag-dashboard/builder
+          npm run build
+
+      - name: Verify bundle exists and is non-empty
+        run: |
+          BUNDLE="packages/dag-dashboard/src/dag_dashboard/static/js/builder/builder.js"
+          if [ ! -s "$BUNDLE" ]; then
+            echo "ERROR: Bundle is missing or empty at $BUNDLE"
+            exit 1
+          fi
+          echo "✓ Bundle exists: $BUNDLE ($(wc -c < "$BUNDLE") bytes)"
+
+          # Report gzipped size
+          GZIPPED_SIZE=$(gzip -c "$BUNDLE" | wc -c)
+          echo "✓ Gzipped size: $GZIPPED_SIZE bytes (~$((GZIPPED_SIZE / 1024)) KB)"
+
+      - name: Upload builder bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: builder-bundle
+          path: packages/dag-dashboard/src/dag_dashboard/static/js/builder/builder.js
+          retention-days: 30
+
   hooks-lint:
     name: Python Hooks Lint
     runs-on: ubuntu-latest
