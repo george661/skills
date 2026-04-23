@@ -208,10 +208,10 @@ def run_drafts_publish(args: Any) -> None:
             print(f"Validation error: {e}", file=sys.stderr)
             sys.exit(1)
         
-        # Get publisher string
+        # Get publisher string (single-token, colon-delimited format)
         user = os.environ.get('USER', 'unknown')
         host = socket.gethostname()
-        publisher = f"cli  {user}@{host}"
+        publisher = f"cli:{user}@{host}"
         
         # Publish
         publish(wf_dir, args.workflow, args.timestamp, publisher)
