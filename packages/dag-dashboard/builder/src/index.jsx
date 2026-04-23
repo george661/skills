@@ -91,11 +91,12 @@ function Builder() {
     });
 
     // Version drawer hook (GW-5251) — manage version browser state and actions.
-    const currentCanvasYaml = React.useMemo(
-        () => buildWorkflowYaml({ name: workflowName, description, provider, model, dag }),
-        [workflowName, description, provider, model, dag]
+    // Pass JSON format to match draft storage format for apples-to-apples diff
+    const currentCanvasJson = React.useMemo(
+        () => JSON.stringify({ nodes: dag }),
+        [dag]
     );
-    const versionDrawer = useVersionDrawer(workflowName, currentCanvasYaml);
+    const versionDrawer = useVersionDrawer(workflowName, currentCanvasJson);
 
     // Restore handler — loads draft nodes and forces canvas remount via restoreKey.
     const handleRestore = React.useCallback(async (timestamp) => {

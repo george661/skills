@@ -88,12 +88,11 @@ describe('VersionDrawer', () => {
     }
     
     const hoverElement = findWithMouseEnter(tree);
-    if (hoverElement) {
-      TestRenderer.act(() => {
-        hoverElement.props.onMouseEnter();
-      });
-      assert.ok(hoverCalled, 'onHover should be called on mouse enter');
-    }
+    assert.ok(hoverElement, 'Should find element with onMouseEnter');
+    TestRenderer.act(() => {
+      hoverElement.props.onMouseEnter();
+    });
+    assert.ok(hoverCalled, 'onHover should be called on mouse enter');
   });
 
   it('restore_calls_onRestore_with_timestamp', () => {
@@ -121,12 +120,11 @@ describe('VersionDrawer', () => {
     }
     
     const restoreBtn = findRestoreButton(tree);
-    if (restoreBtn) {
-      TestRenderer.act(() => {
-        restoreBtn.props.onClick();
-      });
-      assert.ok(restoreTs, 'onRestore should be called with timestamp');
-    }
+    assert.ok(restoreBtn, 'Should find restore button');
+    TestRenderer.act(() => {
+      restoreBtn.props.onClick();
+    });
+    assert.ok(restoreTs, 'onRestore should be called with timestamp');
   });
 
   it('delete_prompts_confirm_then_deletes', () => {
@@ -156,12 +154,11 @@ describe('VersionDrawer', () => {
     }
     
     const deleteBtn = findDeleteButton(tree);
-    if (deleteBtn) {
-      TestRenderer.act(() => {
-        deleteBtn.props.onClick();
-      });
-      assert.ok(deleteCalled, 'onDelete should be called after confirmation');
-    }
+    assert.ok(deleteBtn, 'Should find delete button');
+    TestRenderer.act(() => {
+      deleteBtn.props.onClick();
+    });
+    assert.ok(deleteCalled, 'onDelete should be called after confirmation');
   });
 
   it('drawer_closed_by_default', () => {

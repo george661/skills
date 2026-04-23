@@ -659,7 +659,7 @@ def test_published_log_parser_handles_two_space_format(client, workflows_dir):
     create_draft(workflows_dir, "test-workflow", "20260101T120000_000000Z", "content: draft1")
     create_draft(workflows_dir, "test-workflow", "20260102T120000_000000Z", "content: draft2")
     create_draft(workflows_dir, "test-workflow", "20260103T120000_000000Z", "content: draft3")
-    
+
     # Create PUBLISHED.log with specific two-space format
     # Format: YYYY-MM-DDTHH:MM:SSZ  {publisher}  published {ts}
     create_published_log(
@@ -670,15 +670,50 @@ def test_published_log_parser_handles_two_space_format(client, workflows_dir):
             ("20260102T120500_000000Z", "bob@example.com", "20260102T120000_000000Z"),
         ]
     )
-    
+
     response = client.get("/api/workflows/test-workflow/drafts")
     assert response.status_code == 200
     items = response.json()
-    
+
     # Build dict for easier lookup
     items_by_ts = {item["timestamp"]: item for item in items}
-    
+
     # Verify correct publishers extracted
     assert items_by_ts["20260101T120000_000000Z"]["publisher"] == "alice@example.com"
     assert items_by_ts["20260102T120000_000000Z"]["publisher"] == "bob@example.com"
     assert items_by_ts["20260103T120000_000000Z"]["publisher"] is None
+
+
+def test_drafts_diff_with_json_content_format(client, workflows_dir):
+    """POST /diff with JSON-formatted draft content (matching autosave format) compares correctly.
+
+    GW-5251: Drafts are stored as JSON.stringify({nodes: [...]}), not YAML.
+    The diff endpoint must handle apples-to-apples comparison when both from and to are JSON.
+    """
+    # Create a draft with JSON content (matching autosave format)
+    draft_json = json.dumps({"nodes": [{"id": "node1", "type": "bash", "script": "echo hello"}]})
+    create_draft(workflows_dir, "test-workflow", "20260101T120000_000000Z", draft_json)
+
+    # Current canvas content (JSON with modified node)
+    current_json = json.dumps({"nodes": [{"id": "node1", "type": "bash", "script": "echo world"}]})
+
+    response = client.post(
+        "/api/workflows/test-workflow/drafts/diff",
+        json={
+            "from_ts": "20260101T120000_000000Z",
+            "to_content": current_json
+        }
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "unified_diff" in data
+
+    # Verify diff shows only the changed field, not 100% replacement
+    unified_diff = data["unified_diff"]
+    assert "hello" in unified_diff or "world" in unified_diff, "Diff should show changed script content"
+    # Verify it's not treating the entire content as replaced
+    lines = unified_diff.split("\n")
+    # Count changed lines - should be minimal for a single field change
+    changed_lines = [l for l in lines if l.startswith(("+", "-")) and not l.startswith(("+++", "---"))]
+    assert len(changed_lines) < 10, f"Expected minimal diff, got {len(changed_lines)} changed lines"

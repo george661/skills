@@ -204,11 +204,10 @@ describe('BuilderToolbar', () => {
       b.props.children && b.props.children.includes?.('Versions')
     );
 
-    if (versionsBtn) {
-      TestRenderer.act(() => {
-        versionsBtn.props.onClick();
-      });
-      assert.ok(versionsCalled, 'onOpenVersions should be called');
-    }
+    assert.ok(versionsBtn, 'Should find Versions button');
+    TestRenderer.act(() => {
+      versionsBtn.props.onClick();
+    });
+    assert.ok(versionsCalled, 'onOpenVersions should be called');
   });
 });
