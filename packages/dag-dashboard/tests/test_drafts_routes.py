@@ -717,3 +717,77 @@ def test_drafts_diff_with_json_content_format(client, workflows_dir):
     # Count changed lines - should be minimal for a single field change
     changed_lines = [l for l in lines if l.startswith(("+", "-")) and not l.startswith(("+++", "---"))]
     assert len(changed_lines) < 10, f"Expected minimal diff, got {len(changed_lines)} changed lines"
+
+def test_cli_written_draft_visible_to_rest(client, workflows_dir):
+    """CLI-written drafts (via drafts_fs.write_draft) are readable via REST GET /drafts."""
+    from dag_executor import drafts_fs
+
+    # Write draft using CLI function (drafts_fs.write_draft)
+    workflow_name = "test-workflow"
+    content = """name: test
+config:
+  checkpoint_prefix: /tmp/test
+nodes:
+  - id: start
+    name: start
+    type: prompt
+    prompt: "Hello"
+"""
+    ts = drafts_fs.write_draft(workflows_dir, workflow_name, content)
+
+    # List drafts via REST — should not return 500
+    response = client.get(f"/api/workflows/{workflow_name}/drafts")
+    assert response.status_code == 200, f"GET /drafts failed with {response.status_code}: {response.text}"
+
+    data = response.json()
+    assert isinstance(data, list), "Response should be a list of drafts"
+    assert len(data) > 0, "Should list at least one draft"
+
+    # Verify the CLI-written timestamp appears in the list
+    timestamps = [d["timestamp"] for d in data]
+    assert ts in timestamps, f"CLI-written timestamp {ts} not found in REST list: {timestamps}"
+
+    # Read draft via REST
+    response = client.get(f"/api/workflows/{workflow_name}/drafts/{ts}")
+    assert response.status_code == 200, f"GET /drafts/{ts} failed with {response.status_code}: {response.text}"
+    draft_data = response.json()
+    assert draft_data["content"] == content, "Draft content should match what was written"
+
+    # Publish draft via REST (simulates publish operation)
+    response = client.post(f"/api/workflows/{workflow_name}/drafts/{ts}/publish")
+    assert response.status_code == 200, f"POST /drafts/{ts}/publish failed with {response.status_code}: {response.text}"
+
+
+def test_rest_written_draft_readable_by_cli(client, workflows_dir):
+    """REST-written drafts are readable via CLI functions (drafts_fs.read_draft, list_drafts)."""
+    from dag_executor import drafts_fs
+
+    workflow_name = "test-workflow"
+    content = """name: rest-test
+config:
+  checkpoint_prefix: /tmp/test
+nodes:
+  - id: start
+    name: start
+    type: prompt
+    prompt: "Hello"
+"""
+
+    # Write draft via REST
+    response = client.post(
+        f"/api/workflows/{workflow_name}/drafts",
+        json={"content": content}
+    )
+    assert response.status_code == 201, f"POST /drafts failed with {response.status_code}: {response.text}"
+    
+    data = response.json()
+    assert "timestamp" in data
+    ts = data["timestamp"]
+
+    # Read draft via CLI function
+    read_content = drafts_fs.read_draft(workflows_dir, workflow_name, ts)
+    assert read_content == content, "CLI read_draft should return same content as REST wrote"
+
+    # List drafts via CLI function — should include REST-written timestamp
+    drafts = drafts_fs.list_drafts(workflows_dir, workflow_name)
+    assert ts in drafts, f"REST-written timestamp {ts} not found in CLI list: {drafts}"
