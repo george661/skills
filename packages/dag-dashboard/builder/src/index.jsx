@@ -8,6 +8,7 @@ import { WorkflowCanvas } from './WorkflowCanvas.jsx';
 import BuilderToolbar from './BuilderToolbar.jsx';
 import useToolbarActions from './useToolbarActions.js';
 import { dagToYaml } from './dagToYaml.js';
+import { useAutosave } from './useAutosave.js';
 import { YamlCodeView } from './YamlCodeView.jsx';
 
 function serializeMetadata({ name, description, provider, model }) {
@@ -32,19 +33,29 @@ function buildWorkflowYaml({ name, description, provider, model, dag }) {
 }
 
 /**
- * Builder root. Integrates BuilderToolbar, WorkflowCanvas, YamlCodeView, and validation.
- * GW-5247: Added toolbar with Save/Publish/Run/Validate/Undo + view-mode toggle.
- * GW-5250: YamlCodeView read-only preview with split/full modes.
+ * Builder root. Integrates BuilderToolbar (GW-5247), WorkflowCanvas,
+ * YamlCodeView (GW-5250), and autosave (GW-5248) into a single workflow editor.
+ *
+ * The workflow name is initialized from the ?workflow= query param and becomes
+ * editable state — autosave tracks it, and the toolbar surfaces it for edit.
  */
 function Builder() {
+    const [initialDag, setInitialDag] = React.useState(null);
     const [dag, setDag] = React.useState([]);
-    const [workflowName, setWorkflowName] = React.useState('untitled-workflow');
+    const dagRef = React.useRef([]);
+    const [isLoaded, setIsLoaded] = React.useState(false);
+    const [viewMode, setViewMode] = React.useState('hidden');
     const [description, setDescription] = React.useState('');
     const [provider, setProvider] = React.useState('');
     const [model, setModel] = React.useState('');
-    const [viewMode, setViewMode] = React.useState('hidden');
-    const [hasUnsavedChanges, setHasUnsavedChanges] = React.useState(false);
     const [hasClientErrors, setHasClientErrors] = React.useState(false);
+
+    // Workflow name: initialize from ?workflow= but remain editable.
+    const initialWorkflowName = React.useMemo(() => {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('workflow') || 'untitled';
+    }, []);
+    const [workflowName, setWorkflowName] = React.useState(initialWorkflowName);
 
     const toolbarActions = useToolbarActions(workflowName);
 
@@ -60,39 +71,68 @@ function Builder() {
         setHasClientErrors(validation.errors.length > 0);
     }, [validation.errors]);
 
-    const handleGraphChange = (newDag) => {
-        setDag(newDag);
-        setHasUnsavedChanges(true);
-    };
+    // Stable getDag reference for useAutosave
+    const getDag = React.useCallback(() => dagRef.current, []);
 
-    const handleSave = async () => {
-        const yaml = buildWorkflowYaml({ name: workflowName, description, provider, model, dag });
-        try {
-            await toolbarActions.saveDraft(yaml);
-            setHasUnsavedChanges(false);
-        } catch (error) {
-            console.error('Save failed:', error);
-        }
-    };
+    // Stable onLoad callback for useAutosave — called once the initial draft loads.
+    const onLoad = React.useCallback((loadedDag) => {
+        setInitialDag(loadedDag);
+        setIsLoaded(true);
+    }, []);
 
-    const handlePublish = async () => {
+    // Autosave hook (GW-5248) — debounced background save to current draft timestamp.
+    const { status, forceSave, lastSavedAt, markDirty } = useAutosave({
+        workflowName,
+        getDag,
+        onLoad,
+    });
+
+    // Keyboard handler for Cmd/Ctrl+S — force save.
+    React.useEffect(() => {
+        const handleKeyDown = (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+                e.preventDefault();
+                forceSave();
+            }
+        };
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [forceSave]);
+
+    // Keep dagRef + dag state + autosave dirty flag in sync.
+    const handleGraphChange = React.useCallback((nextDag) => {
+        dagRef.current = nextDag;
+        setDag(nextDag);
+        markDirty();
+    }, [markDirty]);
+
+    // Autosave-driven unsaved indicator.
+    const hasUnsavedChanges = status === 'unsaved' || status === 'saving';
+
+    // Toolbar action wrappers.
+    const handleSave = React.useCallback(() => {
+        // Force-save creates a new timestamp, matching AC: "Save creates a new draft on every click".
+        forceSave();
+    }, [forceSave]);
+
+    const handlePublish = React.useCallback(async () => {
         try {
             await toolbarActions.publishDraft();
         } catch (error) {
             console.error('Publish failed:', error);
         }
-    };
+    }, [toolbarActions]);
 
-    const handleRun = async () => {
+    const handleRun = React.useCallback(async () => {
         const yaml = buildWorkflowYaml({ name: workflowName, description, provider, model, dag });
         try {
             await toolbarActions.runWorkflow(yaml);
         } catch (error) {
             console.error('Run failed:', error);
         }
-    };
+    }, [toolbarActions, workflowName, description, provider, model, dag]);
 
-    const handleValidate = async () => {
+    const handleValidate = React.useCallback(async () => {
         const yaml = buildWorkflowYaml({ name: workflowName, description, provider, model, dag });
         try {
             const result = await toolbarActions.validateWorkflow(yaml);
@@ -102,11 +142,24 @@ function Builder() {
         } catch (error) {
             console.error('Validate failed:', error);
         }
-    };
+    }, [toolbarActions, workflowName, description, provider, model, dag]);
 
-    const handleUndo = () => {
+    const handleUndo = React.useCallback(() => {
         window.dispatchEvent(new CustomEvent('dag-builder:undo'));
-    };
+    }, []);
+
+    // Optional secondary status line (GW-5248 behaviour).
+    const saveStatus = React.useMemo(() => {
+        if (status === 'saving') return 'Saving...';
+        if (status === 'saved' && lastSavedAt) {
+            const elapsed = Math.floor((Date.now() - lastSavedAt) / 1000);
+            if (elapsed < 60) return `Saved ${elapsed}s ago`;
+            return 'Saved';
+        }
+        if (status === 'unsaved') return 'Unsaved changes';
+        if (status === 'error') return 'Save failed';
+        return '';
+    }, [status, lastSavedAt]);
 
     return (
         <div
@@ -141,42 +194,70 @@ function Builder() {
                 onViewModeChange={setViewMode}
             />
 
-            <div
-                style={{
-                    display: 'flex',
-                    flexDirection: 'row',
-                    flex: 1,
-                    overflow: 'hidden',
-                }}
-            >
-                {/* Canvas - hidden in full mode but still mounted to preserve state */}
+            {saveStatus && (
                 <div
                     style={{
-                        display: viewMode === 'full' ? 'none' : 'flex',
-                        flex: viewMode === 'split' ? '0 0 60%' : '1',
-                        minWidth: 0,
+                        padding: '4px 8px',
+                        fontSize: '12px',
+                        color: 'var(--text-secondary, #888)',
+                        borderBottom: '1px solid var(--border-primary, #333)',
                     }}
                 >
-                    <WorkflowCanvas
-                        initialDag={dag}
-                        readOnly={false}
-                        onGraphChange={handleGraphChange}
-                    />
+                    {saveStatus}
                 </div>
+            )}
 
-                {/* YAML preview - shown in split and full modes (GW-5250) */}
-                {viewMode !== 'hidden' && (
+            {!isLoaded ? (
+                <div
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flex: 1,
+                        color: 'var(--text-secondary, #888)',
+                    }}
+                >
+                    Loading workflow...
+                </div>
+            ) : (
+                <div
+                    style={{
+                        display: 'flex',
+                        flexDirection: 'row',
+                        flex: 1,
+                        overflow: 'hidden',
+                    }}
+                >
+                    {/* Canvas — hidden in full mode but still mounted to preserve state */}
                     <div
                         style={{
-                            flex: viewMode === 'split' ? '0 0 40%' : '1',
+                            display: viewMode === 'full' ? 'none' : 'flex',
+                            flex: viewMode === 'split' ? '0 0 60%' : '1',
                             minWidth: 0,
-                            overflow: 'auto',
                         }}
                     >
-                        <YamlCodeView dag={dag} viewMode={viewMode} />
+                        <WorkflowCanvas
+                            key={isLoaded ? 'loaded' : 'loading'}
+                            initialDag={initialDag}
+                            readOnly={false}
+                            onGraphChange={handleGraphChange}
+                        />
                     </div>
-                )}
-            </div>
+
+                    {/* YAML preview (GW-5250) — shown in split and full modes */}
+                    {viewMode !== 'hidden' && (
+                        <div
+                            style={{
+                                flex: viewMode === 'split' ? '0 0 40%' : '1',
+                                minWidth: 0,
+                                overflow: 'auto',
+                            }}
+                        >
+                            <YamlCodeView dag={dag} viewMode={viewMode} />
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* Placeholder for ValidationPanel (feature-flagged global script) */}
             <div id="validation-panel-mount"></div>
