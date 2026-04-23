@@ -85,7 +85,7 @@ def load_workflow_from_string(yaml_string: str) -> WorkflowDef:
                                         # Line numbers are 0-indexed, convert to 1-indexed
                                         node_lines[node_id] = node_item.start_mark.line + 1
         finally:
-            loader.dispose()
+            loader.dispose()  # type: ignore[no-untyped-call]
     except Exception:
         # If line extraction fails, continue without line numbers
         pass
