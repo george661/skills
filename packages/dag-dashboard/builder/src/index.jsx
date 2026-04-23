@@ -12,6 +12,7 @@ import { useAutosave } from './useAutosave.js';
 import { YamlCodeView } from './YamlCodeView.jsx';
 import VersionDrawer from './VersionDrawer.jsx';
 import useVersionDrawer from './useVersionDrawer.js';
+import NodeLibrary from './NodeLibrary.jsx';
 
 function serializeMetadata({ name, description, provider, model }) {
     const lines = [];
@@ -82,6 +83,9 @@ function Builder() {
     // desktop behaviour is restored on viewport change.
     const isMobile = useMediaQuery('(max-width: 767px)');
     const effectiveViewMode = isMobile ? 'hidden' : viewMode;
+
+    // GW-5333: NodeLibrary visibility state (default: visible, hidden on mobile)
+    const [isLibraryVisible, setIsLibraryVisible] = React.useState(true);
 
     // Workflow name: initialize from ?workflow= but remain editable.
     const initialWorkflowName = React.useMemo(() => {
@@ -306,6 +310,9 @@ function Builder() {
                         overflow: 'hidden',
                     }}
                 >
+                    {/* NodeLibrary (GW-5333) — hidden on mobile */}
+                    {!isMobile && <NodeLibrary />}
+
                     {/* Canvas — hidden in full mode but still mounted to preserve state */}
                     <div
                         style={{
