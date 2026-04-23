@@ -146,6 +146,8 @@ class ExecutionContext:
     pool: Optional[ThreadPoolExecutor] = field(default=None, repr=False)
     semaphore: Optional[asyncio.Semaphore] = field(default=None, repr=False)
     subprocess_registry: Optional[SubprocessRegistry] = field(default=None, repr=False)
+    parent_run_id: Optional[str] = None
+    _recursion_depth: int = 0
 
     @property
     def workflow_state(self) -> Dict[str, Any]:
@@ -159,6 +161,15 @@ class ExecutionContext:
         if self.channel_store is not None:
             return self.channel_store.to_dict()
         return {}
+
+    def _with_parent(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge parent_run_id into metadata if present.
+
+        Helper for consistent event lineage tracking across all workflow events.
+        """
+        if self.parent_run_id is not None:
+            return {**metadata, "parent_run_id": self.parent_run_id}
+        return metadata
 
 
 class WorkflowResult:
@@ -224,6 +235,9 @@ class WorkflowExecutor:
         run_id: Optional[str] = None,
         channel_store: Optional["ChannelStore"] = None,
         events_dir: Optional["Path"] = None,
+        _recursion_depth: int = 0,
+        parent_run_id: Optional[str] = None,
+        subprocess_registry: Optional["SubprocessRegistry"] = None,
     ) -> WorkflowResult:
         """Execute workflow from start to completion.
 
@@ -238,6 +252,9 @@ class WorkflowExecutor:
             events_dir: Optional directory for cancel marker files. When provided,
                 a background task polls {events_dir}/{run_id}.cancel every 1s and
                 triggers SIGTERM/SIGKILL termination on marker detection.
+            _recursion_depth: Internal recursion depth counter for command nodes
+            parent_run_id: Optional parent workflow run_id for event lineage
+            subprocess_registry: Optional subprocess registry to share with parent
 
         Returns:
             WorkflowResult with execution status and node results
@@ -257,6 +274,8 @@ class WorkflowExecutor:
         model_override = inputs.get("__model_override__")
         if model_override:
             event_metadata["model_override"] = model_override
+        if parent_run_id:
+            event_metadata["parent_run_id"] = parent_run_id
 
         if event_emitter:
             event_emitter.emit(WorkflowEvent(
@@ -286,7 +305,9 @@ class WorkflowExecutor:
             concurrency_limit=concurrency_limit,
             pool=pool,
             semaphore=asyncio.Semaphore(concurrency_limit),
-            subprocess_registry=SubprocessRegistry(),
+            subprocess_registry=subprocess_registry or SubprocessRegistry(),
+            parent_run_id=parent_run_id,
+            _recursion_depth=_recursion_depth,
         )
 
         # Spawn cancel-marker polling task if events_dir is provided
@@ -309,7 +330,7 @@ class WorkflowExecutor:
                 event_emitter.emit(WorkflowEvent(
                     event_type=EventType(event_type.lower()),
                     workflow_id=workflow_def.name,
-                    metadata=payload,  # Channel payload goes in metadata
+                    metadata=ctx._with_parent(payload),  # Channel payload goes in metadata
                     timestamp=datetime.now(timezone.utc)
                 ))
             channel_emitter = emit_channel_event
@@ -349,6 +370,7 @@ class WorkflowExecutor:
                                 workflow_id=workflow_def.name,
                                 node_id=node_id,
                                 status=NodeStatus.SKIPPED,
+                                metadata=ctx._with_parent({}),
                                 timestamp=datetime.now(timezone.utc)
                             ))
                 continue
@@ -400,6 +422,7 @@ class WorkflowExecutor:
                             workflow_id=workflow_def.name,
                             node_id=node_id,
                             status=NodeStatus.SKIPPED,
+                            metadata=ctx._with_parent({}),
                             timestamp=datetime.now(timezone.utc)
                         ))
 
@@ -424,7 +447,7 @@ class WorkflowExecutor:
                     workflow_id=workflow_def.name,
                     status=final_status,
                     duration_ms=workflow_duration_ms,
-                    metadata={"cancelled_by": ctx.cancelled_by or "unknown"},
+                    metadata=ctx._with_parent({"cancelled_by": ctx.cancelled_by or "unknown"}),
                     timestamp=workflow_completed_at
                 ))
             elif final_status == WorkflowStatus.PAUSED:
@@ -433,6 +456,7 @@ class WorkflowExecutor:
                     workflow_id=workflow_def.name,
                     status=final_status,
                     duration_ms=workflow_duration_ms,
+                    metadata=ctx._with_parent({}),
                     timestamp=workflow_completed_at
                 ))
             elif final_status == WorkflowStatus.COMPLETED:
@@ -441,6 +465,7 @@ class WorkflowExecutor:
                     workflow_id=workflow_def.name,
                     status=final_status,
                     duration_ms=workflow_duration_ms,
+                    metadata=ctx._with_parent({}),
                     timestamp=workflow_completed_at
                 ))
             else:
@@ -449,6 +474,7 @@ class WorkflowExecutor:
                     workflow_id=workflow_def.name,
                     status=final_status,
                     duration_ms=workflow_duration_ms,
+                    metadata=ctx._with_parent({}),
                     timestamp=workflow_completed_at
                 ))
 
@@ -674,7 +700,7 @@ class WorkflowExecutor:
                         workflow_id=workflow_def.name,
                         node_id=node_id,
                         status=NodeStatus.COMPLETED,
-                        metadata=event_metadata,
+                        metadata=ctx._with_parent(event_metadata),
                         timestamp=result.completed_at or datetime.now(timezone.utc)
                     ))
 
@@ -694,6 +720,7 @@ class WorkflowExecutor:
                     workflow_id=workflow_def.name,
                     node_id=node_id,
                     status=NodeStatus.SKIPPED,
+                    metadata=ctx._with_parent({}),
                     timestamp=datetime.now(timezone.utc)
                 ))
             return
@@ -714,6 +741,7 @@ class WorkflowExecutor:
                     workflow_id=workflow_def.name,
                     node_id=node_id,
                     status=NodeStatus.SKIPPED,
+                    metadata=ctx._with_parent({}),
                     timestamp=datetime.now(timezone.utc)
                 ))
             return
@@ -732,6 +760,7 @@ class WorkflowExecutor:
                     workflow_id=workflow_def.name,
                     node_id=node_id,
                     status=NodeStatus.SKIPPED,
+                    metadata=ctx._with_parent({}),
                     timestamp=datetime.now(timezone.utc)
                 ))
             return
@@ -756,6 +785,7 @@ class WorkflowExecutor:
                 status=NodeStatus.RUNNING,
                 model=resolved_model_str or (node_def.model.value if node_def.model else None),
                 dispatch=node_def.dispatch.value if node_def.dispatch else None,
+                metadata=ctx._with_parent({}),
                 timestamp=started_at
             ))
 
@@ -782,7 +812,7 @@ class WorkflowExecutor:
                         event_type=EventType.NODE_PROGRESS,
                         workflow_id=workflow_def.name,
                         node_id=node_def.id,
-                        metadata={"message": message, **metadata},
+                        metadata=ctx._with_parent({"message": message, **metadata}),
                         timestamp=datetime.now(timezone.utc)
                     ))
 
@@ -815,6 +845,7 @@ class WorkflowExecutor:
                 event_emitter=event_emitter,
                 subprocess_registry=ctx.subprocess_registry,
                 parent_run_id=run_id,
+                _recursion_depth=ctx._recursion_depth,
             )
 
             # Get timeout for this node
@@ -938,11 +969,11 @@ class WorkflowExecutor:
                     node_id=node_id,
                     status=NodeStatus.INTERRUPTED,
                     duration_ms=duration_ms,
-                    metadata={
+                    metadata=ctx._with_parent({
                         "message": result.output.get("message", "") if result.output else "",
                         "resume_key": result.output.get("resume_key", "") if result.output else "",
                         "channels": result.output.get("channels", ["terminal"]) if result.output else ["terminal"]
-                    },
+                    }),
                     timestamp=completed_at
                 ))
             return
@@ -979,7 +1010,7 @@ class WorkflowExecutor:
                     duration_ms=duration_ms,
                     model=node_def.model.value if node_def.model else None,
                     dispatch=node_def.dispatch.value if node_def.dispatch else None,
-                    metadata=metadata,
+                    metadata=ctx._with_parent(metadata),
                     timestamp=completed_at
                 ))
             elif result.status == NodeStatus.FAILED:
@@ -991,7 +1022,7 @@ class WorkflowExecutor:
                     duration_ms=duration_ms,
                     model=node_def.model.value if node_def.model else None,
                     dispatch=node_def.dispatch.value if node_def.dispatch else None,
-                    metadata={"error": result.error} if result.error else {},
+                    metadata=ctx._with_parent({"error": result.error} if result.error else {}),
                     timestamp=completed_at
                 ))
 
@@ -1112,13 +1143,13 @@ class WorkflowExecutor:
                                 workflow_id=workflow_def.name,
                                 node_id=node_def.id,
                                 timestamp=datetime.now(),
-                                metadata={
+                                metadata=ctx._with_parent({
                                     "source_node_id": node_def.id,
                                     "target_node_id": target,
                                     "condition": edge.condition,
                                     "evaluated_value": bool(result),
                                     "edge_index": edge_index
-                                }
+                                })
                             ))
 
                     if result:
@@ -1168,7 +1199,7 @@ class WorkflowExecutor:
                         workflow_id=workflow_def.name,
                         node_id=node_def.id,
                         timestamp=datetime.now(),
-                        metadata={
+                        metadata=ctx._with_parent({
                             "source_node_id": node_def.id,
                             "target_node_id": target,
                             "edge_id": edge_id,
@@ -1180,7 +1211,7 @@ class WorkflowExecutor:
                             "condition": condition,
                             "default": is_default,
                             "evaluated_value": True  # If we got here, the condition was true (or default)
-                        }
+                        })
                     ))
 
     def _check_trigger_rule(
@@ -1443,6 +1474,7 @@ class WorkflowExecutor:
                         workflow_id=workflow_def.name,
                         node_id=hook_node.id,
                         status=NodeStatus.COMPLETED,
+                        metadata=ctx._with_parent({}),
                         timestamp=datetime.now(timezone.utc),
                     ))
 
@@ -1454,6 +1486,7 @@ class WorkflowExecutor:
                         workflow_id=workflow_def.name,
                         node_id=f"_exit_{hook.id}",
                         status=NodeStatus.FAILED,
+                        metadata=ctx._with_parent({}),
                         timestamp=datetime.now(timezone.utc),
                     ))
 

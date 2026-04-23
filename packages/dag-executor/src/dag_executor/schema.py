@@ -340,7 +340,8 @@ class NodeDef(BaseModel):
     # Command node
     command: Optional[str] = Field(default=None, description="Command name (for type=command)")
     args: Optional[List[Any]] = Field(default=None, description="Command args (for type=command)")
-    
+    inputs_map: Optional[Dict[str, str]] = Field(default=None, description="Named input mappings (for type=command)")
+
     # Prompt node
     prompt: Optional[str] = Field(default=None, description="Prompt text (for type=prompt)")
     prompt_file: Optional[str] = Field(default=None, description="Prompt file (for type=prompt)")

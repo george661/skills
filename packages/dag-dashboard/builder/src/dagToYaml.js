@@ -1,80 +1,80 @@
 /**
- * dagToYaml.js
- * 
- * Minimal hand-rolled YAML emitter: converts DAG + metadata to YAML string.
- * No external library in production bundle - keeps bundle size small.
+ * dagToYaml - Pure DAG to YAML serializer
+ * Zero dependencies, pydantic-schema-compatible output
  */
 
-export default function dagToYaml({ name, description, provider, model, dag }) {
-  const indent = '  ';
-  let yaml = '';
-  
-  // Top-level metadata
-  yaml += `name: ${quoteIfNeeded(name)}\n`;
-  yaml += `description: ${quoteIfNeeded(description)}\n`;
-  yaml += `provider: ${quoteIfNeeded(provider)}\n`;
-  yaml += `model: ${quoteIfNeeded(model)}\n`;
-  
-  // Nodes array
-  yaml += 'nodes:\n';
-  
-  if (dag.length === 0) {
-    yaml += `${indent}[]\n`;
-  } else {
-    dag.forEach((node) => {
-      yaml += `${indent}- id: ${quoteIfNeeded(node.id)}\n`;
-      yaml += `${indent}${indent}type: ${quoteIfNeeded(node.type)}\n`;
-      
-      // depends_on array
-      if (node.depends_on && node.depends_on.length > 0) {
-        yaml += `${indent}${indent}depends_on:\n`;
-        node.depends_on.forEach((dep) => {
-          yaml += `${indent}${indent}${indent}- ${quoteIfNeeded(dep)}\n`;
-        });
-      } else {
-        yaml += `${indent}${indent}depends_on: []\n`;
-      }
-      
-      // Include other node properties (prompt, script, etc.)
-      Object.keys(node).forEach((key) => {
-        if (!['id', 'type', 'depends_on'].includes(key)) {
-          const value = node[key];
-          if (typeof value === 'string') {
-            yaml += `${indent}${indent}${key}: ${quoteIfNeeded(value)}\n`;
-          } else if (typeof value === 'object' && value !== null) {
-            yaml += `${indent}${indent}${key}: ${JSON.stringify(value)}\n`;
-          } else {
-            yaml += `${indent}${indent}${key}: ${value}\n`;
-          }
-        }
-      });
-    });
+export function dagToYaml(dag) {
+  if (!dag || dag.length === 0) {
+    return '';
   }
+
+  const lines = ['nodes:'];
   
-  return yaml;
+  dag.forEach(node => {
+    lines.push('  - id: ' + quoteIfNeeded(node.id));
+    
+    // Canonical field order: id, name, type, <type-specific fields>, depends_on
+    if (node.name) {
+      lines.push('    name: ' + quoteIfNeeded(node.name));
+    }
+    
+    lines.push('    type: ' + node.type);
+    
+    // Type-specific fields
+    if (node.type === 'bash' && node.script) {
+      lines.push(...serializeMultilineField('script', node.script, 4));
+    }
+    if (node.type === 'skill' && node.skill) {
+      lines.push('    skill: ' + quoteIfNeeded(node.skill));
+    }
+    if (node.type === 'command' && node.command) {
+      lines.push('    command: ' + quoteIfNeeded(node.command));
+    }
+    if (node.type === 'prompt' && node.prompt) {
+      lines.push(...serializeMultilineField('prompt', node.prompt, 4));
+    }
+    if (node.type === 'gate' && node.condition) {
+      lines.push('    condition: ' + quoteIfNeeded(node.condition));
+    }
+    if (node.type === 'interrupt' && node.message) {
+      lines.push('    message: ' + quoteIfNeeded(node.message));
+    }
+    
+    // depends_on as flow sequence
+    if (node.depends_on && node.depends_on.length > 0) {
+      lines.push('    depends_on: [' + node.depends_on.join(', ') + ']');
+    }
+  });
+  
+  return lines.join('\n') + '\n';
 }
 
 function quoteIfNeeded(str) {
-  if (str === null || str === undefined) {
-    return '""';
+  if (!str) return '""';
+  
+  // Quote if contains special YAML chars
+  if (str.includes(':') || str.includes('#') || str.match(/^\s/) || str.match(/\s$/)) {
+    return '"' + str.replace(/"/g, '\\"') + '"';
   }
   
-  const s = String(str);
+  return str;
+}
+
+function serializeMultilineField(fieldName, value, indent) {
+  const lines = [];
+  const indentStr = ' '.repeat(indent);
   
-  // Quote if contains special chars, starts with special chars, or is multi-line
-  if (
-    s.includes(':') ||
-    s.includes('#') ||
-    s.includes('\n') ||
-    s.includes('"') ||
-    s.startsWith('-') ||
-    s.startsWith('[') ||
-    s.startsWith('{') ||
-    s.trim() !== s
-  ) {
-    // Escape double quotes and wrap in quotes
-    return `"${s.replace(/"/g, '\\"')}"`;
+  if (value.includes('\n')) {
+    // Use block scalar for multiline
+    lines.push(indentStr + fieldName + ': |');
+    const contentLines = value.split('\n');
+    contentLines.forEach(line => {
+      lines.push(indentStr + '  ' + line);
+    });
+  } else {
+    // Single line
+    lines.push(indentStr + fieldName + ': ' + quoteIfNeeded(value));
   }
   
-  return s;
+  return lines;
 }

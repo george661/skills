@@ -1,6 +1,7 @@
 {
   "name": "dag-dashboard-builder",
   "version": "0.1.0",
+  "type": "module",
   "private": true,
   "description": "Builder UI bundle for DAG Dashboard (React + React Flow + dagre)",
   "scripts": {

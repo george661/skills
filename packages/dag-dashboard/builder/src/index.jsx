@@ -7,11 +7,34 @@ import '@xyflow/react/dist/style.css';
 import { WorkflowCanvas } from './WorkflowCanvas.jsx';
 import BuilderToolbar from './BuilderToolbar.jsx';
 import useToolbarActions from './useToolbarActions.js';
-import dagToYaml from './dagToYaml.js';
+import { dagToYaml } from './dagToYaml.js';
+import { YamlCodeView } from './YamlCodeView.jsx';
+
+function serializeMetadata({ name, description, provider, model }) {
+    const lines = [];
+    if (name) lines.push(`name: ${quoteIfNeeded(name)}`);
+    if (description) lines.push(`description: ${quoteIfNeeded(description)}`);
+    if (provider) lines.push(`provider: ${quoteIfNeeded(provider)}`);
+    if (model) lines.push(`model: ${quoteIfNeeded(model)}`);
+    return lines.length > 0 ? lines.join('\n') + '\n' : '';
+}
+
+function quoteIfNeeded(str) {
+    const s = String(str);
+    if (s.includes(':') || s.includes('#') || /^\s|\s$/.test(s)) {
+        return `"${s.replace(/"/g, '\\"')}"`;
+    }
+    return s;
+}
+
+function buildWorkflowYaml({ name, description, provider, model, dag }) {
+    return serializeMetadata({ name, description, provider, model }) + dagToYaml(dag || []);
+}
 
 /**
- * Builder root. Integrates BuilderToolbar, WorkflowCanvas, and validation.
+ * Builder root. Integrates BuilderToolbar, WorkflowCanvas, YamlCodeView, and validation.
  * GW-5247: Added toolbar with Save/Publish/Run/Validate/Undo + view-mode toggle.
+ * GW-5250: YamlCodeView read-only preview with split/full modes.
  */
 function Builder() {
     const [dag, setDag] = React.useState([]);
@@ -25,8 +48,8 @@ function Builder() {
 
     const toolbarActions = useToolbarActions(workflowName);
 
-    // Access validation hook from global (loaded via separate script)
-    // CRITICAL: Capture hook at module scope to avoid Rules of Hooks violation
+    // Access validation hook from global (loaded via separate script).
+    // Capture the reference once to keep hook count stable across renders.
     const validationHook = React.useMemo(
         () => window.DAGDashboardValidation?.useBuilderValidation || (() => ({ errors: [], warnings: [] })),
         []
@@ -43,7 +66,7 @@ function Builder() {
     };
 
     const handleSave = async () => {
-        const yaml = dagToYaml({ name: workflowName, description, provider, model, dag });
+        const yaml = buildWorkflowYaml({ name: workflowName, description, provider, model, dag });
         try {
             await toolbarActions.saveDraft(yaml);
             setHasUnsavedChanges(false);
@@ -61,7 +84,7 @@ function Builder() {
     };
 
     const handleRun = async () => {
-        const yaml = dagToYaml({ name: workflowName, description, provider, model, dag });
+        const yaml = buildWorkflowYaml({ name: workflowName, description, provider, model, dag });
         try {
             await toolbarActions.runWorkflow(yaml);
         } catch (error) {
@@ -70,10 +93,9 @@ function Builder() {
     };
 
     const handleValidate = async () => {
-        const yaml = dagToYaml({ name: workflowName, description, provider, model, dag });
+        const yaml = buildWorkflowYaml({ name: workflowName, description, provider, model, dag });
         try {
             const result = await toolbarActions.validateWorkflow(yaml);
-            // ValidationPanel will handle displaying results via global state
             if (window.DAGDashboardValidation?.ValidationPanel) {
                 console.log('Validation result:', result);
             }
@@ -83,11 +105,8 @@ function Builder() {
     };
 
     const handleUndo = () => {
-        // Dispatch custom event that WorkflowCanvas listens for
         window.dispatchEvent(new CustomEvent('dag-builder:undo'));
     };
-
-    const yaml = dagToYaml({ name: workflowName, description, provider, model, dag });
 
     return (
         <div
@@ -122,33 +141,44 @@ function Builder() {
                 onViewModeChange={setViewMode}
             />
 
-            <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-                <WorkflowCanvas
-                    initialDag={dag}
-                    readOnly={false}
-                    onGraphChange={handleGraphChange}
-                />
-
-                {/* Placeholder for YamlCodeView (GW-5250) */}
+            <div
+                style={{
+                    display: 'flex',
+                    flexDirection: 'row',
+                    flex: 1,
+                    overflow: 'hidden',
+                }}
+            >
+                {/* Canvas - hidden in full mode but still mounted to preserve state */}
                 <div
-                    id="yaml-view-mount"
-                    data-view-mode={viewMode}
                     style={{
-                        display: viewMode === 'hidden' ? 'none' : 'block',
-                        width: viewMode === 'full' ? '100%' : '50%',
-                        borderLeft: '1px solid #ddd',
-                        padding: '8px',
-                        overflow: 'auto'
+                        display: viewMode === 'full' ? 'none' : 'flex',
+                        flex: viewMode === 'split' ? '0 0 60%' : '1',
+                        minWidth: 0,
                     }}
                 >
-                    {/* GW-5250 will mount YamlCodeView here */}
-                    <div style={{ fontSize: '12px', color: '#666' }}>
-                        YAML view placeholder (GW-5250)
-                    </div>
+                    <WorkflowCanvas
+                        initialDag={dag}
+                        readOnly={false}
+                        onGraphChange={handleGraphChange}
+                    />
                 </div>
+
+                {/* YAML preview - shown in split and full modes (GW-5250) */}
+                {viewMode !== 'hidden' && (
+                    <div
+                        style={{
+                            flex: viewMode === 'split' ? '0 0 40%' : '1',
+                            minWidth: 0,
+                            overflow: 'auto',
+                        }}
+                    >
+                        <YamlCodeView dag={dag} viewMode={viewMode} />
+                    </div>
+                )}
             </div>
 
-            {/* Placeholder for ValidationPanel */}
+            {/* Placeholder for ValidationPanel (feature-flagged global script) */}
             <div id="validation-panel-mount"></div>
         </div>
     );
@@ -163,12 +193,10 @@ export function mount(container) {
         console.error('DAGDashboardBuilder.mount: no container element provided');
         return;
     }
-    // Give the container height so React Flow can size itself.
     container.style.height = '100%';
     container.style.minHeight = '600px';
     const root = createRoot(container);
     root.render(<Builder />);
 }
 
-// Export for global access
 window.DAGDashboardBuilder = { mount };
