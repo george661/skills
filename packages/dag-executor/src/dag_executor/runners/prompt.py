@@ -1,4 +1,5 @@
 """Prompt runner for LLM invocation nodes."""
+import logging
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,12 +18,14 @@ from dag_executor.model_resolver import resolve_model
 from dag_executor.schema import ContextMode, ModelTier, NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 
+logger = logging.getLogger(__name__)
 
-def _resolve_session(ctx: RunnerContext) -> Tuple[Optional[str], Optional[str]]:
+
+def _resolve_session(ctx: RunnerContext) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve session ID for this prompt execution.
 
-    Returns tuple of (session_id, transition_reason).
-    - If ctx.conversation_id or ctx.db_path is None: return (None, None) - skip session logic
+    Returns tuple of (session_id, transition_reason, parent_session_id).
+    - If ctx.conversation_id or ctx.db_path is None: return (None, None, None) - skip session logic
     - If context=SHARED: resume active session or mint new if none exists
     - If context=FRESH: transition to new session, deactivating old one
 
@@ -30,12 +33,13 @@ def _resolve_session(ctx: RunnerContext) -> Tuple[Optional[str], Optional[str]]:
         ctx: Runner execution context
 
     Returns:
-        (session_id, transition_reason) where transition_reason is None for SHARED,
-        "fresh-context" for FRESH transitions
+        (session_id, transition_reason, parent_session_id) where transition_reason is None for SHARED,
+        "fresh-context" for FRESH transitions, and parent_session_id is the old active session ID
+        during FRESH transitions (None otherwise)
     """
     # Skip session logic if no conversation context
     if ctx.conversation_id is None or ctx.db_path is None:
-        return None, None
+        return None, None, None
 
     node = ctx.node_def
     context_mode = node.context if hasattr(node, 'context') else ContextMode.SHARED
@@ -46,8 +50,8 @@ def _resolve_session(ctx: RunnerContext) -> Tuple[Optional[str], Optional[str]]:
         if active_session is None:
             # First prompt in conversation - mint new session
             new_session = mint_session(ctx.db_path, ctx.conversation_id)
-            return new_session.id, None
-        return active_session.id, None
+            return new_session.id, None, None
+        return active_session.id, None, None
 
     elif context_mode == ContextMode.FRESH:
         # Get current active session (should exist)
@@ -55,16 +59,17 @@ def _resolve_session(ctx: RunnerContext) -> Tuple[Optional[str], Optional[str]]:
         if active_session is None:
             # No active session - mint first one
             new_session = mint_session(ctx.db_path, ctx.conversation_id)
-            return new_session.id, None
-        # Transition to new session
+            return new_session.id, None, None
+        # Transition to new session - capture old session ID as parent
+        parent_session_id = active_session.id
         new_session = transition_session(
             ctx.db_path,
             old_session_id=active_session.id,
             reason="fresh-context"
         )
-        return new_session.id, "fresh-context"
+        return new_session.id, "fresh-context", parent_session_id
 
-    return None, None
+    return None, None, None
 
 
 @register_runner("prompt")
@@ -95,7 +100,7 @@ class PromptRunner(BaseRunner):
             resolved_model = node.model or ModelTier.LOCAL
 
         # Resolve session for conversation continuity
-        session_id, transition_reason = _resolve_session(ctx)
+        session_id, transition_reason, parent_session_id = _resolve_session(ctx)
 
         # Dispatcher is installed by scripts/install.sh into ~/.claude/hooks/.
         dispatch_script = Path.home() / ".claude" / "hooks" / "dispatch-local.sh"
@@ -198,7 +203,13 @@ class PromptRunner(BaseRunner):
             if session_id is not None and ctx.conversation_id is not None and ctx.db_path is not None:
                 try:
                     # Append user message
-                    effective_prompt = prompt_input if prompt_input is not None else f"[file: {node.prompt_file}]"
+                    # When node.prompt_file is set, read actual file contents instead of storing a stub
+                    if prompt_input is not None:
+                        effective_prompt = prompt_input
+                    elif node.prompt_file:
+                        effective_prompt = Path(node.prompt_file).read_text()
+                    else:
+                        effective_prompt = ""
                     msg_in = append_message(
                         db_path=ctx.db_path,
                         role="user",
@@ -220,7 +231,7 @@ class PromptRunner(BaseRunner):
                             role="user",
                             message_id=msg_in_id,
                             transition_reason=transition_reason,
-                            parent_session_id=None,  # TODO: track parent if needed
+                            parent_session_id=parent_session_id,
                         )
                         ctx.event_emitter.emit(WorkflowEvent(
                             event_type=EventType.CONVERSATION_MESSAGE_APPENDED,
@@ -251,6 +262,7 @@ class PromptRunner(BaseRunner):
                             session_id=session_id,
                             role="assistant",
                             message_id=msg_out_id,
+                            parent_session_id=parent_session_id,
                         )
                         ctx.event_emitter.emit(WorkflowEvent(
                             event_type=EventType.CONVERSATION_MESSAGE_APPENDED,
@@ -262,7 +274,7 @@ class PromptRunner(BaseRunner):
 
                 except Exception as e:
                     # Log but don't fail the node - session data is secondary to LLM response
-                    print(f"Warning: Failed to append conversation message: {e}")
+                    logger.warning(f"Failed to append conversation message: {e}")
 
             return NodeResult(
                 status=NodeStatus.COMPLETED,
