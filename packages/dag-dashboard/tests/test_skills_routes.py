@@ -84,13 +84,13 @@ def test_get_skills_empty_directory(tmp_path: Path) -> None:
     assert response.json() == []
 
 
-def test_get_skills_handles_missing_skills_dirs(tmp_path: Path) -> None:
-    """Test GET /api/skills when skills_dirs not set."""
-    app = create_app(tmp_path)
-    # Don't set app.state.skills_dirs
+def test_get_skills_returns_empty_when_dir_missing(tmp_path: Path) -> None:
+    """Test GET /api/skills returns empty array when the configured dir has no skills."""
+    empty_dir = tmp_path / "empty-skills"
+    empty_dir.mkdir()
+    app = create_app(tmp_path, skills_dirs=[empty_dir])
     client = TestClient(app)
 
     response = client.get("/api/skills")
-    # Route uses getattr with default empty list, always returns 200
     assert response.status_code == 200
     assert response.json() == []
