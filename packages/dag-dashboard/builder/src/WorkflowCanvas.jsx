@@ -120,6 +120,12 @@ function CanvasInner({
                 nodesDraggable={!readOnly}
                 nodesConnectable={!readOnly}
                 elementsSelectable
+                panOnDrag
+                panOnScroll={false}
+                zoomOnPinch
+                zoomOnScroll
+                minZoom={0.25}
+                maxZoom={2.0}
             >
                 <Background />
                 <Controls />
