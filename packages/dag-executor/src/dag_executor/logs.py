@@ -169,8 +169,20 @@ def tail_logs_remote(
 
     print("Following... (Ctrl+C to stop)", file=sys.stderr)
     try:
+        # Build query params for the /logs/stream endpoint
+        params = {}
+        if node_filter:
+            params["node"] = node_filter
+        if stream_filter != "all":
+            params["stream"] = stream_filter
+
+        query_string = "&".join(f"{k}={v}" for k, v in params.items())
+        url = f"{dashboard_url}/api/workflows/{run_id}/logs/stream"
+        if query_string:
+            url = f"{url}?{query_string}"
+
         with httpx.Client(timeout=None) as client:
-            with connect_sse(client, "GET", f"{dashboard_url}/api/workflows/{run_id}/events") as source:
+            with connect_sse(client, "GET", url) as source:
                 for sse_event in source.iter_sse():
                     try:
                         event = json.loads(sse_event.data)
