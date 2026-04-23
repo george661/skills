@@ -280,7 +280,7 @@ nodes:
       - residual_scan
     reads:
       - verification_result
-    condition: "$verification_result_addressed == true"
+    condition: "$verification_result.addressed == true"
     on_failure: stop
 
   # Phase 11: Update workflow state

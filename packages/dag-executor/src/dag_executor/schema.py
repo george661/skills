@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 from pydantic.functional_validators import BeforeValidator
 from typing_extensions import Annotated
 
@@ -544,6 +544,10 @@ class WorkflowDef(BaseModel):
         default_factory=dict,
         description="State field definitions (ChannelFieldDef or ReducerDef for backwards compat)"
     )
+
+    # Private attribute to store YAML line numbers (not part of the schema)
+    # Avoids memory leak from id()-based dict keys (id() recycles after GC)
+    _node_lines: Dict[str, int] = PrivateAttr(default_factory=dict)
 
 
 # Rebuild models to resolve forward references

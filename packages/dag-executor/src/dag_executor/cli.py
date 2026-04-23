@@ -375,7 +375,7 @@ def run_dry_run(workflow_path: str) -> None:
         commands_dir=parent_dir / "commands" if (parent_dir / "commands").exists() else None,
         workflows_dir=parent_dir / "workflows" if (parent_dir / "workflows").exists() else None,
     )
-    validation_result = validator.validate(workflow_def)
+    validation_result = validator.validate(workflow_def, yaml_path=workflow_path)
 
     # Print validation summary
     print(f"Validation: {validation_result.summary()}")

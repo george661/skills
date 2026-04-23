@@ -21,6 +21,26 @@ from dag_executor.schema import (
     TriggerRule,
 )
 
+# Explicit whitelist of known environment variables that appear in workflows
+# Unknown ALL_CAPS names will produce lint errors
+ENV_VAR_WHITELIST = {
+    "PROJECT_ROOT",
+    "TENANT_NAMESPACE",
+    "TENANT_PROJECT",
+    "TENANT_DOMAIN_PATH",
+    "TENANT_DOCS_REPO",
+    "TENANT_SMOKE_TEST_PATH",
+    "DAG_EVENTS_DIR",
+    "DAG_CREATE_ISSUES_BATCH",
+    "DAG_DEPENDENCY_GRAPH",
+    "DAG_ISSUE_LIST",
+    "HOME",
+    "PATH",
+    "PWD",
+    "USER",
+    "SHELL",
+}
+
 
 @dataclass
 class ValidationIssue:
@@ -56,6 +76,229 @@ class ValidationResult:
         w = len(self.warnings)
         status = "PASS" if self.passed else "FAIL"
         return f"{status}: {e} error(s), {w} warning(s)"
+
+
+def lint_variable_references(
+    workflow_def: WorkflowDef,
+    *,
+    yaml_path: Optional[str] = None,
+    yaml_source: Optional[str] = None
+) -> List[ValidationIssue]:
+    """Lint variable references in a workflow.
+
+    Checks that all $variable references resolve to:
+    - Declared workflow inputs
+    - Upstream node IDs (in depends_on chain)
+    - Upstream state channels (in writes: declarations)
+    - Bash-local variables (in the same script)
+
+    Args:
+        workflow_def: The workflow to lint
+        yaml_path: Optional path to the YAML file (for error messages)
+        yaml_source: Optional YAML source string (currently unused)
+
+    Returns:
+        List of ValidationIssue objects (errors and warnings)
+    """
+    from dag_executor.bash_locals import extract_bash_locals
+    from dag_executor.graph import topological_sort_with_layers, CycleDetectedError
+    from dag_executor.parser import get_node_lines
+    from dag_executor.variables import extract_variable_references
+
+    issues: List[ValidationIssue] = []
+
+    # Get line numbers for nodes
+    node_lines = get_node_lines(workflow_def)
+
+    # Build nodes map
+    nodes_map: Dict[str, NodeDef] = {node.id: node for node in workflow_def.nodes}
+
+    # Get topological layers for upstream validation
+    try:
+        layers = topological_sort_with_layers(workflow_def.nodes)
+    except (CycleDetectedError, ValueError):
+        # If graph is broken, skip variable validation (errors already reported)
+        return issues
+
+    # Build layer index: node_id -> layer_index
+    node_layer_index: Dict[str, int] = {}
+    for layer_idx, layer in enumerate(layers):
+        for node_id in layer:
+            node_layer_index[node_id] = layer_idx
+
+    # Build upstream writes index: channel_name -> set of producer node IDs
+    # A channel is available if ANY upstream node (in topological order) writes it
+    def get_upstream_nodes(node_id: str) -> Set[str]:
+        """Get all upstream nodes (transitive depends_on)."""
+        upstream = set()
+        to_visit = [node_id]
+        visited = set()
+
+        while to_visit:
+            current = to_visit.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+
+            current_node = nodes_map.get(current)
+            if current_node and current_node.depends_on:
+                for dep in current_node.depends_on:
+                    upstream.add(dep)
+                    to_visit.append(dep)
+
+        return upstream
+
+    # Build channel writers map
+    channel_writers: Dict[str, Set[str]] = {}
+    for node in workflow_def.nodes:
+        if node.writes:
+            for channel in node.writes:
+                if channel not in channel_writers:
+                    channel_writers[channel] = set()
+                channel_writers[channel].add(node.id)
+
+    # Get workflow-level state channels (always available to all nodes)
+    workflow_state_channels: Set[str] = set(workflow_def.state.keys()) if workflow_def.state else set()
+
+    # Check each node's variable references
+    for node in workflow_def.nodes:
+        # Extract bash locals if this node has a script
+        bash_locals: Set[str] = set()
+        if node.script:
+            bash_locals = extract_bash_locals(node.script)
+
+        # Get upstream nodes for this node
+        upstream_nodes = get_upstream_nodes(node.id)
+
+        # Get available upstream channels
+        upstream_channels: Set[str] = workflow_state_channels.copy()
+        for channel, writers in channel_writers.items():
+            # Channel is available if any writer is upstream
+            if writers & upstream_nodes:
+                upstream_channels.add(channel)
+
+        # Collect resume_keys from upstream interrupt nodes
+        resume_keys: Set[str] = set()
+        for upstream_id in upstream_nodes:
+            upstream_node = nodes_map.get(upstream_id)
+            if upstream_node and upstream_node.type == "interrupt" and upstream_node.resume_key:
+                resume_keys.add(upstream_node.resume_key)
+
+        # Collect all fields that can contain variable references
+        fields_to_check: List[Any] = []
+
+        if node.script:
+            fields_to_check.append(node.script)
+        if node.prompt:
+            fields_to_check.append(node.prompt)
+        if node.condition:
+            fields_to_check.append(node.condition)
+        if node.params:
+            fields_to_check.append(node.params)
+        if node.args:
+            fields_to_check.append(node.args)
+
+        # Extract all variable references from these fields
+        all_refs: List[Tuple[str, str]] = []
+        for field_value in fields_to_check:
+            all_refs.extend(extract_variable_references(field_value))
+
+        # Validate each reference
+        for node_id_ref, field_path in all_refs:
+            # Build the full reference string for error messages
+            ref_str = f"${node_id_ref}"
+            if field_path:
+                ref_str += f".{field_path}"
+
+            # Try to resolve the reference
+            resolved = False
+
+            # 1. Check workflow inputs
+            if node_id_ref in workflow_def.inputs:
+                resolved = True
+
+            # 2. Check upstream node IDs
+            elif node_id_ref in nodes_map:
+                resolved = True
+
+                # Additional checks for node references
+                ref_layer = node_layer_index.get(node_id_ref)
+                current_layer = node_layer_index.get(node.id)
+
+                # Check if referenced node is upstream
+                if ref_layer is not None and current_layer is not None:
+                    if ref_layer >= current_layer:
+                        issues.append(ValidationIssue(
+                            severity="error",
+                            node_id=node.id,
+                            code="downstream_variable_ref",
+                            message=f"Variable reference {ref_str} points to "
+                                    f"downstream or same-layer node (layer {ref_layer} >= {current_layer})",
+                        ))
+
+                # Warn if referenced node has on_failure: continue
+                ref_node = nodes_map[node_id_ref]
+                if ref_node.on_failure and ref_node.on_failure.value == "continue":
+                    issues.append(ValidationIssue(
+                        severity="warning",
+                        node_id=node.id,
+                        code="fragile_variable_ref",
+                        message=f"Variable reference {ref_str} points to node "
+                                f"with on_failure=continue (output may be absent at runtime)",
+                    ))
+
+            # 3. Check upstream state channels
+            elif node_id_ref in upstream_channels:
+                resolved = True
+
+            # 4. Check bash-local variables (single-part refs only)
+            elif not field_path and node_id_ref in bash_locals:
+                resolved = True
+
+            # 4b. Check resume_keys from upstream interrupt nodes (single-part refs only)
+            elif not field_path and node_id_ref in resume_keys:
+                resolved = True
+
+            # 5. Bash string concatenation: $var-literal is parsed as $var-literal by the pattern,
+            #    but bash interprets it as ${var} + "-literal". Check if prefix before hyphen resolves.
+            #    This accepts patterns like $foo-bar if $foo is a valid variable, treating the hyphen
+            #    as bash's implicit string concatenation boundary rather than part of the variable name.
+            elif '-' in node_id_ref:
+                prefix = node_id_ref.split('-')[0]
+                if (prefix in workflow_def.inputs or
+                    prefix in nodes_map or
+                    prefix in upstream_channels or
+                    prefix in bash_locals or
+                    prefix in resume_keys):
+                    resolved = True
+
+            # 6. Environment variables - skip validation only for whitelisted names
+            elif not field_path and node_id_ref in ENV_VAR_WHITELIST:
+                resolved = True
+
+            # If unresolved, emit error
+            if not resolved:
+                # Build error message with file:line if available
+                location = ""
+                if yaml_path:
+                    location = f" at {yaml_path}"
+                    if node.id in node_lines:
+                        location += f":{node_lines[node.id]}"
+                    location += ":"
+
+                # Use dangling_variable_ref for multi-part refs (e.g., $nonexistent.field)
+                # Use unresolved_variable_reference for single-part refs
+                error_code = "dangling_variable_ref" if field_path else "unresolved_variable_reference"
+
+                issues.append(ValidationIssue(
+                    severity="error",
+                    node_id=node.id,
+                    code=error_code,
+                    message=f"Variable reference {ref_str}{location} "
+                            f"not declared in inputs or produced by upstream node",
+                ))
+
+    return issues
 
 
 class WorkflowValidator:
@@ -95,11 +338,12 @@ class WorkflowValidator:
         self.workflows_dir = workflows_dir
         self.env = env if env is not None else dict(os.environ)
 
-    def validate(self, workflow_def: WorkflowDef) -> ValidationResult:
+    def validate(self, workflow_def: WorkflowDef, yaml_path: Optional[str] = None) -> ValidationResult:
         """Run all validation checks on a workflow definition.
 
         Args:
             workflow_def: Parsed workflow to validate
+            yaml_path: Optional path to YAML file (for file:line error messages)
 
         Returns:
             ValidationResult with all issues found
@@ -117,7 +361,7 @@ class WorkflowValidator:
         self._check_trigger_rules(workflow_def, nodes_map, result)
         self._check_reducer_consistency(workflow_def, nodes_map, result)
         self._check_channel_subscriptions(workflow_def, nodes_map, result)
-        self._check_variable_references(workflow_def, nodes_map, result)
+        self._check_variable_references(workflow_def, nodes_map, result, yaml_path)
         self._check_read_state(workflow_def, nodes_map, result)
         self._check_contracts(workflow_def, result)
 
@@ -432,96 +676,22 @@ class WorkflowValidator:
         workflow_def: WorkflowDef,
         nodes_map: Dict[str, NodeDef],
         result: ValidationResult,
+        yaml_path: Optional[str] = None,
     ) -> None:
         """Check that all variable references point to existing upstream nodes.
+
+        Delegates to the public lint_variable_references function.
 
         Validates:
         - $node.field references point to nodes that exist
         - Referenced nodes are upstream (earlier in topological order)
         - Warns if referenced node has on_failure: continue
+        - State channels via writes: declarations
+        - Bash-local variables
         """
-        from dag_executor.variables import extract_variable_references
-
-        # Get topological layers for upstream validation
-        try:
-            layers = topological_sort_with_layers(workflow_def.nodes)
-        except (CycleDetectedError, ValueError):
-            # If graph is broken, skip variable validation (errors already reported)
-            return
-
-        # Build layer index: node_id -> layer_index
-        node_layer_index: Dict[str, int] = {}
-        for layer_idx, layer in enumerate(layers):
-            for node_id in layer:
-                node_layer_index[node_id] = layer_idx
-
-        # Check each node's variable references
-        for node in workflow_def.nodes:
-            # Collect all fields that can contain variable references
-            fields_to_check: List[Any] = []
-
-            if node.script:
-                fields_to_check.append(node.script)
-            if node.prompt:
-                fields_to_check.append(node.prompt)
-            if node.condition:
-                fields_to_check.append(node.condition)
-            if node.params:
-                fields_to_check.append(node.params)
-            if node.args:
-                fields_to_check.append(node.args)
-
-            # Extract all variable references from these fields
-            all_refs: List[Tuple[str, str]] = []
-            for field_value in fields_to_check:
-                all_refs.extend(extract_variable_references(field_value))
-
-            # Validate each reference
-            for node_id_ref, field_path in all_refs:
-                # Check if referenced node exists
-                if node_id_ref not in nodes_map:
-                    # Could be a workflow input or environment variable
-                    if node_id_ref not in workflow_def.inputs:
-                        # If it has no field_path (e.g., $repo vs $node.output),
-                        # it might be an environment variable - only warn
-                        if not field_path:
-                            # Single-part reference could be env var - skip validation
-                            continue
-                        else:
-                            # Multi-part reference (e.g., $node.output) must be a node
-                            result.issues.append(ValidationIssue(
-                                severity="error",
-                                node_id=node.id,
-                                code="dangling_variable_ref",
-                                message=f"Variable reference ${node_id_ref}.{field_path} "
-                                        f"points to non-existent node (and is not a workflow input)",
-                            ))
-                    continue
-
-                # Check if referenced node is upstream
-                ref_layer = node_layer_index.get(node_id_ref)
-                current_layer = node_layer_index.get(node.id)
-
-                if ref_layer is not None and current_layer is not None:
-                    if ref_layer >= current_layer:
-                        result.issues.append(ValidationIssue(
-                            severity="error",
-                            node_id=node.id,
-                            code="downstream_variable_ref",
-                            message=f"Variable reference ${node_id_ref}.{field_path} points to "
-                                    f"downstream or same-layer node (layer {ref_layer} >= {current_layer})",
-                        ))
-
-                # Warn if referenced node has on_failure: continue
-                ref_node = nodes_map[node_id_ref]
-                if ref_node.on_failure and ref_node.on_failure.value == "continue":
-                    result.issues.append(ValidationIssue(
-                        severity="warning",
-                        node_id=node.id,
-                        code="fragile_variable_ref",
-                        message=f"Variable reference ${node_id_ref}.{field_path} points to node "
-                                f"with on_failure=continue (output may be absent at runtime)",
-                    ))
+        # Delegate to public function
+        issues = lint_variable_references(workflow_def, yaml_path=yaml_path)
+        result.issues.extend(issues)
 
     def _check_read_state(
         self,
