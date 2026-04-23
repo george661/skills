@@ -329,3 +329,55 @@ def get_conversation_id_from_parent_run(db_path: Path, parent_run_id: str) -> Op
 
     result: Optional[str] = get_conversation_id_from_run(db_path, parent_run_id)
     return result
+
+
+def build_conversation_message_appended_event(
+    run_id: str,
+    node_id: str,
+    conversation_id: str,
+    session_id: str,
+    role: str,
+    message_id: int,
+    transition_reason: Optional[str] = None,
+    parent_session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build canonical conversation_message_appended event.
+    
+    Follows the GW-5235 gates pattern for shared event builders.
+    All transports (prompt runner, CLI dag-exec conversation append, 
+    future Slack integration) use this builder.
+    
+    Args:
+        run_id: Workflow run ID
+        node_id: Node name/ID that generated the message
+        conversation_id: Conversation ID
+        session_id: Session ID (current active session)
+        role: Message role ("user" or "assistant")
+        message_id: Chat message ID (from append_message return value)
+        transition_reason: Optional reason for session transition (e.g., "fresh-context")
+        parent_session_id: Optional parent session ID for chained sessions
+    
+    Returns:
+        Event dict matching the canonical shape:
+        {
+            "event_type": "conversation_message_appended",
+            "payload": {...},
+            "created_at": ISO timestamp
+        }
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    
+    return {
+        "event_type": "conversation_message_appended",
+        "payload": {
+            "run_id": run_id,
+            "node_id": node_id,
+            "conversation_id": conversation_id,
+            "session_id": session_id,
+            "role": role,
+            "message_id": message_id,
+            "transition_reason": transition_reason,
+            "parent_session_id": parent_session_id,
+        },
+        "created_at": now,
+    }
