@@ -1,4 +1,5 @@
 """Prompt runner for LLM invocation nodes."""
+import json
 import logging
 import subprocess
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from dag_executor.conversations import (
 )
 from dag_executor.events import EventType, WorkflowEvent
 from dag_executor.model_resolver import resolve_model
-from dag_executor.schema import ContextMode, ModelTier, NodeResult, NodeStatus
+from dag_executor.schema import ContextMode, ModelTier, NodeResult, NodeStatus, OutputFormat
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 
 logger = logging.getLogger(__name__)
@@ -276,9 +277,26 @@ class PromptRunner(BaseRunner):
                     # Log but don't fail the node - session data is secondary to LLM response
                     logger.warning(f"Failed to append conversation message: {e}")
 
+            # GW-5308: If output_format is JSON, spread parsed fields into output dict
+            # while preserving the raw text in "response" for backward compatibility
+            output_dict = {}
+            if node.output_format == OutputFormat.JSON:
+                try:
+                    parsed = json.loads(full_output)
+                    if isinstance(parsed, dict):
+                        # Spread parsed fields first
+                        output_dict.update(parsed)
+                except (json.JSONDecodeError, ValueError) as e:
+                    # Invalid JSON - log and fall back to text-only behavior
+                    logger.debug(f"Failed to parse JSON output: {e}")
+
+            # Always set response last to guarantee backward compat
+            # (raw text wins if parsed JSON contains a "response" key)
+            output_dict["response"] = full_output
+
             return NodeResult(
                 status=NodeStatus.COMPLETED,
-                output={"response": full_output}
+                output=output_dict
             )
 
         except Exception as e:
