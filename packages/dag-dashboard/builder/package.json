@@ -5,7 +5,7 @@
   "description": "Builder UI bundle for DAG Dashboard (React + React Flow + dagre)",
   "scripts": {
     "build": "esbuild src/index.jsx --bundle --minify --format=iife --global-name=DAGDashboardBuilder --loader:.js=jsx --outfile=../src/dag_dashboard/static/js/builder/builder.js",
-    "test:build": "rm -rf tests/.build/ && esbuild tests/*.test.mjs --bundle --format=esm --platform=node --out-extension:.js=.mjs --outdir=tests/.build --external:react --external:react-dom --external:react-test-renderer --external:dagre --external:@xyflow/react --loader:.jsx=jsx --loader:.js=jsx",
+    "test:build": "rm -rf tests/.build/ && esbuild tests/*.test.mjs --bundle --format=esm --platform=node --out-extension:.js=.mjs --outdir=tests/.build --external:react --external:react-dom --external:react-test-renderer --external:dagre --external:@xyflow/react --external:js-yaml --loader:.jsx=jsx --loader:.js=jsx --loader:.mjs=jsx",
     "test": "npm run test:build && node --test tests/.build/*.test.mjs"
   },
   "dependencies": {
@@ -16,6 +16,7 @@
   },
   "devDependencies": {
     "esbuild": "0.21.5",
-    "react-test-renderer": "18.3.1"
+    "react-test-renderer": "18.3.1",
+    "js-yaml": "^4.1.0"
   }
 }
