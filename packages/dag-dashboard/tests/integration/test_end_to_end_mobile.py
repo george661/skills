@@ -349,26 +349,25 @@ def test_dag_canvas_pan_gesture(page: Page) -> None:
 # --- Tier A-D Mobile Audit Tests (GW-5295) ---
 
 
-@pytest.mark.parametrize("dashboard_server", ["sample_workflow"], indirect=True)
+@pytest.mark.parametrize("dashboard_server", ["gate_pending_workflow"], indirect=True)
 def test_cancel_dialog_fits_at_320px(page: Page) -> None:
     """Test Cancel dialog has no horizontal scroll and meets touch target requirements at 320px.
 
     FR-12: No horizontal overflow, touch targets >= 44px at 320px viewport.
 
-    NOTE: Cancel button only visible on running workflows. Sample fixture is completed,
-    so this test will skip. To test with running workflow, parametrize with a fixture
-    that doesn't emit terminal event.
+    NOTE: Uses gate_pending_workflow fixture which keeps workflow in running state,
+    ensuring Cancel button is visible. Follow-up: GW-5318 to create dedicated
+    running_workflow.ndjson fixture.
     """
     page.set_viewport_size({"width": 320, "height": 568})
     console_errors = get_console_errors(page)
 
-    navigate_to_run(page, "sample_workflow")
+    navigate_to_run(page, "gate-pending-test")
     page.wait_for_timeout(1000)
 
-    # Check if Cancel button is visible (only on running workflows)
+    # Cancel button should be visible on running workflow
     cancel_button = page.locator(".cancel-run-btn")
-    if cancel_button.count() == 0:
-        pytest.skip("Cancel button not found (workflow already completed)")
+    assert cancel_button.count() > 0, "Cancel button not found (expected on running workflow)"
 
     # Click Cancel button to open confirmation dialog
     cancel_button.click()
@@ -385,6 +384,14 @@ def test_cancel_dialog_fits_at_320px(page: Page) -> None:
     # Dialog has "Confirm" and "Cancel" buttons
     assert_touch_targets_meet_minimum(page, ".confirm-dialog .btn-danger", min_px=44)
     assert_touch_targets_meet_minimum(page, ".confirm-dialog .btn-secondary", min_px=44)
+
+    # Capture screenshot at 320px
+    page.screenshot(path="packages/dag-dashboard/tests/evidence/GW-5295/cancel_dialog_320px.png")
+
+    # Capture screenshot at 768px viewport
+    page.set_viewport_size({"width": 768, "height": 1024})
+    page.wait_for_timeout(500)
+    page.screenshot(path="packages/dag-dashboard/tests/evidence/GW-5295/cancel_dialog_768px.png")
 
     # Verify no console errors
     assert len(console_errors) == 0, f"Console errors: {console_errors}"
@@ -420,6 +427,14 @@ def test_rerun_form_fits_at_320px(page: Page) -> None:
     submit_btn = page.locator("#rerun-form button[type='submit']")
     assert submit_btn.count() > 0, "Re-run submit button not found"
     assert_touch_targets_meet_minimum(page, "#rerun-form button[type='submit']", min_px=44)
+
+    # Capture screenshot at 320px
+    page.screenshot(path="packages/dag-dashboard/tests/evidence/GW-5295/rerun_form_320px.png")
+
+    # Capture screenshot at 768px viewport
+    page.set_viewport_size({"width": 768, "height": 1024})
+    page.wait_for_timeout(500)
+    page.screenshot(path="packages/dag-dashboard/tests/evidence/GW-5295/rerun_form_768px.png")
 
     # Verify no console errors
     assert len(console_errors) == 0, f"Console errors: {console_errors}"
@@ -463,10 +478,19 @@ def test_step_logs_fits_at_320px(page: Page) -> None:
     if filter_buttons.count() > 0:
         assert_touch_targets_meet_minimum(page, ".step-logs-filters button", min_px=44)
 
+    # Capture screenshot at 320px
+    page.screenshot(path="packages/dag-dashboard/tests/evidence/GW-5295/step_logs_320px.png")
+
+    # Capture screenshot at 768px viewport
+    page.set_viewport_size({"width": 768, "height": 1024})
+    page.wait_for_timeout(500)
+    page.screenshot(path="packages/dag-dashboard/tests/evidence/GW-5295/step_logs_768px.png")
+
     # Verify no console errors
     assert len(console_errors) == 0, f"Console errors: {console_errors}"
 
 
+@pytest.mark.parametrize("dashboard_server", ["sample_workflow"], indirect=True)
 def test_search_bar_fits_at_320px(page: Page) -> None:
     """Test SearchBar adapts to 320px viewport per @media rule.
 
@@ -478,24 +502,31 @@ def test_search_bar_fits_at_320px(page: Page) -> None:
     page.goto("http://localhost:8100")
     page.wait_for_timeout(1000)
 
-    # Verify search bar is visible (may be in mobile container)
+    # Verify search bar is visible - hard assertion (requires workflow data)
     search_bar = page.locator(".search-bar")
-    if search_bar.count() == 0:
-        pytest.skip("Search bar not found (may require workflow data)")
+    assert search_bar.count() > 0, "Search bar not found (requires workflow data from fixture)"
 
     # Verify no horizontal overflow
     assert_no_horizontal_scroll(page)
 
     # Verify search input meets touch target requirements
     search_input = page.locator(".search-bar input")
-    if search_input.count() > 0:
-        assert_touch_targets_meet_minimum(page, ".search-bar input", min_px=44)
+    assert search_input.count() > 0, "Search input not found"
+    assert_touch_targets_meet_minimum(page, ".search-bar input", min_px=44)
+
+    # Capture screenshot at 320px
+    page.screenshot(path="packages/dag-dashboard/tests/evidence/GW-5295/search_bar_320px.png")
+
+    # Capture screenshot at 768px viewport
+    page.set_viewport_size({"width": 768, "height": 1024})
+    page.wait_for_timeout(500)
+    page.screenshot(path="packages/dag-dashboard/tests/evidence/GW-5295/search_bar_768px.png")
 
     # Verify no console errors
     assert len(console_errors) == 0, f"Console errors: {console_errors}"
 
 
-@pytest.mark.xfail(reason="GW-5296: Settings input checkboxes are 20px wide, below 44px minimum")
+@pytest.mark.xfail(reason="GW-5317: Settings input checkboxes are 20px wide, below 44px minimum")
 def test_settings_page_fits_at_320px(page: Page) -> None:
     """Test Settings page has no horizontal scroll and form inputs are accessible at 320px.
 
@@ -530,10 +561,19 @@ def test_settings_page_fits_at_320px(page: Page) -> None:
     if submit_btn.count() > 0:
         assert_touch_targets_meet_minimum(page, ".settings-form button[type='submit']", min_px=44)
 
+    # Capture screenshot at 320px
+    page.screenshot(path="packages/dag-dashboard/tests/evidence/GW-5295/settings_page_320px.png")
+
+    # Capture screenshot at 768px viewport
+    page.set_viewport_size({"width": 768, "height": 1024})
+    page.wait_for_timeout(500)
+    page.screenshot(path="packages/dag-dashboard/tests/evidence/GW-5295/settings_page_768px.png")
+
     # Verify no console errors
     assert len(console_errors) == 0, f"Console errors: {console_errors}"
 
 
+@pytest.mark.parametrize("dashboard_server", ["sample_workflow"], indirect=True)
 def test_workflows_page_fits_at_320px(page: Page) -> None:
     """Test Workflows page has no horizontal scroll and list items are tappable at 320px.
 
@@ -549,18 +589,25 @@ def test_workflows_page_fits_at_320px(page: Page) -> None:
     page.evaluate("window.location.hash = '/workflows'")
     page.wait_for_timeout(1000)
 
-    # Verify workflows page is visible
+    # Verify workflows page is visible - hard assertion (requires workflow data)
     workflows_container = page.locator("#workflows-list")
-    if workflows_container.count() == 0:
-        pytest.skip("Workflows list not found (may require workflow data)")
+    assert workflows_container.count() > 0, "Workflows list not found (requires workflow data from fixture)"
 
     # Verify no horizontal overflow
     assert_no_horizontal_scroll(page)
 
     # Verify workflow list items are tappable (>= 44px tall rows/links)
     workflow_items = page.locator("#workflows-list .workflow-item")
-    if workflow_items.count() > 0:
-        assert_touch_targets_meet_minimum(page, "#workflows-list .workflow-item", min_px=44)
+    assert workflow_items.count() > 0, "No workflow items found in list"
+    assert_touch_targets_meet_minimum(page, "#workflows-list .workflow-item", min_px=44)
+
+    # Capture screenshot at 320px
+    page.screenshot(path="packages/dag-dashboard/tests/evidence/GW-5295/workflows_page_320px.png")
+
+    # Capture screenshot at 768px viewport
+    page.set_viewport_size({"width": 768, "height": 1024})
+    page.wait_for_timeout(500)
+    page.screenshot(path="packages/dag-dashboard/tests/evidence/GW-5295/workflows_page_768px.png")
 
     # Verify no console errors
     assert len(console_errors) == 0, f"Console errors: {console_errors}"
