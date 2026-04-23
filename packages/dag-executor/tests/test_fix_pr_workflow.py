@@ -283,6 +283,7 @@ class TestFixPrMockRun:
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"fix_result": {"status": "FIXED", "addressed_count": 1}}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
                 node.pop("model", None)
             elif node["id"] == "pre_push_guards":
                 node["script"] = 'echo "Guards passed"'
