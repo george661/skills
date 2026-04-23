@@ -51,6 +51,16 @@ def get_events_dir(request: Request) -> Path:
     return events_dir
 
 
+@router.get("/config")
+async def get_config(request: Request) -> Dict[str, bool]:
+    """Return UI-relevant configuration flags."""
+    settings = getattr(request.app.state, 'settings', None)
+    return {
+        "allow_destructive_nodes": getattr(settings, 'allow_destructive_nodes', False) if settings else False,
+        "builder_enabled": getattr(settings, 'builder_enabled', False) if settings else False,
+    }
+
+
 @router.get("/workflows/summary")
 async def get_workflows_summary(request: Request) -> StatusSummary:
     """Get status summary counts for dashboard."""
@@ -846,3 +856,17 @@ async def get_definition_detail(name: str, request: Request) -> dict[str, Any]:
     definition["layout"] = layout
 
     return definition
+
+
+@router.get("/skills")
+async def get_skills(request: Request) -> list[dict[str, Any]]:
+    """
+    List all skills across configured skills directories.
+
+    Returns:
+        List of skills with name, description, and path.
+    """
+    from .skills_discovery import list_skills
+
+    skills_dirs = getattr(request.app.state, "skills_dirs", [])
+    return list_skills(skills_dirs)

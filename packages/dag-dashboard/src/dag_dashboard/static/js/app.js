@@ -1021,6 +1021,54 @@ router.register('/settings', function () {
     }
 });
 
+// Inspector demo route (off-nav, for testing until canvas lands)
+router.register('/inspector-demo', async function () {
+    const container = document.getElementById('route-container');
+    container.innerHTML = '<div id="inspector-mount"></div>';
+
+    // Fetch config to get allow_destructive_nodes
+    let allowDestructive = false;
+    try {
+        const configResp = await fetch('/api/config');
+        if (configResp.ok) {
+            const config = await configResp.json();
+            allowDestructive = config.allow_destructive_nodes || false;
+        }
+    } catch (err) {
+        console.warn('Failed to fetch config:', err);
+    }
+
+    // Sample node for testing
+    const sampleNode = {
+        id: 'sample-node',
+        name: 'Sample Node',
+        type: 'bash',
+        script: '#!/bin/bash\necho "Hello, world!"',
+        retry: 3,
+        on_failure: 'stop',
+        depends_on: [],
+        trigger_rule: 'all_success',
+        timeout: 300,
+        label: 'sample',
+        checkpoint: false,
+    };
+
+    const availableNodeIds = ['node-1', 'node-2', 'sample-node'];
+
+    const inspector = new window.NodeInspector({
+        container: document.getElementById('inspector-mount'),
+        node: sampleNode,
+        allowDestructive: allowDestructive,
+        availableNodeIds: availableNodeIds,
+        onChange: (updatedNode) => {
+            console.log('Node updated:', updatedNode);
+        },
+        onDelete: (nodeId) => {
+            console.log('Node deleted:', nodeId);
+        },
+    });
+});
+
 // Builder feature flag handling
 if (window.DAG_DASHBOARD_BUILDER_ENABLED) {
     // Unhide builder nav links
