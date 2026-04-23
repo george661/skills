@@ -2,12 +2,69 @@
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional, Tuple
 
 from dag_executor.artifacts import detect_artifacts
+from dag_executor.conversations import (
+    get_active_session,
+    mint_session,
+    transition_session,
+    append_message,
+    build_conversation_message_appended_event,
+)
 from dag_executor.events import EventType, WorkflowEvent
 from dag_executor.model_resolver import resolve_model
-from dag_executor.schema import ModelTier, NodeResult, NodeStatus
+from dag_executor.schema import ContextMode, ModelTier, NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
+
+
+def _resolve_session(ctx: RunnerContext) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve session ID for this prompt execution.
+
+    Returns tuple of (session_id, transition_reason).
+    - If ctx.conversation_id or ctx.db_path is None: return (None, None) - skip session logic
+    - If context=SHARED: resume active session or mint new if none exists
+    - If context=FRESH: transition to new session, deactivating old one
+
+    Args:
+        ctx: Runner execution context
+
+    Returns:
+        (session_id, transition_reason) where transition_reason is None for SHARED,
+        "fresh-context" for FRESH transitions
+    """
+    # Skip session logic if no conversation context
+    if ctx.conversation_id is None or ctx.db_path is None:
+        return None, None
+
+    node = ctx.node_def
+    context_mode = node.context if hasattr(node, 'context') else ContextMode.SHARED
+
+    if context_mode == ContextMode.SHARED:
+        # Resume active session or mint new if none exists
+        active_session = get_active_session(ctx.db_path, ctx.conversation_id)
+        if active_session is None:
+            # First prompt in conversation - mint new session
+            new_session = mint_session(ctx.db_path, ctx.conversation_id)
+            return new_session.id, None
+        return active_session.id, None
+
+    elif context_mode == ContextMode.FRESH:
+        # Get current active session (should exist)
+        active_session = get_active_session(ctx.db_path, ctx.conversation_id)
+        if active_session is None:
+            # No active session - mint first one
+            new_session = mint_session(ctx.db_path, ctx.conversation_id)
+            return new_session.id, None
+        # Transition to new session
+        new_session = transition_session(
+            ctx.db_path,
+            old_session_id=active_session.id,
+            reason="fresh-context"
+        )
+        return new_session.id, "fresh-context"
+
+    return None, None
 
 
 @register_runner("prompt")
@@ -37,9 +94,16 @@ class PromptRunner(BaseRunner):
             # Fallback for single-node test contexts without workflow_def
             resolved_model = node.model or ModelTier.LOCAL
 
+        # Resolve session for conversation continuity
+        session_id, transition_reason = _resolve_session(ctx)
+
         # Dispatcher is installed by scripts/install.sh into ~/.claude/hooks/.
         dispatch_script = Path.home() / ".claude" / "hooks" / "dispatch-local.sh"
         cmd = [str(dispatch_script), "--model", resolved_model.value]
+
+        # Add session ID if conversation context is present
+        if session_id is not None:
+            cmd.extend(["--session-id", session_id])
 
         # Handle prompt vs prompt_file. Inline prompts go via stdin (avoids arg
         # length limits); prompt_file is passed through --file.
@@ -129,6 +193,76 @@ class PromptRunner(BaseRunner):
                         metadata=artifact,
                         timestamp=datetime.now(timezone.utc),
                     ))
+
+            # Append messages to conversation if session context is present
+            if session_id is not None and ctx.conversation_id is not None and ctx.db_path is not None:
+                try:
+                    # Append user message
+                    effective_prompt = prompt_input if prompt_input is not None else f"[file: {node.prompt_file}]"
+                    msg_in = append_message(
+                        db_path=ctx.db_path,
+                        role="user",
+                        content=effective_prompt,
+                        conversation_id=ctx.conversation_id,
+                        session_id=session_id,
+                        run_id=ctx.workflow_id,
+                        execution_id=None,  # node.id references nodes, not node_executions
+                    )
+                    msg_in_id = msg_in.id
+
+                    # Emit event for user message
+                    if ctx.event_emitter is not None:
+                        event_in = build_conversation_message_appended_event(
+                            run_id=ctx.workflow_id,
+                            node_id=node.id,
+                            conversation_id=ctx.conversation_id,
+                            session_id=session_id,
+                            role="user",
+                            message_id=msg_in_id,
+                            transition_reason=transition_reason,
+                            parent_session_id=None,  # TODO: track parent if needed
+                        )
+                        ctx.event_emitter.emit(WorkflowEvent(
+                            event_type=EventType.CONVERSATION_MESSAGE_APPENDED,
+                            workflow_id=ctx.workflow_id,
+                            node_id=node.id,
+                            metadata=event_in["payload"],
+                            timestamp=datetime.now(timezone.utc),
+                        ))
+
+                    # Append assistant message
+                    msg_out = append_message(
+                        db_path=ctx.db_path,
+                        role="assistant",
+                        content=full_output,
+                        conversation_id=ctx.conversation_id,
+                        session_id=session_id,
+                        run_id=ctx.workflow_id,
+                        execution_id=None,  # node.id references nodes, not node_executions
+                    )
+                    msg_out_id = msg_out.id
+
+                    # Emit event for assistant message
+                    if ctx.event_emitter is not None:
+                        event_out = build_conversation_message_appended_event(
+                            run_id=ctx.workflow_id,
+                            node_id=node.id,
+                            conversation_id=ctx.conversation_id,
+                            session_id=session_id,
+                            role="assistant",
+                            message_id=msg_out_id,
+                        )
+                        ctx.event_emitter.emit(WorkflowEvent(
+                            event_type=EventType.CONVERSATION_MESSAGE_APPENDED,
+                            workflow_id=ctx.workflow_id,
+                            node_id=node.id,
+                            metadata=event_out["payload"],
+                            timestamp=datetime.now(timezone.utc),
+                        ))
+
+                except Exception as e:
+                    # Log but don't fail the node - session data is secondary to LLM response
+                    print(f"Warning: Failed to append conversation message: {e}")
 
             return NodeResult(
                 status=NodeStatus.COMPLETED,
