@@ -51,6 +51,15 @@ def get_events_dir(request: Request) -> Path:
     return events_dir
 
 
+@router.get("/config")
+async def get_config(request: Request) -> dict:
+    """Return UI-relevant configuration flags."""
+    # Defensive: if settings not in app state, return safe defaults
+    settings = getattr(request.app.state, 'settings', None)
+    allow_destructive = getattr(settings, 'allow_destructive_nodes', False) if settings else False
+    return {"allow_destructive_nodes": allow_destructive}
+
+
 @router.get("/workflows/summary")
 async def get_workflows_summary(request: Request) -> StatusSummary:
     """Get status summary counts for dashboard."""

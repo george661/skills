@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     workflows_dir: Union[str, Path] = "workflows"  # Accepts str (env) or Path (programmatic); normalized to str by validator
     workflows_dirs: List[Path] = Field(default_factory=list)  # Parsed list, populated by validator
 
+    # UI behavior settings
+    allow_destructive_nodes: bool = False  # When True, permits editing bash/skill/command node fields in UI
+
     @field_validator("workflows_dir", mode="before")
     @classmethod
     def _coerce_workflows_dir_to_str(cls, v: Any) -> str:
