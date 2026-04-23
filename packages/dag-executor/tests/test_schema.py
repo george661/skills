@@ -471,3 +471,47 @@ class TestNodeDefChannelSubscriptions:
                 script="echo 'task'",
                 writes="not_a_list"  # type: ignore
             )
+
+class TestNodeDefContext:
+    """Test NodeDef.context field for prompt nodes."""
+    
+    def test_node_context_defaults_to_shared_for_prompt(self) -> None:
+        """Test that context defaults to 'shared' for prompt nodes."""
+        from dag_executor.schema import NodeDef, ModelTier, ContextMode
+        
+        node = NodeDef(
+            id="prompt1",
+            name="Prompt Node",
+            type="prompt",
+            prompt="test",
+            model=ModelTier.SONNET
+        )
+        assert node.context == ContextMode.SHARED
+    
+    def test_node_context_fresh_allowed_on_prompt(self) -> None:
+        """Test that context='fresh' is allowed on prompt nodes."""
+        from dag_executor.schema import NodeDef, ModelTier, ContextMode
+        
+        node = NodeDef(
+            id="prompt1",
+            name="Prompt Node",
+            type="prompt",
+            prompt="test",
+            model=ModelTier.SONNET,
+            context=ContextMode.FRESH
+        )
+        assert node.context == ContextMode.FRESH
+    
+    def test_node_context_rejected_on_non_prompt(self) -> None:
+        """Test that explicit context field is rejected on non-prompt nodes."""
+        from dag_executor.schema import NodeDef, ContextMode
+        
+        # Setting context explicitly on a bash node should fail
+        with pytest.raises(ValueError, match="context field is only allowed on type=prompt nodes"):
+            NodeDef(
+                id="bash1",
+                name="Bash Node",
+                type="bash",
+                script="echo test",
+                context=ContextMode.FRESH
+            )

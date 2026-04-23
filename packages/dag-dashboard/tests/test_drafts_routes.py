@@ -545,3 +545,175 @@ def test_get_current_survives_across_directories(tmp_path):
     response = client.get("/api/workflows/test-workflow/drafts/current")
     assert response.status_code == 200
     assert response.json()["timestamp"] == timestamp
+
+
+# New tests for GW-5251: Version browser drawer
+
+def create_published_log(workflows_dir: Path, name: str, entries: list[tuple[str, str, str]]) -> Path:
+    """Helper to create a PUBLISHED.log file.
+    
+    Args:
+        workflows_dir: Workflows directory
+        name: Workflow name
+        entries: List of (timestamp, publisher, draft_timestamp) tuples
+        
+    Returns:
+        Path to created PUBLISHED.log
+    """
+    log_path = workflows_dir / ".drafts" / name / "PUBLISHED.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"{ts}  {pub}  published {draft_ts}" for ts, pub, draft_ts in entries]
+    log_path.write_text("\n".join(lines) + "\n")
+    return log_path
+
+
+def test_list_drafts_includes_publisher_from_published_log(client, workflows_dir):
+    """List endpoint populates publisher field from PUBLISHED.log."""
+    # Create two drafts
+    create_draft(workflows_dir, "test-workflow", "20260101T120000_000000Z", "content: draft1")
+    create_draft(workflows_dir, "test-workflow", "20260102T120000_000000Z", "content: draft2")
+    
+    # Create PUBLISHED.log with one published entry
+    create_published_log(
+        workflows_dir,
+        "test-workflow",
+        [
+            ("20260101T120500_000000Z", "alice@example.com", "20260101T120000_000000Z"),
+        ]
+    )
+    
+    response = client.get("/api/workflows/test-workflow/drafts")
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 2
+    
+    # Published draft should have publisher
+    published_item = next((item for item in items if item["timestamp"] == "20260101T120000_000000Z"), None)
+    assert published_item is not None
+    assert published_item["publisher"] == "alice@example.com"
+    
+    # Unpublished draft should have null publisher
+    unpublished_item = next((item for item in items if item["timestamp"] == "20260102T120000_000000Z"), None)
+    assert unpublished_item is not None
+    assert unpublished_item["publisher"] is None
+
+
+def test_drafts_diff_endpoint_returns_unified_diff(client, workflows_dir):
+    """POST /api/workflows/{name}/drafts/diff returns unified diff."""
+    # Create a draft
+    draft_content = "name: test\ndescription: old description\n"
+    create_draft(workflows_dir, "test-workflow", "20260101T120000_000000Z", draft_content)
+    
+    # Current canvas content (modified)
+    current_content = "name: test\ndescription: new description\n"
+    
+    response = client.post(
+        "/api/workflows/test-workflow/drafts/diff",
+        json={
+            "from_ts": "20260101T120000_000000Z",
+            "to_content": current_content
+        }
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert "unified_diff" in data
+    assert "first_change_line" in data
+    
+    # Verify unified diff contains expected changes
+    unified_diff = data["unified_diff"]
+    assert "-description: old description" in unified_diff
+    assert "+description: new description" in unified_diff
+    
+    # Verify first_change_line
+    assert "description" in data["first_change_line"].lower()
+
+
+def test_drafts_diff_invalid_timestamp_returns_400(client):
+    """POST /diff with invalid timestamp returns 422 (Pydantic validation)."""
+    response = client.post(
+        "/api/workflows/test-workflow/drafts/diff",
+        json={
+            "from_ts": "invalid-timestamp",
+            "to_content": "name: test\n"
+        }
+    )
+    assert response.status_code == 422
+
+
+def test_drafts_diff_missing_draft_returns_404(client):
+    """POST /diff with non-existent draft returns 404."""
+    response = client.post(
+        "/api/workflows/test-workflow/drafts/diff",
+        json={
+            "from_ts": "20260101T120000_000000Z",
+            "to_content": "name: test\n"
+        }
+    )
+    assert response.status_code == 404
+
+
+def test_published_log_parser_handles_two_space_format(client, workflows_dir):
+    """Publisher extraction correctly parses two-space separator format."""
+    # Create drafts
+    create_draft(workflows_dir, "test-workflow", "20260101T120000_000000Z", "content: draft1")
+    create_draft(workflows_dir, "test-workflow", "20260102T120000_000000Z", "content: draft2")
+    create_draft(workflows_dir, "test-workflow", "20260103T120000_000000Z", "content: draft3")
+
+    # Create PUBLISHED.log with specific two-space format
+    # Format: YYYY-MM-DDTHH:MM:SSZ  {publisher}  published {ts}
+    create_published_log(
+        workflows_dir,
+        "test-workflow",
+        [
+            ("20260101T120500_000000Z", "alice@example.com", "20260101T120000_000000Z"),
+            ("20260102T120500_000000Z", "bob@example.com", "20260102T120000_000000Z"),
+        ]
+    )
+
+    response = client.get("/api/workflows/test-workflow/drafts")
+    assert response.status_code == 200
+    items = response.json()
+
+    # Build dict for easier lookup
+    items_by_ts = {item["timestamp"]: item for item in items}
+
+    # Verify correct publishers extracted
+    assert items_by_ts["20260101T120000_000000Z"]["publisher"] == "alice@example.com"
+    assert items_by_ts["20260102T120000_000000Z"]["publisher"] == "bob@example.com"
+    assert items_by_ts["20260103T120000_000000Z"]["publisher"] is None
+
+
+def test_drafts_diff_with_json_content_format(client, workflows_dir):
+    """POST /diff with JSON-formatted draft content (matching autosave format) compares correctly.
+
+    GW-5251: Drafts are stored as JSON.stringify({nodes: [...]}), not YAML.
+    The diff endpoint must handle apples-to-apples comparison when both from and to are JSON.
+    """
+    # Create a draft with JSON content (matching autosave format)
+    draft_json = json.dumps({"nodes": [{"id": "node1", "type": "bash", "script": "echo hello"}]})
+    create_draft(workflows_dir, "test-workflow", "20260101T120000_000000Z", draft_json)
+
+    # Current canvas content (JSON with modified node)
+    current_json = json.dumps({"nodes": [{"id": "node1", "type": "bash", "script": "echo world"}]})
+
+    response = client.post(
+        "/api/workflows/test-workflow/drafts/diff",
+        json={
+            "from_ts": "20260101T120000_000000Z",
+            "to_content": current_json
+        }
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "unified_diff" in data
+
+    # Verify diff shows only the changed field, not 100% replacement
+    unified_diff = data["unified_diff"]
+    assert "hello" in unified_diff or "world" in unified_diff, "Diff should show changed script content"
+    # Verify it's not treating the entire content as replaced
+    lines = unified_diff.split("\n")
+    # Count changed lines - should be minimal for a single field change
+    changed_lines = [l for l in lines if l.startswith(("+", "-")) and not l.startswith(("+++", "---"))]
+    assert len(changed_lines) < 10, f"Expected minimal diff, got {len(changed_lines)} changed lines"

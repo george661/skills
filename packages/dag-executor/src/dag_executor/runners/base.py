@@ -43,6 +43,8 @@ class RunnerContext:
     event_emitter: Optional["EventEmitter"] = None
     subprocess_registry: Optional["SubprocessRegistry"] = None
     parent_run_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    db_path: Optional[Path] = None
     _recursion_depth: int = 0
 
 
