@@ -479,3 +479,52 @@ test('PUTs go to the same timestamp across multiple autosave cycles', async () =
 
     root.unmount();
 });
+test('bootstrap issues exactly one GET /drafts/current across mount lifecycle', async () => {
+    const calls = [];
+    const mockFetch = (url, opts) => {
+        calls.push({ url, method: opts?.method || 'GET' });
+        if (url.endsWith('/drafts/current') && !opts?.method) {
+            // GET /current returns existing draft
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({ timestamp: '20260101T100000_000000Z' })
+            });
+        }
+        if (url.includes('/drafts/20260101T100000_000000Z')) {
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({ 
+                    content: JSON.stringify({ nodes: [{ id: 'a' }] }) 
+                })
+            });
+        }
+        return Promise.resolve({ ok: false, status: 404 });
+    };
+
+    const ref = { current: null };
+    let dagValue = [];
+    const getDag = () => dagValue;
+
+    let root;
+    await act(async () => {
+        root = harnessWith({
+            workflowName: 'test',
+            getDag,
+            fetch: mockFetch,
+        }, ref);
+        // Wait for bootstrap to complete
+        await new Promise(resolve => setTimeout(resolve, 10));
+    });
+
+    // Count GET /drafts/current calls
+    const bootstrapGets = calls.filter(
+        c => c.url.endsWith('/drafts/current') && c.method === 'GET'
+    );
+    
+    assert.strictEqual(bootstrapGets.length, 1, 
+        'Bootstrap should issue exactly one GET /drafts/current, not repeat on re-renders');
+
+    root.unmount();
+});

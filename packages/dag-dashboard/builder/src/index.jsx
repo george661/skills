@@ -14,22 +14,30 @@ import { useAutosave } from './useAutosave.js';
  * save (creates a new timestamp).
  */
 function Builder() {
-    const [initialDag, setInitialDag] = React.useState([]);
+    const [initialDag, setInitialDag] = React.useState(null);
     const dagRef = React.useRef([]);
-    
+    const [isLoaded, setIsLoaded] = React.useState(false);
+
     // Read workflow name from URL
     const workflowName = React.useMemo(() => {
         const params = new URLSearchParams(window.location.search);
         return params.get('workflow') || 'untitled';
     }, []);
-    
+
+    // Stable getDag reference
+    const getDag = React.useCallback(() => dagRef.current, []);
+
+    // Stable onLoad callback
+    const onLoad = React.useCallback((dag) => {
+        setInitialDag(dag);
+        setIsLoaded(true);
+    }, []);
+
     // Autosave hook
     const { status, forceSave, lastSavedAt, markDirty } = useAutosave({
         workflowName,
-        getDag: () => dagRef.current,
-        onLoad: (dag) => {
-            setInitialDag(dag);
-        }
+        getDag,
+        onLoad
     });
     
     // Keyboard handler for Cmd/Ctrl+S
@@ -90,11 +98,26 @@ function Builder() {
                     {saveStatus}
                 </div>
             )}
-            <WorkflowCanvas
-                initialDag={initialDag}
-                readOnly={false}
-                onGraphChange={handleGraphChange}
-            />
+            {!isLoaded ? (
+                <div
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flex: 1,
+                        color: 'var(--text-secondary, #888)',
+                    }}
+                >
+                    Loading workflow...
+                </div>
+            ) : (
+                <WorkflowCanvas
+                    key={isLoaded ? 'loaded' : 'loading'}
+                    initialDag={initialDag}
+                    readOnly={false}
+                    onGraphChange={handleGraphChange}
+                />
+            )}
         </div>
     );
 }

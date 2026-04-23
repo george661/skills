@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 
 /**
  * useAutosave hook - debounced autosave with .current pointer management
@@ -80,6 +80,7 @@ export function useAutosave({
                 }
             } catch (err) {
                 console.error('Bootstrap failed:', err);
+                setStatus('error');
             }
         };
         
@@ -114,42 +115,42 @@ export function useAutosave({
     };
 
     // Mark dirty and schedule autosave
-    const markDirty = () => {
+    const markDirty = useCallback(() => {
         const dag = getDag();
         const currentHash = JSON.stringify(dag);
-        
+
         // Check if dag actually changed
         if (currentHash === lastDagHashRef.current) {
             return;
         }
-        
+
         // Clear existing timer
         if (timerRef.current !== null) {
             clearTimer(timerRef.current);
         }
-        
+
         setStatus('unsaved');
-        
+
         // Schedule new autosave
         timerRef.current = setTimer(() => {
             autosave();
             timerRef.current = null;
         }, delayMs);
-    };
+    }, [getDag, clearTimer, setTimer, delayMs]);
 
     // Force save - create new timestamp
-    const forceSave = async () => {
+    const forceSave = useCallback(async () => {
         // Cancel any pending autosave
         if (timerRef.current !== null) {
             clearTimer(timerRef.current);
             timerRef.current = null;
         }
-        
+
         try {
             setStatus('saving');
             const dag = getDag();
             const content = JSON.stringify({ nodes: dag });
-            
+
             // Create new draft with new timestamp
             const createResponse = await fetch(
                 `/api/workflows/${workflowName}/drafts`,
@@ -159,10 +160,10 @@ export function useAutosave({
                     body: JSON.stringify({ content })
                 }
             );
-            
+
             if (createResponse.ok) {
                 const { timestamp } = await createResponse.json();
-                
+
                 // Update .current pointer
                 await fetch(
                     `/api/workflows/${workflowName}/drafts/current`,
@@ -172,7 +173,7 @@ export function useAutosave({
                         body: JSON.stringify({ timestamp })
                     }
                 );
-                
+
                 setCurrentTimestamp(timestamp);
                 lastDagHashRef.current = JSON.stringify(dag);
                 setLastSavedAt(Date.now());
@@ -182,7 +183,7 @@ export function useAutosave({
             console.error('Force save failed:', err);
             setStatus('error');
         }
-    };
+    }, [getDag, clearTimer, fetch, workflowName]);
 
     // Cleanup timer on unmount
     useEffect(() => {
