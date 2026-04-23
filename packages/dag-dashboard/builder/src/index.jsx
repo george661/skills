@@ -16,6 +16,7 @@ import { YamlCodeView } from './YamlCodeView.jsx';
  */
 function Builder() {
     const [initialDag, setInitialDag] = React.useState(null);
+    const [dag, setDag] = React.useState([]);
     const dagRef = React.useRef([]);
     const [isLoaded, setIsLoaded] = React.useState(false);
     const [viewMode, setViewMode] = React.useState('hidden');
@@ -58,8 +59,9 @@ function Builder() {
     }, [forceSave]);
 
     // Handle graph changes
-    const handleGraphChange = React.useCallback((dag) => {
-        dagRef.current = dag;
+    const handleGraphChange = React.useCallback((nextDag) => {
+        dagRef.current = nextDag;
+        setDag(nextDag);
         markDirty();
     }, [markDirty]);
 
@@ -175,7 +177,7 @@ function Builder() {
                                 overflow: 'auto',
                             }}
                         >
-                            <YamlCodeView dag={dagRef.current} viewMode={viewMode} />
+                            <YamlCodeView dag={dag} viewMode={viewMode} />
                         </div>
                     )}
                 </div>
