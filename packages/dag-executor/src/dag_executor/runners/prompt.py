@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dag_executor.artifacts import detect_artifacts
-from dag_executor.events import EventType, WorkflowEvent
 from dag_executor.model_resolver import resolve_model
 from dag_executor.schema import ModelTier, NodeResult, NodeStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
@@ -44,12 +43,17 @@ class PromptRunner(BaseRunner):
         # Handle prompt vs prompt_file. Inline prompts go via stdin (avoids arg
         # length limits); prompt_file is passed through --file.
         prompt_input = None
-        if node.prompt is not None:
-            cmd.append("--prompt-stdin")
-            prompt_input = node.prompt
-        elif node.prompt_file is not None:
+
+        # prompt_file takes precedence (never resolved, always direct file reference)
+        if node.prompt_file is not None:
             cmd.extend(["--file", node.prompt_file])
-        
+        elif node.prompt is not None:
+            # Use resolved prompt from executor if available, else fall back to node.prompt
+            resolved_prompt = ctx.resolved_inputs.get("prompt") if ctx.resolved_inputs else None
+            effective_prompt = resolved_prompt if resolved_prompt is not None else node.prompt
+            cmd.append("--prompt-stdin")
+            prompt_input = effective_prompt
+
         # Execute CLI with streaming support
         process = None
         try:
