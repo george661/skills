@@ -41,6 +41,7 @@ def create_app(
     settings: Optional[Settings] = None,
     checkpoint_dir_fallback: Optional[str] = None,
     workflows_dirs: Optional[List[Path]] = None,
+    skills_dirs: Optional[List[Path]] = None,
 ) -> FastAPI:
     """Create and configure FastAPI application."""
 
@@ -84,6 +85,15 @@ def create_app(
             app.state.workflows_dirs = settings.workflows_dirs
         else:
             app.state.workflows_dirs = [Path("workflows")]
+
+        # Store skills_dirs for skills endpoints.
+        # Explicit skills_dirs kwarg takes precedence (used by tests).
+        if skills_dirs is not None:
+            app.state.skills_dirs = skills_dirs
+        elif settings:
+            app.state.skills_dirs = settings.skills_dirs
+        else:
+            app.state.skills_dirs = [Path("skills")]
 
         # Reload settings from db to pick up dashboard_settings overrides
         if settings:

@@ -846,3 +846,17 @@ async def get_definition_detail(name: str, request: Request) -> dict[str, Any]:
     definition["layout"] = layout
 
     return definition
+
+
+@router.get("/skills")
+async def get_skills(request: Request) -> list[dict[str, Any]]:
+    """
+    List all skills across configured skills directories.
+
+    Returns:
+        List of skills with name, description, and path.
+    """
+    from .skills_discovery import list_skills
+
+    skills_dirs = getattr(request.app.state, "skills_dirs", [])
+    return list_skills(skills_dirs)

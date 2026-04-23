@@ -29,10 +29,20 @@ class Settings(BaseSettings):
     trigger_rate_limit_per_min: int = 10
     workflows_dir: Union[str, Path] = "workflows"  # Accepts str (env) or Path (programmatic); normalized to str by validator
     workflows_dirs: List[Path] = Field(default_factory=list)  # Parsed list, populated by validator
+    skills_dir: Union[str, Path] = "skills"  # Accepts str (env) or Path (programmatic); normalized to str by validator
+    skills_dirs: List[Path] = Field(default_factory=list)  # Parsed list, populated by validator
 
     @field_validator("workflows_dir", mode="before")
     @classmethod
     def _coerce_workflows_dir_to_str(cls, v: Any) -> str:
+        """Accept Path objects for backwards compatibility; normalize to str."""
+        if isinstance(v, Path):
+            return str(v)
+        return str(v) if not isinstance(v, str) else v
+
+    @field_validator("skills_dir", mode="before")
+    @classmethod
+    def _coerce_skills_dir_to_str(cls, v: Any) -> str:
         """Accept Path objects for backwards compatibility; normalize to str."""
         if isinstance(v, Path):
             return str(v)
@@ -73,6 +83,21 @@ class Settings(BaseSettings):
         # Also normalize workflows_dir to be a Path (first dir)
         if self.workflows_dirs:
             self.workflows_dir = str(self.workflows_dirs[0])
+
+        # Parse skills_dirs from skills_dir (mirrors workflows_dirs logic)
+        if not self.skills_dirs:
+            value = self.skills_dir
+            if isinstance(value, Path):
+                self.skills_dirs = [value]
+            else:
+                # String input - parse colon-separated (Unix) or semicolon (Windows)
+                separator = os.pathsep  # ':' on Unix, ';' on Windows
+                paths = str(value).split(separator)
+                self.skills_dirs = [Path(p.strip()) for p in paths if p.strip()]
+
+        # Also normalize skills_dir to be a Path (first dir)
+        if self.skills_dirs:
+            self.skills_dir = str(self.skills_dirs[0])
 
         return self
 
