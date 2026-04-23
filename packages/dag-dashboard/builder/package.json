@@ -1,0 +1,18 @@
+{
+  "name": "dag-dashboard-builder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Builder UI bundle for DAG Dashboard (React + React Flow + dagre)",
+  "scripts": {
+    "build": "esbuild src/index.jsx --bundle --minify --format=iife --global-name=DAGDashboardBuilder --outfile=../src/dag_dashboard/static/js/builder/builder.js"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "@xyflow/react": "12.3.2",
+    "dagre": "0.8.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.21.5"
+  }
+}

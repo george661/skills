@@ -1069,6 +1069,41 @@ router.register('/inspector-demo', async function () {
     });
 });
 
+// Builder feature flag handling
+if (window.DAG_DASHBOARD_BUILDER_ENABLED) {
+    // Unhide builder nav links
+    document.querySelectorAll('[data-route="/builder"]').forEach(link => {
+        link.classList.remove('hidden');
+    });
+
+    // Register builder route with lazy loading
+    router.register('/builder', function () {
+        const container = document.getElementById('route-container');
+        if (!container) return;
+
+        // Check if builder bundle is already loaded
+        if (window.DAGDashboardBuilder) {
+            window.DAGDashboardBuilder.mount(container);
+            return;
+        }
+
+        // Lazy-load builder bundle
+        const script = document.createElement('script');
+        script.src = '/js/builder/builder.js';
+        script.onload = () => {
+            if (window.DAGDashboardBuilder) {
+                window.DAGDashboardBuilder.mount(container);
+            } else {
+                container.innerHTML = '<div class="error">Builder bundle loaded but not initialized</div>';
+            }
+        };
+        script.onerror = () => {
+            container.innerHTML = '<div class="error">Failed to load builder bundle</div>';
+        };
+        document.head.appendChild(script);
+    });
+}
+
 // Mobile menu toggle
 document.getElementById('mobile-menu-toggle')?.addEventListener('click', () => {
     const mobileNav = document.getElementById('mobile-nav');

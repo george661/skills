@@ -3,12 +3,23 @@ set -euo pipefail
 
 echo "=== DAG Dashboard Production Build Verification ==="
 
+# Build builder bundle if Node is available
+DASHBOARD_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if command -v node >/dev/null 2>&1 && [ -d "$DASHBOARD_DIR/builder" ]; then
+    echo "0. Building builder bundle (Node detected)..."
+    "$DASHBOARD_DIR/scripts/build_builder_bundle.sh" || {
+        echo "⚠️  Builder bundle build failed (Node environment issue?)"
+        echo "   Continuing without builder bundle..."
+    }
+else
+    echo "0. Skipping builder bundle (Node not available or builder/ missing)"
+fi
+
 # Create temp directory
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 echo "1. Installing package from source..."
-DASHBOARD_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 EXECUTOR_DIR="$(cd "$DASHBOARD_DIR/../dag-executor" && pwd)"
 
 # dag-dashboard depends on dag-executor (sibling path dep). Install both to temp site-packages.
