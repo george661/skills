@@ -717,3 +717,147 @@ def test_drafts_diff_with_json_content_format(client, workflows_dir):
     # Count changed lines - should be minimal for a single field change
     changed_lines = [l for l in lines if l.startswith(("+", "-")) and not l.startswith(("+++", "---"))]
     assert len(changed_lines) < 10, f"Expected minimal diff, got {len(changed_lines)} changed lines"
+
+
+def test_publish_appends_to_published_log(workflows_dir, client):
+    """
+    GW-5330: Dashboard publish must write PUBLISHED.log audit trail.
+
+    AC: POST /api/workflows/{name}/drafts/{ts}/publish causes PUBLISHED.log to be appended
+    with publisher identity in format: YYYY-MM-DDTHH:MM:SSZ  publisher  published {ts}
+    (two-space separator between fields).
+    """
+    import os
+    import socket
+    from dag_dashboard.drafts_routes import _read_publishers_from_log
+
+    # Create a valid workflow draft
+    yaml_content = """
+name: test-workflow
+config:
+  checkpoint_prefix: /tmp/test
+nodes:
+  - id: node1
+    name: node1
+    type: bash
+    script: echo test
+"""
+    response = client.post(
+        "/api/workflows/test-workflow/drafts",
+        json={"content": yaml_content}
+    )
+    assert response.status_code == 201
+    timestamp = response.json()["timestamp"]
+
+    # Publish the draft
+    response = client.post(f"/api/workflows/test-workflow/drafts/{timestamp}/publish")
+    if response.status_code != 200:
+        print(f"Response: {response.status_code} - {response.text}")
+    assert response.status_code == 200
+
+    # Verify PUBLISHED.log exists and contains correct entry
+    published_log = workflows_dir / ".drafts" / "test-workflow" / "PUBLISHED.log"
+    assert published_log.exists(), "PUBLISHED.log should exist after publish"
+
+    log_content = published_log.read_text()
+    assert log_content, "PUBLISHED.log should not be empty"
+
+    # Verify format: log_timestamp  publisher  published draft_timestamp
+    lines = log_content.strip().split("\n")
+    assert len(lines) >= 1, "PUBLISHED.log should have at least one entry"
+
+    last_line = lines[-1]
+    parts = last_line.split("  ")  # Two-space separator
+    assert len(parts) == 3, f"Expected 3 parts (log_ts, publisher, action), got {len(parts)}: {last_line}"
+
+    log_ts, publisher, action = parts
+
+    # Verify log timestamp format (ISO 8601 with seconds: YYYY-MM-DDTHH:MM:SSZ)
+    assert len(log_ts) == 20, f"Log timestamp should be 20 chars (YYYY-MM-DDTHH:MM:SSZ), got {len(log_ts)}: {log_ts}"
+    assert log_ts[10] == "T" and log_ts[-1] == "Z", f"Log timestamp should be ISO 8601 format: {log_ts}"
+
+    # Verify publisher format: dashboard-ui:user@host (single-token, colon-delimited)
+    assert publisher.startswith("dashboard-ui:"), f"Publisher should start with 'dashboard-ui:', got: {publisher}"
+    assert "@" in publisher, f"Publisher should contain '@' for user@host format: {publisher}"
+    # Verify no embedded double-space (this was the Critical Fix #1 from plan review)
+    assert "  " not in publisher, f"Publisher should not contain embedded double-space: {publisher}"
+
+    # Verify action format
+    assert action == f"published {timestamp}", f"Action should be 'published {timestamp}', got: {action}"
+
+
+def test_list_drafts_shows_publisher_after_dashboard_publish(workflows_dir, client):
+    """
+    GW-5330: After dashboard publish, list endpoint must show publisher identity.
+
+    End-to-end test: POST draft → POST publish → GET list shows publisher field.
+    """
+    # Create and publish a draft
+    yaml_content = """
+name: test-workflow
+config:
+  checkpoint_prefix: /tmp/test
+nodes:
+  - id: node1
+    name: node1
+    type: bash
+    script: echo test
+"""
+    response = client.post(
+        "/api/workflows/test-workflow/drafts",
+        json={"content": yaml_content}
+    )
+    assert response.status_code == 201
+    timestamp = response.json()["timestamp"]
+
+    response = client.post(f"/api/workflows/test-workflow/drafts/{timestamp}/publish")
+    assert response.status_code == 200
+
+    # List drafts - should show publisher
+    response = client.get("/api/workflows/test-workflow/drafts")
+    assert response.status_code == 200
+    drafts = response.json()
+
+    # Find the draft we just published
+    published_draft = next((d for d in drafts if d["timestamp"] == timestamp), None)
+    assert published_draft is not None, f"Published draft {timestamp} should appear in list"
+
+    # Verify publisher field is populated
+    assert published_draft["publisher"] is not None, "Publisher field should be populated after publish"
+    assert published_draft["publisher"].startswith("dashboard-ui:"), \
+        f"Publisher should start with 'dashboard-ui:', got: {published_draft['publisher']}"
+
+
+def test_read_publishers_from_log_parses_dashboard_format(workflows_dir):
+    """
+    GW-5330: Parser-roundtrip assertion for new publisher format.
+
+    Critical Fix #1: Publisher format changed from 'dashboard-ui  user@host' (embedded double-space)
+    to 'dashboard-ui:user@host' (colon-delimited) so that _read_publishers_from_log can correctly
+    parse entries split on two-space separator.
+    """
+    import os
+    from dag_dashboard.drafts_routes import _read_publishers_from_log
+
+    # Create mock PUBLISHED.log with new format
+    drafts_dir = workflows_dir / ".drafts" / "test-workflow"
+    drafts_dir.mkdir(parents=True, exist_ok=True)
+    published_log = drafts_dir / "PUBLISHED.log"
+
+    # Write entries with both old CLI format and new dashboard format
+    published_log.write_text(
+        "2026-01-15T10:30:00Z  cli:alice@host1  published 20260101T120000_000000Z\n"
+        "2026-01-15T10:31:00Z  dashboard-ui:bob@host2  published 20260101T130000_000000Z\n"
+    )
+
+    # Parse the log
+    publishers = _read_publishers_from_log(drafts_dir)
+
+    # Verify both entries parsed correctly
+    assert "20260101T120000_000000Z" in publishers, "First entry should be parsed"
+    assert publishers["20260101T120000_000000Z"] == "cli:alice@host1", \
+        f"First publisher should be 'cli:alice@host1', got: {publishers.get('20260101T120000_000000Z')}"
+
+    assert "20260101T130000_000000Z" in publishers, "Second entry should be parsed"
+    assert publishers["20260101T130000_000000Z"] == "dashboard-ui:bob@host2", \
+        f"Second publisher should be 'dashboard-ui:bob@host2', got: {publishers.get('20260101T130000_000000Z')}"

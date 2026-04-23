@@ -139,15 +139,15 @@ def write_draft(workflow_dir: Path, name: str, yaml_text: str) -> str:
 
 def publish(workflow_dir: Path, name: str, ts: str, publisher: str) -> None:
     """Copy draft to canonical workflow file atomically.
-    
+
     Appends a line to PUBLISHED.log with format:
     YYYY-MM-DDTHH:MM:SSZ  {publisher}  published {ts}
-    
+
     Args:
         workflow_dir: Base directory containing workflows
         name: Workflow name
         ts: Draft timestamp to publish
-        publisher: Publisher identifier (e.g., "dashboard-ui  alice@host")
+        publisher: Publisher identifier (e.g., "dashboard-ui:alice@host")
         
     Raises:
         FileNotFoundError: If the draft does not exist

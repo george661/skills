@@ -3,6 +3,7 @@ import difflib
 import logging
 import os
 import re
+import socket
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,13 @@ from dag_dashboard.models import (
     DraftUpdateRequest,
 )
 from dag_executor.parser import load_workflow_from_string
+from dag_executor.drafts_fs import (
+    list_drafts as fs_list_drafts,
+    read_draft as fs_read_draft,
+    publish as fs_publish,
+    delete_draft as fs_delete_draft,
+    prune as fs_prune,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,19 +112,17 @@ def _primary_workflows_dir(workflows_dirs: List[Path]) -> Path:
     return primary
 
 
-def _prune_drafts(drafts_dir: Path, keep: int = 50) -> None:
+def _prune_drafts(workflows_dir: Path, name: str, keep: int = 50) -> None:
     """Delete oldest drafts if count exceeds limit.
 
+    Delegates to drafts_fs.prune.
+
     Args:
-        drafts_dir: Directory containing draft files
+        workflows_dir: Base workflows directory
+        name: Workflow name
         keep: Maximum number of drafts to keep
     """
-    draft_files = sorted(drafts_dir.glob("*.yaml"))
-    if len(draft_files) > keep:
-        to_delete = draft_files[: len(draft_files) - keep]
-        for draft_file in to_delete:
-            draft_file.unlink()
-            logger.info(f"Pruned old draft: {draft_file}")
+    fs_prune(workflows_dir, name, keep=keep)
 
 
 def _read_publishers_from_log(drafts_dir: Path) -> Dict[str, str]:
@@ -219,6 +225,9 @@ def _write_current_pointer(
 async def list_drafts(name: str, request: Request) -> List[DraftListItem]:
     """List all drafts for a workflow, newest first.
 
+    Delegates to drafts_fs.list_drafts for each directory, then merges with
+    first-dir-wins semantics and reverse-sorts (newest first).
+
     Returns:
         List of draft items with timestamp, size, and publisher
     """
@@ -229,34 +238,38 @@ async def list_drafts(name: str, request: Request) -> List[DraftListItem]:
     # Collect drafts across all directories
     drafts: List[DraftListItem] = []
     seen_timestamps = set()
-    publishers_by_dir: Dict[Path, Dict[str, str]] = {}
 
     for workflows_dir in workflows_dirs:
         drafts_dir = workflows_dir / ".drafts" / name
         if not drafts_dir.exists():
             continue
 
+        # Delegate to drafts_fs.list_drafts to get timestamps
+        timestamps = fs_list_drafts(workflows_dir, name)
+
         # Read PUBLISHED.log once per directory
         publishers = _read_publishers_from_log(drafts_dir)
-        publishers_by_dir[workflows_dir] = publishers
 
-        for draft_file in drafts_dir.glob("*.yaml"):
-            timestamp = draft_file.stem
-
+        for timestamp in timestamps:
             # Skip if already seen (first-dir-wins)
             if timestamp in seen_timestamps:
                 continue
 
             seen_timestamps.add(timestamp)
+
+            # Stat the file for size
+            draft_file = drafts_dir / f"{timestamp}.yaml"
+            size_bytes = draft_file.stat().st_size if draft_file.exists() else 0
+
             drafts.append(
                 DraftListItem(
                     timestamp=timestamp,
-                    size_bytes=draft_file.stat().st_size,
+                    size_bytes=size_bytes,
                     publisher=publishers.get(timestamp),
                 )
             )
 
-    # Sort newest first
+    # Sort newest first (preserve reverse-sort semantics)
     drafts.sort(key=lambda d: d.timestamp, reverse=True)
     return drafts
 
@@ -315,6 +328,8 @@ async def get_draft(
 ) -> Dict[str, Any]:
     """Get draft content and parsed YAML.
 
+    Delegates to drafts_fs.read_draft for content retrieval.
+
     Returns 200 with parsed=null on YAML errors (intentionally lenient to allow
     operators to retrieve and fix broken drafts), unlike publish which returns 400.
 
@@ -323,20 +338,25 @@ async def get_draft(
     """
     _validate_workflow_name(name)
     _validate_timestamp(timestamp)
-    
+
     workflows_dirs: List[Path] = request.app.state.workflows_dirs
-    draft_path, _ = _resolve_draft(workflows_dirs, name, timestamp)
-    
-    # Read content
-    content = draft_path.read_text()
-    
-    # Parse YAML
+
+    # Resolve which workflows_dir contains the draft (multi-dir support)
+    _, workflows_dir = _resolve_draft(workflows_dirs, name, timestamp)
+
+    # Delegate to drafts_fs.read_draft
+    try:
+        content = fs_read_draft(workflows_dir, name, timestamp)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    # Parse YAML (lenient - return parsed=null on error)
     try:
         parsed = yaml.safe_load(content)
     except yaml.YAMLError as e:
         logger.warning(f"Failed to parse draft YAML: {e}")
         parsed = None
-    
+
     return {
         "timestamp": timestamp,
         "content": content,
@@ -349,19 +369,22 @@ async def create_draft(
     name: str, body: DraftCreateRequest, request: Request
 ) -> DraftCreateResponse:
     """Create a new draft with generated timestamp.
-    
+
+    TODO(GW-5331): Migrate to drafts_fs.write_draft once format is normalized.
+    For now: keep inline to preserve existing 23-char microsecond format.
+
     Returns:
         Response with generated timestamp
     """
     _validate_workflow_name(name)
-    
+
     workflows_dirs: List[Path] = request.app.state.workflows_dirs
     primary_dir = _primary_workflows_dir(workflows_dirs)
-    
+
     # Create drafts directory
     drafts_dir = primary_dir / ".drafts" / name
     drafts_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Generate timestamp with microsecond precision and collision protection
     # Keep regenerating with fresh timestamps until we get a unique one
     while True:
@@ -373,12 +396,12 @@ async def create_draft(
 
     # Write draft
     draft_path.write_text(body.content)
-    
+
     logger.info(f"Created draft: {draft_path}")
-    
-    # Prune old drafts
-    _prune_drafts(drafts_dir, keep=50)
-    
+
+    # Prune old drafts - delegate to drafts_fs.prune
+    _prune_drafts(primary_dir, name, keep=50)
+
     return DraftCreateResponse(timestamp=timestamp)
 
 
@@ -386,13 +409,17 @@ async def create_draft(
 async def update_draft(
     name: str, timestamp: str, body: DraftUpdateRequest, request: Request
 ) -> None:
-    """Update draft in place (autosave)."""
+    """Update draft in place (autosave).
+
+    TODO: Move to drafts_fs.update_draft when added (out of scope for this PR).
+    For now: keep inline atomic in-place overwrite.
+    """
     _validate_workflow_name(name)
     _validate_timestamp(timestamp)
-    
+
     workflows_dirs: List[Path] = request.app.state.workflows_dirs
     draft_path, _ = _resolve_draft(workflows_dirs, name, timestamp)
-    
+
     # Overwrite content
     draft_path.write_text(body.content)
     logger.info(f"Updated draft: {draft_path}")
@@ -400,16 +427,21 @@ async def update_draft(
 
 @router.delete("/{name}/drafts/{timestamp}", status_code=204)
 async def delete_draft(name: str, timestamp: str, request: Request) -> None:
-    """Delete a draft."""
+    """Delete a draft.
+
+    Delegates to drafts_fs.delete_draft for idempotent deletion.
+    """
     _validate_workflow_name(name)
     _validate_timestamp(timestamp)
-    
+
     workflows_dirs: List[Path] = request.app.state.workflows_dirs
-    draft_path, _ = _resolve_draft(workflows_dirs, name, timestamp)
-    
-    # Remove file
-    draft_path.unlink()
-    logger.info(f"Deleted draft: {draft_path}")
+
+    # Resolve which workflows_dir contains the draft (404 if missing)
+    _, workflows_dir = _resolve_draft(workflows_dirs, name, timestamp)
+
+    # Delegate to drafts_fs.delete_draft (idempotent)
+    fs_delete_draft(workflows_dir, name, timestamp)
+    logger.info(f"Deleted draft {name}/{timestamp}")
 
 
 @router.post("/{name}/drafts/{timestamp}/publish")
@@ -417,22 +449,24 @@ async def publish_draft(
     name: str, timestamp: str, request: Request
 ) -> DraftPublishResponse:
     """Publish draft as canonical workflow file.
-    
+
     Validates schema before atomic rename.
-    
+    Delegates to drafts_fs.publish for atomic rename + PUBLISHED.log audit trail.
+
     Returns:
         Response with published path and source timestamp
     """
     _validate_workflow_name(name)
     _validate_timestamp(timestamp)
-    
+
     workflows_dirs: List[Path] = request.app.state.workflows_dirs
     draft_path, workflows_dir = _resolve_draft(workflows_dirs, name, timestamp)
-    
+
     # Read content
     content = draft_path.read_text()
-    
+
     # Validate schema (catches both YAML syntax and schema errors)
+    # This is the REST boundary responsibility - validate before publishing
     try:
         load_workflow_from_string(content)
     except ValueError as e:
@@ -447,37 +481,23 @@ async def publish_draft(
             status_code=400,
             detail=f"Schema validation failed: {e}"
         )
-    
-    # Write to temporary file in same directory (for atomic rename)
+
+    # Derive publisher identity (single-token, colon-delimited format)
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
+    host = socket.gethostname()
+    publisher = f"dashboard-ui:{user}@{host}"
+
+    # Delegate to drafts_fs.publish for atomic rename + PUBLISHED.log append
+    # This ensures dashboard publish writes the same audit trail as CLI publish
+    fs_publish(workflows_dir, name, timestamp, publisher)
+
     canonical_path = workflows_dir / f"{name}.yaml"
+    logger.info(f"Published draft {timestamp} to {canonical_path} by {publisher}")
 
-    # Use tempfile for collision-proof tmp name
-    with tempfile.NamedTemporaryFile(
-        mode='w',
-        delete=False,
-        dir=workflows_dir,
-        prefix=f".tmp-{name}-",
-        suffix=".yaml"
-    ) as tmp:
-        tmp_path = Path(tmp.name)
-
-    try:
-        # Write content
-        tmp_path.write_text(content)
-
-        # Atomic rename (POSIX)
-        os.replace(str(tmp_path), str(canonical_path))
-
-        logger.info(f"Published draft {timestamp} to {canonical_path}")
-
-        return DraftPublishResponse(
-            published_path=str(canonical_path),
-            source_timestamp=timestamp,
-        )
-    finally:
-        # Cleanup tmp file if rename failed
-        if tmp_path.exists():
-            tmp_path.unlink()
+    return DraftPublishResponse(
+        published_path=str(canonical_path),
+        source_timestamp=timestamp,
+    )
 
 
 @router.post("/{name}/drafts/diff")
