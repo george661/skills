@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 import yaml
 
 
-def list_skills(skills_dirs: list[Path]) -> list[dict]:
+def list_skills(skills_dirs: list[Path]) -> list[dict[str, Any]]:
     """
     Scan directories for skill files and return their metadata.
     
@@ -42,7 +43,7 @@ def list_skills(skills_dirs: list[Path]) -> list[dict]:
     return skills
 
 
-def _parse_skill_file(skill_file: Path) -> dict | None:
+def _parse_skill_file(skill_file: Path) -> dict[str, Any] | None:
     """
     Parse a skill file and extract metadata from YAML frontmatter.
     
