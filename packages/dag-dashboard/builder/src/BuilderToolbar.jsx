@@ -30,6 +30,7 @@ export default function BuilderToolbar({
   onValidate,
   onUndo,
   onViewModeChange,
+  onOpenVersions,
 }) {
   // Run button is disabled when there are unsaved changes OR client errors
   const isRunDisabled = hasUnsavedChanges || hasClientErrors;
@@ -145,12 +146,21 @@ export default function BuilderToolbar({
             Validate
           </button>
           
-          <button 
+          <button
             onClick={onUndo}
             style={{ padding: '6px 16px', fontSize: '14px', cursor: 'pointer' }}
           >
             Undo
           </button>
+
+          {onOpenVersions && (
+            <button
+              onClick={onOpenVersions}
+              style={{ padding: '6px 16px', fontSize: '14px', cursor: 'pointer' }}
+            >
+              Versions
+            </button>
+          )}
         </div>
 
         {/* View mode toggle */}

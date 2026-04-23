@@ -187,4 +187,27 @@ describe('BuilderToolbar', () => {
     fullButton.props.onClick();
     assert.strictEqual(viewModeCalls[2], 'full', 'Clicking Full should call onViewModeChange with "full"');
   });
+
+  it('versions_button_triggers_onOpenVersions', () => {
+    let versionsCalled = false;
+    const props = {
+      ...defaultProps,
+      onOpenVersions: () => { versionsCalled = true; },
+    };
+
+    const renderer = TestRenderer.create(<BuilderToolbar {...props} />);
+    const root = renderer.root;
+
+    // Find Versions button
+    const buttons = root.findAllByType('button');
+    const versionsBtn = buttons.find(b =>
+      b.props.children && b.props.children.includes?.('Versions')
+    );
+
+    assert.ok(versionsBtn, 'Should find Versions button');
+    TestRenderer.act(() => {
+      versionsBtn.props.onClick();
+    });
+    assert.ok(versionsCalled, 'onOpenVersions should be called');
+  });
 });

@@ -1,4 +1,5 @@
 """FastAPI routes for workflow draft management."""
+import difflib
 import logging
 import os
 import re
@@ -17,6 +18,8 @@ from dag_dashboard.models import (
     CurrentDraftUpdateRequest,
     DraftCreateRequest,
     DraftCreateResponse,
+    DraftDiffRequest,
+    DraftDiffResponse,
     DraftListItem,
     DraftPublishResponse,
     DraftUpdateRequest,
@@ -116,6 +119,41 @@ def _prune_drafts(drafts_dir: Path, keep: int = 50) -> None:
             logger.info(f"Pruned old draft: {draft_file}")
 
 
+def _read_publishers_from_log(drafts_dir: Path) -> Dict[str, str]:
+    """Read PUBLISHED.log and return dict mapping draft timestamp to publisher.
+
+    Format: YYYY-MM-DDTHH:MM:SSZ  {publisher}  published {draft_timestamp}
+    (two-space separators)
+
+    Args:
+        drafts_dir: Directory containing PUBLISHED.log
+
+    Returns:
+        Dict mapping draft timestamp to publisher email
+    """
+    published_log = drafts_dir / "PUBLISHED.log"
+    if not published_log.exists():
+        return {}
+
+    publishers: Dict[str, str] = {}
+    try:
+        content = published_log.read_text()
+        for line in content.strip().split("\n"):
+            if not line:
+                continue
+            # Parse format: timestamp  publisher  published draft_ts
+            parts = line.split("  ")  # two-space separator
+            if len(parts) >= 3 and parts[2].startswith("published "):
+                draft_ts = parts[2].replace("published ", "")
+                publisher = parts[1]
+                publishers[draft_ts] = publisher
+    except Exception as e:
+        logger.warning(f"Failed to parse PUBLISHED.log: {e}")
+        return {}
+
+    return publishers
+
+
 def _resolve_current_pointer(
     workflows_dirs: List[Path], name: str
 ) -> Tuple[Path, Path]:
@@ -180,38 +218,44 @@ def _write_current_pointer(
 @router.get("/{name}/drafts")
 async def list_drafts(name: str, request: Request) -> List[DraftListItem]:
     """List all drafts for a workflow, newest first.
-    
+
     Returns:
-        List of draft items with timestamp and size
+        List of draft items with timestamp, size, and publisher
     """
     _validate_workflow_name(name)
-    
+
     workflows_dirs: List[Path] = request.app.state.workflows_dirs
-    
+
     # Collect drafts across all directories
     drafts: List[DraftListItem] = []
     seen_timestamps = set()
-    
+    publishers_by_dir: Dict[Path, Dict[str, str]] = {}
+
     for workflows_dir in workflows_dirs:
         drafts_dir = workflows_dir / ".drafts" / name
         if not drafts_dir.exists():
             continue
-        
+
+        # Read PUBLISHED.log once per directory
+        publishers = _read_publishers_from_log(drafts_dir)
+        publishers_by_dir[workflows_dir] = publishers
+
         for draft_file in drafts_dir.glob("*.yaml"):
             timestamp = draft_file.stem
-            
+
             # Skip if already seen (first-dir-wins)
             if timestamp in seen_timestamps:
                 continue
-            
+
             seen_timestamps.add(timestamp)
             drafts.append(
                 DraftListItem(
                     timestamp=timestamp,
                     size_bytes=draft_file.stat().st_size,
+                    publisher=publishers.get(timestamp),
                 )
             )
-    
+
     # Sort newest first
     drafts.sort(key=lambda d: d.timestamp, reverse=True)
     return drafts
@@ -434,3 +478,54 @@ async def publish_draft(
         # Cleanup tmp file if rename failed
         if tmp_path.exists():
             tmp_path.unlink()
+
+
+@router.post("/{name}/drafts/diff")
+async def diff_drafts(
+    name: str, request: Request, body: DraftDiffRequest
+) -> DraftDiffResponse:
+    """Get unified diff between a draft and provided content.
+
+    Args:
+        name: Workflow name
+        body: Request with from_ts (draft timestamp) and to_content (current content)
+
+    Returns:
+        Unified diff and first change line summary
+    """
+    _validate_workflow_name(name)
+    _validate_timestamp(body.from_ts)
+
+    workflows_dirs: List[Path] = request.app.state.workflows_dirs
+    draft_path, _ = _resolve_draft(workflows_dirs, name, body.from_ts)
+
+    # Read draft content
+    from_content = draft_path.read_text()
+
+    # Generate unified diff
+    from_lines = from_content.splitlines(keepends=True)
+    to_lines = body.to_content.splitlines(keepends=True)
+
+    diff_lines = list(
+        difflib.unified_diff(
+            from_lines,
+            to_lines,
+            fromfile=f"draft ({body.from_ts})",
+            tofile="current canvas",
+            lineterm="",
+        )
+    )
+
+    unified_diff = "\n".join(diff_lines)
+
+    # Extract first change line (first line starting with + or -)
+    first_change_line = ""
+    for line in diff_lines:
+        if line.startswith(("+", "-")) and not line.startswith(("+++", "---")):
+            first_change_line = line.strip()
+            break
+
+    return DraftDiffResponse(
+        unified_diff=unified_diff,
+        first_change_line=first_change_line,
+    )
