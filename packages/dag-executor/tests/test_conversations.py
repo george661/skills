@@ -315,3 +315,50 @@ def test_start_conversation_idempotent_with_explicit_id(test_db: Path) -> None:
     conn.close()
     
     assert count == 1
+
+
+class TestBuildConversationMessageAppendedEvent:
+    """Test build_conversation_message_appended_event builder."""
+    
+    def test_build_event_with_minimal_fields(self) -> None:
+        """Test building event with required fields only."""
+        from dag_executor.conversations import build_conversation_message_appended_event
+        
+        event = build_conversation_message_appended_event(
+            run_id="run-123",
+            node_id="prompt1",
+            conversation_id="conv-456",
+            session_id="sess-789",
+            role="user",
+            message_id=10
+        )
+        
+        assert event["event_type"] == "conversation_message_appended"
+        assert event["payload"]["run_id"] == "run-123"
+        assert event["payload"]["node_id"] == "prompt1"
+        assert event["payload"]["conversation_id"] == "conv-456"
+        assert event["payload"]["session_id"] == "sess-789"
+        assert event["payload"]["role"] == "user"
+        assert event["payload"]["message_id"] == 10
+        assert event["payload"]["transition_reason"] is None
+        assert event["payload"]["parent_session_id"] is None
+        assert "created_at" in event
+    
+    def test_build_event_with_transition_fields(self) -> None:
+        """Test building event with transition fields for fresh context."""
+        from dag_executor.conversations import build_conversation_message_appended_event
+        
+        event = build_conversation_message_appended_event(
+            run_id="run-123",
+            node_id="prompt2",
+            conversation_id="conv-456",
+            session_id="sess-new",
+            role="assistant",
+            message_id=11,
+            transition_reason="fresh-context",
+            parent_session_id="sess-old"
+        )
+        
+        assert event["event_type"] == "conversation_message_appended"
+        assert event["payload"]["transition_reason"] == "fresh-context"
+        assert event["payload"]["parent_session_id"] == "sess-old"
