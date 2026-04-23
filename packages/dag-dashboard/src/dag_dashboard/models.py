@@ -271,6 +271,7 @@ class DraftListItem(BaseModel):
 
     timestamp: str = Field(pattern=r"^[0-9]{8}T[0-9]{6}_[0-9]{6}Z$")
     size_bytes: int = Field(ge=0)
+    publisher: Optional[str] = None
 
 
 class DraftCreateRequest(BaseModel):
@@ -300,6 +301,22 @@ class DraftPublishResponse(BaseModel):
 
     published_path: str
     source_timestamp: str
+
+
+class DraftDiffRequest(BaseModel):
+    """Request body for getting diff between draft and content."""
+    model_config = {"extra": "forbid"}
+
+    from_ts: str = Field(pattern=r"^[0-9]{8}T[0-9]{6}_[0-9]{6}Z$")
+    to_content: str
+
+
+class DraftDiffResponse(BaseModel):
+    """Response from draft diff endpoint."""
+    model_config = {"extra": "forbid"}
+
+    unified_diff: str
+    first_change_line: str
 
 
 class CurrentDraftResponse(BaseModel):

@@ -10,14 +10,15 @@
     "test": "npm run test:build && node --test tests/.build/*.test.mjs"
   },
   "dependencies": {
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
     "@xyflow/react": "12.3.2",
-    "dagre": "0.8.5"
+    "dagre": "0.8.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.2",
     "esbuild": "0.21.5",
-    "react-test-renderer": "18.3.1",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.1.0",
+    "react-test-renderer": "18.3.1"
   }
 }
