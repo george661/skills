@@ -4,7 +4,7 @@ import json
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict
+from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -86,7 +86,7 @@ def create_sse_router(
     async def stream_logs(
         run_id: str,
         request: Request,
-        node: str | None = None,
+        node: Optional[str] = None,
         stream: str = "all"
     ) -> StreamingResponse:
         # Validate stream parameter
@@ -230,7 +230,7 @@ def get_persisted_events(db_path: Path, run_id: str) -> list[Dict[str, Any]]:
 def get_persisted_node_log_lines(
     db_path: Path,
     run_id: str,
-    node_filter: str | None = None,
+    node_filter: Optional[str] = None,
     stream_filter: str = "all"
 ) -> list[Dict[str, Any]]:
     """Get persisted node_log_line events with optional filters."""
