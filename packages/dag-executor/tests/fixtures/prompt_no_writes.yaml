@@ -1,0 +1,12 @@
+name: Prompt Text No Writes Test
+config:
+  checkpoint_prefix: test
+  worktree: false
+
+nodes:
+  - id: prompt1
+    name: Text Prompt No Writes
+    type: prompt
+    prompt: "What is 2+2?"
+    model: sonnet
+    output_format: text

@@ -294,6 +294,13 @@ class PromptRunner(BaseRunner):
             # (raw text wins if parsed JSON contains a "response" key)
             output_dict["response"] = full_output
 
+            # GW-5308: AC-14 — Populate writes keys
+            # For each key in node.writes, ensure it exists in output_dict.
+            # In JSON mode, setdefault preserves already-spread fields.
+            # In text mode, setdefault populates the key with full_output.
+            for key in (node.writes or []):
+                output_dict.setdefault(key, full_output)
+
             return NodeResult(
                 status=NodeStatus.COMPLETED,
                 output=output_dict

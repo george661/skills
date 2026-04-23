@@ -154,6 +154,93 @@ Every node supports these optional fields:
 | `reads` | `list[str]` | State channels or inputs this node reads |
 | `writes` | `list[str]` | State channels this node writes to |
 
+## Prompt Node Output Contract
+
+Prompt nodes produce output dictionaries with behavior determined by `output_format` and `writes`:
+
+### Default Behavior (`output_format: text`)
+
+By default, the full LLM response text is stored in the `response` key:
+
+```yaml
+nodes:
+  - id: prompt1
+    type: prompt
+    prompt: "What is 2+2?"
+    output_format: text
+```
+
+**Output:** `{"response": "The answer is 4"}`
+
+### JSON Mode (`output_format: json`)
+
+When `output_format: json` is set, the runner parses the LLM output as JSON and spreads parsed fields into the output dictionary, while preserving the raw response text:
+
+```yaml
+nodes:
+  - id: prompt1
+    type: prompt
+    prompt: "Generate JSON with result and count fields"
+    output_format: json
+```
+
+If the LLM responds with `{"result": "success", "count": 42}`, the node output becomes:
+
+**Output:** `{"result": "success", "count": 42, "response": "{\"result\": \"success\", \"count\": 42}"}`
+
+- Parsed fields (`result`, `count`) are spread into the output dictionary
+- The raw JSON string is preserved in `response` for backward compatibility
+- If the LLM output contains a `response` key, it is overwritten by the raw text
+
+### State Writes (`writes: [key, ...]`)
+
+The `writes` field declares which state channels the node populates. For each key in `writes`:
+
+- **In text mode:** the key is populated with the full response text
+- **In JSON mode:** the key is populated with the corresponding parsed field (if it exists), otherwise the full response text
+
+```yaml
+state:
+  result:
+    type: channel
+    default: null
+
+nodes:
+  - id: prompt1
+    type: prompt
+    prompt: "What is 2+2?"
+    output_format: text
+    writes:
+      - result
+```
+
+**Output:** `{"response": "The answer is 4", "result": "The answer is 4"}`  
+**State:** `state.result = "The answer is 4"`
+
+For JSON mode with writes:
+
+```yaml
+state:
+  result:
+    type: channel
+    default: null
+
+nodes:
+  - id: prompt1
+    type: prompt
+    prompt: "Generate JSON"
+    output_format: json
+    writes:
+      - result
+```
+
+If the LLM responds with `{"result": "success", "count": 42}`:
+
+**Output:** `{"result": "success", "count": 42, "response": "{...}"}`  
+**State:** `state.result = "success"` (the parsed `result` field, not the full text)
+
+This enables downstream nodes to reference `state.result` for fan-out writes.
+
 ## Execution Model
 
 The executor uses Kahn's algorithm to sort nodes into parallel layers:
