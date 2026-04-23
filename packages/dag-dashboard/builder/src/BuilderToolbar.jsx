@@ -16,11 +16,10 @@ export default function BuilderToolbar({
   description,
   provider,
   model,
-  dag,
-  yaml,
   viewMode,
   hasUnsavedChanges,
   hasClientErrors,
+  hasPublishableDraft,
   onChangeWorkflowName,
   onChangeDescription,
   onChangeProvider,
@@ -34,6 +33,8 @@ export default function BuilderToolbar({
 }) {
   // Run button is disabled when there are unsaved changes OR client errors
   const isRunDisabled = hasUnsavedChanges || hasClientErrors;
+  // Publish button is disabled when there's no saved draft
+  const isPublishDisabled = !hasPublishableDraft;
 
   return (
     <div className="builder-toolbar" style={{ 
@@ -111,9 +112,15 @@ export default function BuilderToolbar({
             Save
           </button>
           
-          <button 
+          <button
             onClick={onPublish}
-            style={{ padding: '6px 16px', fontSize: '14px', cursor: 'pointer' }}
+            disabled={isPublishDisabled}
+            style={{
+              padding: '6px 16px',
+              fontSize: '14px',
+              cursor: isPublishDisabled ? 'not-allowed' : 'pointer',
+              opacity: isPublishDisabled ? 0.5 : 1
+            }}
           >
             Publish
           </button>

@@ -17,8 +17,8 @@ function Builder() {
     const [dag, setDag] = React.useState([]);
     const [workflowName, setWorkflowName] = React.useState('untitled-workflow');
     const [description, setDescription] = React.useState('');
-    const [provider, setProvider] = React.useState('openai');
-    const [model, setModel] = React.useState('gpt-4');
+    const [provider, setProvider] = React.useState('');
+    const [model, setModel] = React.useState('');
     const [viewMode, setViewMode] = React.useState('hidden');
     const [hasUnsavedChanges, setHasUnsavedChanges] = React.useState(false);
     const [hasClientErrors, setHasClientErrors] = React.useState(false);
@@ -26,8 +26,12 @@ function Builder() {
     const toolbarActions = useToolbarActions(workflowName);
 
     // Access validation hook from global (loaded via separate script)
-    const useBuilderValidation = window.DAGDashboardValidation?.useBuilderValidation;
-    const validation = useBuilderValidation ? useBuilderValidation(dag) : { errors: [], warnings: [] };
+    // CRITICAL: Capture hook at module scope to avoid Rules of Hooks violation
+    const validationHook = React.useMemo(
+        () => window.DAGDashboardValidation?.useBuilderValidation || (() => ({ errors: [], warnings: [] })),
+        []
+    );
+    const validation = validationHook(dag);
 
     React.useEffect(() => {
         setHasClientErrors(validation.errors.length > 0);
@@ -79,8 +83,8 @@ function Builder() {
     };
 
     const handleUndo = () => {
-        // Undo implementation depends on useCanvasState - placeholder for now
-        console.log('Undo clicked');
+        // Dispatch custom event that WorkflowCanvas listens for
+        window.dispatchEvent(new CustomEvent('dag-builder:undo'));
     };
 
     const yaml = dagToYaml({ name: workflowName, description, provider, model, dag });
@@ -102,11 +106,10 @@ function Builder() {
                 description={description}
                 provider={provider}
                 model={model}
-                dag={dag}
-                yaml={yaml}
                 viewMode={viewMode}
                 hasUnsavedChanges={hasUnsavedChanges}
                 hasClientErrors={hasClientErrors}
+                hasPublishableDraft={!!toolbarActions.lastSavedTimestamp}
                 onChangeWorkflowName={setWorkflowName}
                 onChangeDescription={setDescription}
                 onChangeProvider={setProvider}

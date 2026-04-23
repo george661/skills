@@ -19,11 +19,10 @@ describe('BuilderToolbar', () => {
     description: 'Test description',
     provider: 'openai',
     model: 'gpt-4',
-    dag: [],
-    yaml: '',
     viewMode: 'hidden',
     hasUnsavedChanges: false,
     hasClientErrors: false,
+    hasPublishableDraft: false,
     onChangeWorkflowName: () => {},
     onChangeDescription: () => {},
     onChangeProvider: () => {},
@@ -151,12 +150,41 @@ describe('BuilderToolbar', () => {
     const props = { ...defaultProps, onValidate: () => { validateCallCount++; } };
     const renderer = TestRenderer.create(<BuilderToolbar {...props} />);
     const root = renderer.root;
-    
+
     const buttons = root.findAllByType('button');
     const validateButton = buttons.find(b => b.props.children && b.props.children.includes && b.props.children.includes('Validate'));
-    
+
     assert.ok(validateButton, 'Validate button should exist');
     validateButton.props.onClick();
     assert.strictEqual(validateCallCount, 1, 'onValidate should be called once');
+  });
+
+  it('view_mode_toggle', () => {
+    const viewModeCalls = [];
+    const props = { ...defaultProps, onViewModeChange: (mode) => { viewModeCalls.push(mode); } };
+    const renderer = TestRenderer.create(<BuilderToolbar {...props} />);
+    const root = renderer.root;
+
+    // Find all buttons - view mode toggle buttons should be among them
+    const buttons = root.findAllByType('button');
+
+    // The three view mode buttons should exist: Hidden, Split, Full (capitalized)
+    const hiddenButton = buttons.find(b => b.props.children === 'Hidden');
+    const splitButton = buttons.find(b => b.props.children === 'Split');
+    const fullButton = buttons.find(b => b.props.children === 'Full');
+
+    assert.ok(hiddenButton, 'Hidden view mode button should exist');
+    assert.ok(splitButton, 'Split view mode button should exist');
+    assert.ok(fullButton, 'Full view mode button should exist');
+
+    // Click each button and verify callback
+    hiddenButton.props.onClick();
+    assert.strictEqual(viewModeCalls[0], 'hidden', 'Clicking Hidden should call onViewModeChange with "hidden"');
+
+    splitButton.props.onClick();
+    assert.strictEqual(viewModeCalls[1], 'split', 'Clicking Split should call onViewModeChange with "split"');
+
+    fullButton.props.onClick();
+    assert.strictEqual(viewModeCalls[2], 'full', 'Clicking Full should call onViewModeChange with "full"');
   });
 });

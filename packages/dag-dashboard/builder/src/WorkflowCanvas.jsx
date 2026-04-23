@@ -61,6 +61,15 @@ function CanvasInner({ initialDag, readOnly, onGraphChange }) {
         };
     }, [undo]);
 
+    // Listen for undo event from toolbar
+    useEffect(() => {
+        const handler = () => undo();
+        if (typeof window !== 'undefined') window.addEventListener('dag-builder:undo', handler);
+        return () => {
+            if (typeof window !== 'undefined') window.removeEventListener('dag-builder:undo', handler);
+        };
+    }, [undo]);
+
     const onDragOver = useCallback((event) => {
         event.preventDefault();
         if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
