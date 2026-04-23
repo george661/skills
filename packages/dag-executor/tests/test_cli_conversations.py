@@ -177,57 +177,92 @@ def test_conversation_append_positional_form(tmp_path: Path) -> None:
 def test_run_with_conversation_flag_reuses_active_session(tmp_path: Path) -> None:
     """Verify 'dag-exec run --conversation <id>' passes conversation_id to execute_workflow."""
     from dag_dashboard.database import init_db
+    from dag_executor import cli, WorkflowResult, WorkflowStatus
+    from dag_executor.schema import WorkflowDef, WorkflowConfig, NodeDef
+
     db_path = tmp_path / "test.db"
     init_db(db_path)
-    
+
     # Create conversation with active session
     conversation = start_conversation(db_path, origin="cli")
     session = mint_session(db_path, conversation.id)
-    
-    # Mock execute_workflow to verify it receives conversation_id and db_path
-    from dag_executor import cli
-    
-    with patch.object(cli, 'execute_workflow') as mock_execute:
-        mock_execute.return_value = {"status": "success"}
-        
-        # Simulate running: dag-exec run workflow.yaml --conversation <id> --db <path>
+
+    # Create a temporary workflow file
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text("name: test\nconfig:\n  checkpoint_prefix: test\nnodes:\n  - id: test\n    name: test\n    type: bash\n    script: echo test")
+
+    # Mock load_workflow to return a minimal WorkflowDef
+    mock_workflow = WorkflowDef(
+        name="test",
+        config=WorkflowConfig(checkpoint_prefix="test"),
+        nodes=[NodeDef(id="test", name="test", type="bash", script="echo test")]
+    )
+
+    # Mock execute_workflow to return a minimal result for post-execution summary
+    mock_result = WorkflowResult(
+        status=WorkflowStatus.COMPLETED,
+        node_results={},
+        run_id="test-run-id"
+    )
+
+    with patch.object(cli, 'load_workflow', return_value=mock_workflow) as mock_load, \
+         patch.object(cli, 'execute_workflow', return_value=mock_result) as mock_execute:
+
+        # Call cli.main() with argv (note: no 'run' prefix - dag-exec <workflow> is the syntax)
         argv = [
-            'run',
-            'workflow.yaml',
+            str(workflow_path),
             '--conversation', conversation.id,
             '--db', str(db_path),
         ]
-        
-        # We need to monkeypatch sys.argv and call main, but for this test
-        # we'll verify the wiring at a lower level by directly testing that
-        # the CLI parser accepts these flags and would pass them through.
-        
-        # Create a minimal parser to verify the flags exist
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument('workflow_path')
-        parser.add_argument('--conversation', help='Conversation ID')
-        parser.add_argument('--db', help='Dashboard DB path')
-        
-        args = parser.parse_args(['workflow.yaml', '--conversation', conversation.id, '--db', str(db_path)])
-        
-        assert args.conversation == conversation.id
-        assert args.db == str(db_path)
+
+        with patch('sys.exit'):  # Prevent test from exiting
+            cli.main(argv)
+
+        # Assert execute_workflow was called with conversation_id and db_path
+        assert mock_execute.called, "execute_workflow should have been called"
+        call_kwargs = mock_execute.call_args.kwargs
+        assert call_kwargs["conversation_id"] == conversation.id, \
+            f"Expected conversation_id={conversation.id}, got {call_kwargs.get('conversation_id')}"
+        assert str(call_kwargs["db_path"]) == str(db_path), \
+            f"Expected db_path={db_path}, got {call_kwargs.get('db_path')}"
 
 
 def test_run_without_conversation_flag_mints_new_conversation(tmp_path: Path) -> None:
     """Verify dag-exec run without --conversation flag works (backward compat)."""
-    # This test verifies that NOT passing --conversation doesn't break existing behavior.
-    # The actual workflow execution will mint a new conversation internally.
-    
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('workflow_path')
-    parser.add_argument('--conversation', default=None, help='Conversation ID')
-    parser.add_argument('--db', default=None, help='Dashboard DB path')
-    
-    # Parse without --conversation flag
-    args = parser.parse_args(['workflow.yaml'])
-    
-    assert args.conversation is None, "Default should be None for backward compat"
-    assert args.db is None
+    from dag_executor import cli, WorkflowResult, WorkflowStatus
+    from dag_executor.schema import WorkflowDef, WorkflowConfig, NodeDef
+
+    # Create a temporary workflow file
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text("name: test\nconfig:\n  checkpoint_prefix: test\nnodes:\n  - id: test\n    name: test\n    type: bash\n    script: echo test")
+
+    # Mock load_workflow to return a minimal WorkflowDef
+    mock_workflow = WorkflowDef(
+        name="test",
+        config=WorkflowConfig(checkpoint_prefix="test"),
+        nodes=[NodeDef(id="test", name="test", type="bash", script="echo test")]
+    )
+
+    # Mock execute_workflow to return a minimal result
+    mock_result = WorkflowResult(
+        status=WorkflowStatus.COMPLETED,
+        node_results={},
+        run_id="test-run-id"
+    )
+
+    with patch.object(cli, 'load_workflow', return_value=mock_workflow) as mock_load, \
+         patch.object(cli, 'execute_workflow', return_value=mock_result) as mock_execute:
+
+        # Call cli.main() without --conversation flag (note: no 'run' prefix)
+        argv = [str(workflow_path)]
+
+        with patch('sys.exit'):  # Prevent test from exiting
+            cli.main(argv)
+
+        # Assert execute_workflow was called with conversation_id=None and db_path=None
+        assert mock_execute.called, "execute_workflow should have been called"
+        call_kwargs = mock_execute.call_args.kwargs
+        assert call_kwargs["conversation_id"] is None, \
+            f"Expected conversation_id=None for backward compat, got {call_kwargs.get('conversation_id')}"
+        assert call_kwargs["db_path"] is None, \
+            f"Expected db_path=None for backward compat, got {call_kwargs.get('db_path')}"

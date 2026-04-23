@@ -889,10 +889,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             run_id = str(uuid.uuid4())
 
         # Resolve conversation_id and db_path for session continuity
-        conversation_id = args.conversation if hasattr(args, 'conversation') else None
+        conversation_id = args.conversation
         db_path = None
-        if conversation_id or (hasattr(args, 'db') and args.db):
-            db_path_str = getattr(args, 'db', None) or os.environ.get('DAG_DASHBOARD_DB')
+        if conversation_id or args.db:
+            db_path_str = args.db or os.environ.get('DAG_DASHBOARD_DB')
             if not db_path_str:
                 print("Error: --db required or set DAG_DASHBOARD_DB when using --conversation", file=sys.stderr)
                 sys.exit(1)
