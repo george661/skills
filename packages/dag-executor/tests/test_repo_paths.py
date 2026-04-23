@@ -169,21 +169,40 @@ class TestRepoPathResolver:
         assert _normalize_slug("my-repo-name") == "MY_REPO_NAME"
 
     def test_config_file_default_locations(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test that resolver checks default config locations."""
+        """Test that resolver checks default config locations (PROJECT_ROOT first, then HOME)."""
+        # Set up HOME config
         home_dir = tmp_path / "home"
         home_dir.mkdir()
-        claude_dir = home_dir / ".claude" / "config"
-        claude_dir.mkdir(parents=True)
-        config_file = claude_dir / "repo-paths.json"
-        
-        repo_dir = tmp_path / "custom-skills"
-        repo_dir.mkdir()
-        config_file.write_text(json.dumps({"skills": str(repo_dir)}))
-        
+        home_claude_dir = home_dir / ".claude" / "config"
+        home_claude_dir.mkdir(parents=True)
+        home_config_file = home_claude_dir / "repo-paths.json"
+
+        home_repo_dir = tmp_path / "home-skills"
+        home_repo_dir.mkdir()
+        home_config_file.write_text(json.dumps({"skills": str(home_repo_dir)}))
+
+        # Set up PROJECT_ROOT config (should have priority)
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        project_claude_dir = project_root / ".claude" / "config"
+        project_claude_dir.mkdir(parents=True)
+        project_config_file = project_claude_dir / "repo-paths.json"
+
+        project_repo_dir = tmp_path / "project-skills"
+        project_repo_dir.mkdir()
+        project_config_file.write_text(json.dumps({"skills": str(project_repo_dir)}))
+
         monkeypatch.setenv("HOME", str(home_dir))
-        
+        monkeypatch.setenv("PROJECT_ROOT", str(project_root))
+
+        # Should prefer PROJECT_ROOT config over HOME
         result = resolve_repo_path("skills")
-        assert result == str(repo_dir)
+        assert result == str(project_repo_dir)
+
+        # Test HOME fallback when PROJECT_ROOT config doesn't exist
+        project_config_file.unlink()
+        result = resolve_repo_path("skills")
+        assert result == str(home_repo_dir)
 
     def test_probe_disabled_by_default(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that filesystem probe is disabled by default to avoid slow find operations."""
@@ -218,24 +237,6 @@ class TestRepoPathResolver:
         # Should list at least HOME/dev/missing-repo
         assert any("missing-repo" in path for path, _ in error.search_paths)
 
-    def test_gw_prefix_stripped_fallback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test that gw- prefix is stripped as a fallback when resolving.
-        
-        Registry might call repo 'gw-skills' but local dir is 'skills'.
-        """
-        home_dir = tmp_path / "home"
-        home_dir.mkdir()
-        dev_dir = home_dir / "dev"
-        dev_dir.mkdir()
-        repo_dir = dev_dir / "skills"  # No 'gw-' prefix
-        repo_dir.mkdir()
-        
-        monkeypatch.setenv("HOME", str(home_dir))
-        monkeypatch.delenv("PROJECT_ROOT", raising=False)
-        
-        # Request gw-skills, but only 'skills' exists
-        result = resolve_repo_path("gw-skills")
-        assert result == str(repo_dir)
 
 
 class TestVariableIntegration:

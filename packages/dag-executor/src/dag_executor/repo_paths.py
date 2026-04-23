@@ -69,11 +69,13 @@ def _try_config_file(slug: str, config_path: Optional[str] = None) -> Optional[s
     if config_path:
         config_paths = [Path(config_path)]
     else:
-        # Default locations
+        # Default locations (PROJECT_ROOT has priority over HOME)
+        config_paths = []
+        project_root = os.getenv("PROJECT_ROOT")
+        if project_root:
+            config_paths.append(Path(project_root) / ".claude" / "config" / "repo-paths.json")
         home = Path.home()
-        config_paths = [
-            home / ".claude" / "config" / "repo-paths.json",
-        ]
+        config_paths.append(home / ".claude" / "config" / "repo-paths.json")
     
     for config_file in config_paths:
         if not config_file.exists():
@@ -135,13 +137,7 @@ def _try_project_root(slug: str) -> Optional[str]:
     path = Path(project_root) / slug
     if path.exists():
         return str(path.resolve())
-    
-    # Try with gw- prefix stripped
-    if slug.startswith("gw-"):
-        path = Path(project_root) / slug[3:]
-        if path.exists():
-            return str(path.resolve())
-    
+
     return None
 
 
@@ -164,13 +160,7 @@ def _try_home_dev(slug: str) -> Optional[str]:
     path = dev_dir / slug
     if path.exists():
         return str(path.resolve())
-    
-    # Try with gw- prefix stripped
-    if slug.startswith("gw-"):
-        path = dev_dir / slug[3:]
-        if path.exists():
-            return str(path.resolve())
-    
+
     return None
 
 
@@ -209,22 +199,6 @@ def _try_filesystem_probe(slug: str) -> Optional[str]:
             path = Path(first_match)
             if path.exists():
                 return str(path.resolve())
-        
-        # Try with gw- prefix stripped
-        if slug.startswith("gw-"):
-            stripped_slug = slug[3:]
-            result = subprocess.run(
-                ["find", str(dev_dir), "-maxdepth", "3", "-type", "d", "-name", stripped_slug],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if result.returncode == 0 and result.stdout.strip():
-                first_match = result.stdout.strip().split('\n')[0]
-                path = Path(first_match)
-                if path.exists():
-                    return str(path.resolve())
     
     except (subprocess.TimeoutExpired, subprocess.SubprocessError):
         pass
@@ -234,9 +208,9 @@ def _try_filesystem_probe(slug: str) -> Optional[str]:
 
 def resolve_repo_path(slug: str, config_path: Optional[str] = None) -> str:
     """Resolve the filesystem path for a repository.
-    
-    Search order (each layer tries both exact slug and gw-stripped form):
-    1. Explicit config file (default: $HOME/.claude/config/repo-paths.json)
+
+    Search order:
+    1. Explicit config file (default: $PROJECT_ROOT/.claude/config/repo-paths.json, then $HOME/.claude/config/repo-paths.json)
     2. Environment variable REPO_PATH_<SLUG_UPPER>
     3. $PROJECT_ROOT/<slug>
     4. $HOME/dev/<slug>

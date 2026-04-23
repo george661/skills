@@ -80,22 +80,20 @@ def _resolve_string(
     """
     # First check for callable patterns (like $repo_path(...))
     callable_matches = list(CALLABLE_PATTERN.finditer(value))
-    
+
+    # If exactly one callable match equals the entire value, return it directly
+    if len(callable_matches) == 1 and callable_matches[0].group(0) == value:
+        return _resolve_callable(callable_matches[0].group(1), callable_matches[0].group(2).strip(), node_outputs, workflow_inputs, channel_store)
+
     # Process callables first
     result = value
     for match in callable_matches:
         full_match = match.group(0)  # e.g., "$repo_path(skills)"
         func_name = match.group(1)   # e.g., "repo_path"
         arg = match.group(2).strip() # e.g., "skills"
-        
+
         resolved = _resolve_callable(func_name, arg, node_outputs, workflow_inputs, channel_store)
         result = result.replace(full_match, str(resolved))
-    
-    # If we processed callables and nothing else remains, return early
-    if callable_matches and result == value.replace(callable_matches[0].group(0), str(_resolve_callable(callable_matches[0].group(1), callable_matches[0].group(2).strip(), node_outputs, workflow_inputs, channel_store))):
-        # Pure callable reference
-        if len(callable_matches) == 1 and callable_matches[0].group(0) == value:
-            return _resolve_callable(callable_matches[0].group(1), callable_matches[0].group(2).strip(), node_outputs, workflow_inputs, channel_store)
     
     # Now handle regular variable patterns
     matches = list(VARIABLE_PATTERN.finditer(result))
