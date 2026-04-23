@@ -2,13 +2,11 @@
 import asyncio
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, TYPE_CHECKING
+from typing import Any, Dict
 
 from dag_executor.schema import NodeResult, NodeStatus, WorkflowStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 from dag_executor.parser import load_workflow
-if TYPE_CHECKING:
-    from dag_executor.executor import WorkflowExecutor
 
 # Maximum recursion depth for command nodes
 MAX_RECURSION_DEPTH = 5
@@ -137,7 +135,28 @@ class CommandRunner(BaseRunner):
                 output=workflow_result.outputs
             )
         except Exception as e:
+            # Log full stack trace for debugging
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.exception(f"Sub-workflow {command} execution failed")
+
+            # Emit terminal WORKFLOW_FAILED event when child executor raises
+            if ctx.event_emitter is not None:
+                from dag_executor.events import EventType, WorkflowEvent
+                sub_workflow_name = getattr(workflow_def, "name", command)
+                ctx.event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.WORKFLOW_FAILED,
+                    workflow_id=sub_workflow_name,
+                    status=WorkflowStatus.FAILED,
+                    timestamp=datetime.now(timezone.utc),
+                    metadata={
+                        "parent_run_id": ctx.parent_run_id,
+                        "workflow_name": sub_workflow_name,
+                        "run_id": sub_run_id,
+                        "error": f"{type(e).__name__}: {str(e)}",
+                    },
+                ))
             return NodeResult(
                 status=NodeStatus.FAILED,
-                error=f"Sub-workflow execution failed: {str(e)}"
+                error=f"Sub-workflow execution failed: {type(e).__name__}: {str(e)}"
             )
