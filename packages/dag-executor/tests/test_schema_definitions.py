@@ -35,6 +35,7 @@ class TestEnums:
         """Test ModelTier enum values."""
         assert ModelTier.OPUS == "opus"
         assert ModelTier.SONNET == "sonnet"
+        assert ModelTier.HAIKU == "haiku"
         assert ModelTier.LOCAL == "local"
     
     def test_dispatch_mode_values(self) -> None:
@@ -291,6 +292,47 @@ class TestNodeDef:
             )
         error_str = str(exc_info.value).lower()
         assert "extra" in error_str or "unknown" in error_str
+
+
+class TestDispatchEnforcement:
+    """Verify dispatch semantics for node types that always run in-process.
+
+    PRP-PLAT-010 Task 12 / AC-18: bash, gate, and interrupt nodes never shell
+    out, so `dispatch: local` is nonsensical and must be rejected loudly.
+    `dispatch: inline` is accepted as a no-op confirmation. PRP-PLAT-006 will
+    give dispatch first-class runtime semantics on prompt/skill/command nodes.
+    """
+
+    @pytest.mark.parametrize("node_type,extra", [
+        ("bash", {"script": "echo test"}),
+        ("gate", {"condition": "ready == true"}),
+        ("interrupt", {"message": "approve?", "resume_key": "ok"}),
+    ])
+    def test_dispatch_local_rejected_on_inprocess_types(self, node_type, extra):
+        with pytest.raises(ValidationError) as exc_info:
+            NodeDef(
+                id="n",
+                name="Test",
+                type=node_type,
+                dispatch=DispatchMode.LOCAL,
+                **extra,
+            )
+        assert "dispatch: local is not valid" in str(exc_info.value)
+
+    @pytest.mark.parametrize("node_type,extra", [
+        ("bash", {"script": "echo test"}),
+        ("gate", {"condition": "ready == true"}),
+        ("interrupt", {"message": "approve?", "resume_key": "ok"}),
+    ])
+    def test_dispatch_inline_accepted_on_inprocess_types(self, node_type, extra):
+        node = NodeDef(
+            id="n",
+            name="Test",
+            type=node_type,
+            dispatch=DispatchMode.INLINE,
+            **extra,
+        )
+        assert node.dispatch == DispatchMode.INLINE
 
 
 class TestWorkflowConfig:
