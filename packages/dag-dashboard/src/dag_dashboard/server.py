@@ -13,7 +13,7 @@ from .broadcast import Broadcaster
 from .cancel import create_cancel_router
 from .retry import create_retry_router
 from .chat_relay import ChatRelay
-from .chat_routes import create_chat_router
+from .chat_routes import create_chat_router, create_conversation_router
 from .checkpoint_routes import router as checkpoint_router
 from .config import Settings
 from .drafts_routes import router as drafts_router
@@ -174,6 +174,10 @@ def create_app(
     # Register chat routes
     chat_router = create_chat_router(db_path)
     app.include_router(chat_router)
+
+    # Register conversation routes
+    conversation_router = create_conversation_router(db_path)
+    app.include_router(conversation_router)
 
     # Register cancel routes (always mounted, core functionality)
     cancel_settings = type('Settings', (), {'events_dir': events_dir})()

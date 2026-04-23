@@ -23,6 +23,16 @@ Nodes that were restored from a checkpoint (cache hit) are displayed with a dash
 
 The dashboard is fully responsive down to 320px viewport width (iPhone SE). Touch targets meet iOS HIG guidelines (≥44px). Pinch-to-zoom is enabled on the DAG canvas for touch devices.
 
+### Conversation View
+
+The dashboard supports viewing chat messages across multiple workflow runs via conversation ID. Navigate to `/#/conversations/<conversation-id>` to see all messages in a conversation displayed chronologically, regardless of which run they belong to.
+
+**When to use:**
+- **Conversation view** (`/#/conversations/<id>`): View the full message history across all runs in a conversation (read-only)
+- **Workflow view** (`/#/workflow/<run-id>`): View and send messages for a specific workflow run (interactive)
+
+The conversation view is read-only — you cannot send messages from this view. To send new messages, navigate to the workflow run detail page for the active run.
+
 ### Production Build Verification
 
 To verify that the package includes all static assets and the server starts correctly:

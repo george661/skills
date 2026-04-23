@@ -9,9 +9,11 @@ from .models import ChatMessageRequest
 from .queries import (
     insert_chat_message,
     get_workflow_chat_history,
+    get_conversation_chat_history,
     check_rate_limit,
     get_run,
     get_node,
+    get_conversation_row,
 )
 
 
@@ -186,5 +188,48 @@ def create_chat_router(db_path: Path) -> APIRouter:
             List of chat messages
         """
         return get_workflow_chat_history(db_path, run_id, limit, offset)
+
+    return router
+
+
+def create_conversation_router(db_path: Path) -> APIRouter:
+    """Create conversation router with database dependency.
+
+    Args:
+        db_path: Path to SQLite database
+
+    Returns:
+        Configured API router
+    """
+    router = APIRouter(prefix="/api/conversations", tags=["conversations"])
+
+    @router.get("/{conversation_id}/messages")
+    async def get_conversation_messages(
+        conversation_id: str,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Get paginated chat history for a conversation across all runs.
+
+        Args:
+            conversation_id: Conversation ID
+            limit: Maximum messages to return (default 50)
+            offset: Number of messages to skip (default 0)
+
+        Returns:
+            List of chat messages in chronological order
+
+        Raises:
+            HTTPException: 404 if conversation not found
+        """
+        # Check conversation exists
+        conversation = get_conversation_row(db_path, conversation_id)
+        if not conversation:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Conversation {conversation_id} not found"
+            )
+
+        return get_conversation_chat_history(db_path, conversation_id, limit, offset)
 
     return router
