@@ -7,10 +7,6 @@ from pydantic import ValidationError
 
 from dag_executor.schema import WorkflowDef
 
-# Module-level storage for node line numbers
-# Maps WorkflowDef instance id() to {node_id: line_number}
-_workflow_node_lines: Dict[int, Dict[str, int]] = {}
-
 
 def get_node_lines(workflow: WorkflowDef) -> Dict[str, int]:
     """Get the YAML line numbers for each node in a workflow.
@@ -21,7 +17,7 @@ def get_node_lines(workflow: WorkflowDef) -> Dict[str, int]:
     Returns:
         Dict mapping node_id to line number (1-indexed)
     """
-    return _workflow_node_lines.get(id(workflow), {})
+    return workflow._node_lines
 
 
 def load_workflow(yaml_path: str) -> WorkflowDef:
@@ -109,8 +105,8 @@ def load_workflow_from_string(yaml_string: str) -> WorkflowDef:
     except ValidationError as e:
         raise e
 
-    # Store line numbers for this workflow instance
-    _workflow_node_lines[id(workflow)] = node_lines
+    # Store line numbers in the workflow's private attribute
+    workflow._node_lines = node_lines
 
     # Additional validation: check for duplicate node IDs
     node_ids: List[str] = [node.id for node in workflow.nodes]

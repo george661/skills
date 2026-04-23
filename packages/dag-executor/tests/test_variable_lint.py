@@ -7,16 +7,6 @@ from dag_executor.parser import load_workflow_from_string
 from dag_executor.validator import lint_variable_references
 
 
-# Known pre-existing issues in workflows that should be fixed in follow-up
-KNOWN_WORKFLOW_ISSUES = {
-    "design.yaml": ["design_selections"],  # Should be an input
-    "discover.yaml": ["docs_repo"],  # Assigned in one node, used in another
-    "fix-pr.yaml": ["verification_result_addressed"],  # Bash local scoping issue
-    "groom.yaml": ["tier"],  # Bash local scoping issue
-    "validate-collect-evidence.yaml": ["runtime_evidence_count"],  # Bash local scoping issue
-}
-
-
 def test_declared_input_resolves():
     """$input-name references declared input → no error."""
     yaml_content = """
@@ -292,8 +282,6 @@ def test_backward_compat_existing_workflows_pass():
         pytest.skip("No workflow files found")
 
     failures = []
-    known_issues_found = []
-
     for yaml_file in workflow_files:
         try:
             from dag_executor.parser import load_workflow
@@ -302,37 +290,48 @@ def test_backward_compat_existing_workflows_pass():
             errors = [i for i in issues if i.severity == "error"]
 
             if errors:
-                # Check if this is a known issue
-                known_vars = KNOWN_WORKFLOW_ISSUES.get(yaml_file.name, [])
-                unexpected_errors = []
-
-                for err in errors:
-                    # Extract variable name from error message
-                    import re
-                    match = re.search(r'\$([a-zA-Z0-9_-]+)', err.message)
-                    if match:
-                        var_name = match.group(1).split('-')[0]  # Handle bash string concat
-                        if var_name not in known_vars:
-                            unexpected_errors.append(err)
-                    else:
-                        unexpected_errors.append(err)
-
-                if unexpected_errors:
-                    failures.append((yaml_file.name, unexpected_errors))
-                elif errors:
-                    known_issues_found.append((yaml_file.name, len(errors)))
+                failures.append((yaml_file.name, errors))
 
         except Exception as e:
             failures.append((yaml_file.name, [f"Parse error: {e}"]))
 
-    # Print summary of known issues
-    if known_issues_found:
-        print("\nKnown pre-existing issues (documented, not blocking):")
-        for name, count in known_issues_found:
-            print(f"  {name}: {count} known issue(s)")
-
     if failures:
         msg = "\n".join(
-            f"  {name}: {len(errs)} NEW error(s)" for name, errs in failures
+            f"  {name}: {len(errs)} error(s)" for name, errs in failures
         )
-        pytest.fail(f"Workflows failed lint with NEW issues:\n{msg}")
+        pytest.fail(f"Workflows failed lint:\n{msg}")
+
+
+def test_hyphen_concat_with_resolved_prefix():
+    """Test bash string concatenation pattern $var-literal when var resolves."""
+    yaml_content = """
+name: test-workflow
+config:
+  checkpoint_prefix: test
+inputs:
+  tenant:
+    type: string
+    required: true
+nodes:
+  - id: setup
+    name: Setup
+    type: bash
+    script: |
+      echo "Setting up environment"
+  - id: process
+    name: Process
+    type: bash
+    depends_on: [setup]
+    script: |
+      # Bash interprets $tenant-id as ${tenant} + "-id" (string concatenation)
+      # If $tenant resolves, $tenant-id should not produce a lint error
+      echo "Processing $tenant-id"
+      # Also test with node reference
+      echo "Using $setup-result"
+    """
+    workflow = load_workflow_from_string(yaml_content)
+    issues = lint_variable_references(workflow)
+    # Should not produce errors for $tenant-id or $setup-result
+    # since $tenant and $setup both resolve
+    errors = [i for i in issues if i.severity == "error"]
+    assert len(errors) == 0, f"Expected no errors, got: {[e.message for e in errors]}"

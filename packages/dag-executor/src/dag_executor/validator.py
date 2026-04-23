@@ -21,6 +21,26 @@ from dag_executor.schema import (
     TriggerRule,
 )
 
+# Explicit whitelist of known environment variables that appear in workflows
+# Unknown ALL_CAPS names will produce lint errors
+ENV_VAR_WHITELIST = {
+    "PROJECT_ROOT",
+    "TENANT_NAMESPACE",
+    "TENANT_PROJECT",
+    "TENANT_DOMAIN_PATH",
+    "TENANT_DOCS_REPO",
+    "TENANT_SMOKE_TEST_PATH",
+    "DAG_EVENTS_DIR",
+    "DAG_CREATE_ISSUES_BATCH",
+    "DAG_DEPENDENCY_GRAPH",
+    "DAG_ISSUE_LIST",
+    "HOME",
+    "PATH",
+    "PWD",
+    "USER",
+    "SHELL",
+}
+
 
 @dataclass
 class ValidationIssue:
@@ -157,6 +177,13 @@ def lint_variable_references(
             if writers & upstream_nodes:
                 upstream_channels.add(channel)
 
+        # Collect resume_keys from upstream interrupt nodes
+        resume_keys: Set[str] = set()
+        for upstream_id in upstream_nodes:
+            upstream_node = nodes_map.get(upstream_id)
+            if upstream_node and upstream_node.type == "interrupt" and upstream_node.resume_key:
+                resume_keys.add(upstream_node.resume_key)
+
         # Collect all fields that can contain variable references
         fields_to_check: List[Any] = []
 
@@ -228,21 +255,26 @@ def lint_variable_references(
             elif not field_path and node_id_ref in bash_locals:
                 resolved = True
 
+            # 4b. Check resume_keys from upstream interrupt nodes (single-part refs only)
+            elif not field_path and node_id_ref in resume_keys:
+                resolved = True
+
             # 5. Bash string concatenation: $var-literal is parsed as $var-literal by the pattern,
             #    but bash interprets it as ${var} + "-literal". Check if prefix before hyphen resolves.
+            #    This accepts patterns like $foo-bar if $foo is a valid variable, treating the hyphen
+            #    as bash's implicit string concatenation boundary rather than part of the variable name.
             elif '-' in node_id_ref:
                 prefix = node_id_ref.split('-')[0]
                 if (prefix in workflow_def.inputs or
                     prefix in nodes_map or
                     prefix in upstream_channels or
-                    prefix in bash_locals):
+                    prefix in bash_locals or
+                    prefix in resume_keys):
                     resolved = True
 
-            # 6. Common environment variables - skip validation
-            # This is a whitelist of known env vars that appear in workflows
-            elif not field_path and node_id_ref.upper() == node_id_ref:
-                # ALL_CAPS variables are typically environment variables
-                continue
+            # 6. Environment variables - skip validation only for whitelisted names
+            elif not field_path and node_id_ref in ENV_VAR_WHITELIST:
+                resolved = True
 
             # If unresolved, emit error
             if not resolved:
@@ -254,10 +286,14 @@ def lint_variable_references(
                         location += f":{node_lines[node.id]}"
                     location += ":"
 
+                # Use dangling_variable_ref for multi-part refs (e.g., $nonexistent.field)
+                # Use unresolved_variable_reference for single-part refs
+                error_code = "dangling_variable_ref" if field_path else "unresolved_variable_reference"
+
                 issues.append(ValidationIssue(
                     severity="error",
                     node_id=node.id,
-                    code="unresolved_variable_reference",
+                    code=error_code,
                     message=f"Variable reference {ref_str}{location} "
                             f"not declared in inputs or produced by upstream node",
                 ))
