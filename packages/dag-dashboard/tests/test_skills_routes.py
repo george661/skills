@@ -89,7 +89,8 @@ def test_get_skills_handles_missing_skills_dirs(tmp_path: Path) -> None:
     app = create_app(tmp_path)
     # Don't set app.state.skills_dirs
     client = TestClient(app)
-    
+
     response = client.get("/api/skills")
-    # Should either return 200 with empty array or handle gracefully
-    assert response.status_code in [200, 500]
+    # Route uses getattr with default empty list, always returns 200
+    assert response.status_code == 200
+    assert response.json() == []

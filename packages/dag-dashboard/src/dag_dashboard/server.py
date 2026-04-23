@@ -146,6 +146,15 @@ def create_app(
     else:
         app.state.workflows_dirs = [Path("workflows")]
 
+    # Store skills_dirs up front so routes can access it without waiting for lifespan
+    # (TestClient does not always trigger lifespan startup).
+    if skills_dirs is not None:
+        app.state.skills_dirs = skills_dirs
+    elif settings:
+        app.state.skills_dirs = settings.skills_dirs
+    else:
+        app.state.skills_dirs = [Path("skills")]
+
     # Register routes
     app.include_router(router)
 
