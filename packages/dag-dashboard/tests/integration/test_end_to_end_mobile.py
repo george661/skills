@@ -532,7 +532,7 @@ def test_settings_page_fits_at_320px(page: Page) -> None:
 
     FR-12: No horizontal overflow, touch targets >= 44px at 320px viewport.
 
-    XFAIL: Known FR-12 violation tracked in GW-5296.
+    XFAIL: Known FR-12 violation tracked in GW-5317.
     """
     page.set_viewport_size({"width": 320, "height": 568})
     console_errors = get_console_errors(page)
