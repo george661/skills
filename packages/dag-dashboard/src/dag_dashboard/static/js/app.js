@@ -1076,7 +1076,12 @@ if (window.DAG_DASHBOARD_BUILDER_ENABLED) {
         link.classList.remove('hidden');
     });
 
-    // Register builder route with lazy loading
+    // Register builder route with lazy loading. The router's constructor already
+    // ran handleRoute() before this point, so if the page loaded at #/builder
+    // the initial dispatch found no handler and silently no-opped. Re-dispatch
+    // after registration so deep links work on first load.
+    const needsRedispatch = (window.location.hash.slice(1) || '/').split('?')[0] === '/builder';
+
     router.register('/builder', function () {
         const container = document.getElementById('route-container');
         if (!container) return;
@@ -1138,6 +1143,10 @@ if (window.DAG_DASHBOARD_BUILDER_ENABLED) {
             document.head.appendChild(script);
         });
     });
+
+    if (needsRedispatch) {
+        router.handleRoute();
+    }
 }
 
 // Mobile menu toggle

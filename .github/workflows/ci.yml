@@ -185,3 +185,58 @@ jobs:
             exit 1
           fi
           echo "✓ All workflows passed lint"
+
+  playwright-e2e:
+    name: Playwright E2E (dag-dashboard)
+    runs-on: ubuntu-latest
+    needs: [builder-bundle]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+
+      - name: Install Python deps (dag-dashboard + dag-executor)
+        run: |
+          uv venv .venv --python 3.12
+          source .venv/bin/activate
+          uv pip install -e packages/dag-executor -e "packages/dag-dashboard[dev]"
+
+      - name: Download prebuilt builder bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: builder-bundle
+          path: packages/dag-dashboard/src/dag_dashboard/static/js/builder/
+
+      - name: Install Playwright deps
+        working-directory: packages/dag-dashboard/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run Playwright tests
+        working-directory: packages/dag-dashboard/e2e
+        env:
+          CI: "true"
+        run: npm test
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: packages/dag-dashboard/e2e/playwright-report
+          retention-days: 14
+
+      - name: Upload trace artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: packages/dag-dashboard/e2e/test-results
+          retention-days: 14

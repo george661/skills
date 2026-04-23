@@ -65,7 +65,7 @@ export function useAutosave({
                     if (createResponse.ok) {
                         const { timestamp } = await createResponse.json();
                         setCurrentTimestamp(timestamp);
-                        
+
                         // Set .current pointer
                         await fetch(
                             `/api/workflows/${workflowName}/drafts/current`,
@@ -75,7 +75,12 @@ export function useAutosave({
                                 body: JSON.stringify({ timestamp })
                             }
                         );
-                        
+
+                        // Signal bootstrap-complete to the consumer with an empty DAG
+                        // so the builder can flip out of its "Loading..." state.
+                        if (onLoad) {
+                            onLoad([]);
+                        }
                         lastDagHashRef.current = JSON.stringify([]);
                     }
                 }
