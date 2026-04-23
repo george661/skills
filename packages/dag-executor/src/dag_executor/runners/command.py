@@ -119,6 +119,8 @@ class CommandRunner(BaseRunner):
                     run_id=sub_run_id,
                     parent_run_id=ctx.parent_run_id,
                     subprocess_registry=ctx.subprocess_registry,
+                    conversation_id=ctx.conversation_id,
+                    db_path=ctx.db_path,
                     _recursion_depth=current_depth + 1,
                 )
             )

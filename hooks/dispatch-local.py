@@ -929,7 +929,7 @@ def _build_command_prompt(command_name: str, args: str) -> str:
 
 
 def run(prompt: str, resolution: dict, label: str = "prompt",
-        timeout_seconds: int = 1800) -> tuple[str, int, int]:
+        timeout_seconds: int = 1800, session_id: str | None = None) -> tuple[str, int, int]:
     """Execute a prompt via `claude --print` against the resolved model.
 
     Args:
@@ -938,6 +938,7 @@ def run(prompt: str, resolution: dict, label: str = "prompt",
             model id, base_url, and is_local selection.
         label: Short identifier for progress output and timeout messages.
         timeout_seconds: Hard wall-clock timeout for the subprocess.
+        session_id: Optional session UUID for conversation continuity.
 
     Returns:
         (output, minutes, seconds)
@@ -956,9 +957,10 @@ def run(prompt: str, resolution: dict, label: str = "prompt",
     # --settings: restore just the tokf PreToolUse:Bash hook for output compression
     dispatch_settings = os.path.join(os.path.dirname(__file__), "dispatch-settings.json")
     settings_flag = f" --settings {shlex.quote(dispatch_settings)}" if os.path.isfile(dispatch_settings) else ""
+    session_flag = f" --session-id {shlex.quote(session_id)}" if session_id else ""
     claude_cmd = (
         f"claude --model {shlex.quote(model_id)}"
-        f" --bare{settings_flag}"
+        f" --bare{settings_flag}{session_flag}"
         f" --print {shlex.quote(prompt)}"
         f" --allowedTools 'Bash,Read,Write,Edit,Glob,Grep,LSP'"
         f" --verbose --output-format stream-json"
@@ -1095,8 +1097,8 @@ Usage:
 """
 
 
-def _parse_raw_mode(argv: list[str]) -> tuple[str, str]:
-    """Parse argv for raw-prompt mode. Returns (tier, prompt)."""
+def _parse_raw_mode(argv: list[str]) -> tuple[str, str, str | None]:
+    """Parse argv for raw-prompt mode. Returns (tier, prompt, session_id)."""
     try:
         model_idx = argv.index("--model")
         tier = argv[model_idx + 1]
@@ -1104,6 +1106,16 @@ def _parse_raw_mode(argv: list[str]) -> tuple[str, str]:
         print("--model <tier> is required in raw-prompt mode.", file=sys.stderr)
         print(USAGE, file=sys.stderr)
         sys.exit(2)
+
+    # Extract optional --session-id for conversation continuity
+    session_id = None
+    if "--session-id" in argv:
+        try:
+            sid_idx = argv.index("--session-id")
+            session_id = argv[sid_idx + 1]
+        except IndexError:
+            print("--session-id requires a UUID argument.", file=sys.stderr)
+            sys.exit(2)
 
     if "--prompt-stdin" in argv:
         prompt = sys.stdin.read()
@@ -1135,7 +1147,7 @@ def _parse_raw_mode(argv: list[str]) -> tuple[str, str]:
         print("Empty prompt.", file=sys.stderr)
         sys.exit(2)
 
-    return tier, prompt
+    return tier, prompt, session_id
 
 
 def main():
@@ -1146,7 +1158,7 @@ def main():
 
     # Raw-prompt mode: --model appears anywhere in argv.
     if "--model" in argv:
-        tier, prompt = _parse_raw_mode(argv)
+        tier, prompt, session_id = _parse_raw_mode(argv)
         try:
             _dir = os.path.dirname(os.path.abspath(__file__))
             if _dir not in sys.path:
@@ -1166,7 +1178,7 @@ def main():
             }
         label = f"raw:{tier}"
         progress(f"{label} → {resolution.get('model', tier)}")
-        output, _mins, _secs = run(prompt, resolution, label=label)
+        output, _mins, _secs = run(prompt, resolution, label=label, session_id=session_id)
         print(output)
         return
 
