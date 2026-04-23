@@ -18,6 +18,7 @@ WHITELISTED_KEYS = {
     "dashboard_url",
     "workflows_dir",
     "node_log_line_cap",
+    "allow_destructive_nodes",
 }
 
 # Keys that contain secrets (should be masked in GET responses)

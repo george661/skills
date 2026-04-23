@@ -90,3 +90,11 @@ def test_app_js_registers_settings_route(tmp_path: Path) -> None:
     client = _client(tmp_path)
     js = client.get("/js/app.js").text
     assert "router.register('/settings'" in js
+
+
+def test_settings_page_references_allow_destructive_nodes(tmp_path: Path) -> None:
+    """The settings page must reference allow_destructive_nodes setting."""
+    client = _client(tmp_path)
+    js = client.get("/js/settings-page.js").text
+    assert "allow_destructive_nodes" in js, "allow_destructive_nodes key not found in settings-page.js"
+    assert "Builder" in js, "Builder section not found in settings-page.js"

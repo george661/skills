@@ -121,3 +121,28 @@ def test_mask_empty_secret_returns_empty_string(tmp_path: Path) -> None:
 def test_node_log_line_cap_is_whitelisted() -> None:
     """Test that node_log_line_cap is in WHITELISTED_KEYS."""
     assert "node_log_line_cap" in WHITELISTED_KEYS
+
+
+def test_allow_destructive_nodes_is_whitelisted() -> None:
+    """Test that allow_destructive_nodes is in WHITELISTED_KEYS."""
+    assert "allow_destructive_nodes" in WHITELISTED_KEYS
+
+
+def test_allow_destructive_nodes_reload_from_db(tmp_path: Path) -> None:
+    """Test that allow_destructive_nodes can be written to db and reloaded."""
+    from dag_dashboard.config import Settings
+    from dag_dashboard.database import init_db
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+
+    # Write true via put_setting
+    put_setting(db_path, "allow_destructive_nodes", True, updated_by="test")
+
+    # Create settings instance (default should be False)
+    settings = Settings()
+    assert settings.allow_destructive_nodes is False
+
+    # Reload from db - should override default
+    settings.reload_from_db(db_path)
+    assert settings.allow_destructive_nodes is True

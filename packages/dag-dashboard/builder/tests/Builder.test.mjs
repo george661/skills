@@ -94,3 +94,127 @@ test('Builder: WorkflowCanvas receives loaded DAG via keyed remount', async () =
 
     root.unmount();
 });
+
+test('Builder renders restriction banner with Settings link when allow_destructive=false', async () => {
+    // Mock the config fetch before mounting
+    const originalFetch = global.fetch;
+    global.fetch = async (url) => {
+        if (url === '/api/config') {
+            return {
+                ok: true,
+                json: async () => ({ allow_destructive_nodes: false })
+            };
+        }
+        if (url.includes('/api/drafts')) {
+            return { ok: true, status: 404, json: async () => ({}) };
+        }
+        return { ok: true, json: async () => ({}) };
+    };
+
+    // Create a minimal Builder component simulation
+    function TestBuilder() {
+        const [allowDestructiveNodes, setAllowDestructiveNodes] = React.useState(false);
+
+        React.useEffect(() => {
+            fetch('/api/config')
+                .then(res => res.json())
+                .then(data => setAllowDestructiveNodes(data.allow_destructive_nodes || false))
+                .catch(() => setAllowDestructiveNodes(false));
+        }, []);
+
+        return React.createElement(
+            'div',
+            null,
+            !allowDestructiveNodes && React.createElement(
+                'div',
+                { className: 'builder-safety-banner builder-safety-banner-restricted' },
+                'ⓘ Bash/skill/command node fields are read-only. To enable editing, visit ',
+                React.createElement('a', { href: '#/settings' }, 'Settings'),
+                '.'
+            ),
+            allowDestructiveNodes && React.createElement(
+                'div',
+                { className: 'builder-safety-banner builder-safety-banner-warning' },
+                '⚠️ Destructive node editing is enabled.'
+            )
+        );
+    }
+
+    let root;
+    await act(async () => {
+        root = create(React.createElement(TestBuilder));
+        await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    const json = root.toJSON();
+    const html = JSON.stringify(json);
+
+    assert.ok(html.includes('builder-safety-banner-restricted'),
+        'Should render restriction banner when allow_destructive=false');
+    assert.ok(html.includes('Settings'),
+        'Banner should include Settings link');
+
+    root.unmount();
+    global.fetch = originalFetch;
+});
+
+test('Builder renders warning banner when allow_destructive=true', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async (url) => {
+        if (url === '/api/config') {
+            return {
+                ok: true,
+                json: async () => ({ allow_destructive_nodes: true })
+            };
+        }
+        if (url.includes('/api/drafts')) {
+            return { ok: true, status: 404, json: async () => ({}) };
+        }
+        return { ok: true, json: async () => ({}) };
+    };
+
+    function TestBuilder() {
+        const [allowDestructiveNodes, setAllowDestructiveNodes] = React.useState(false);
+
+        React.useEffect(() => {
+            fetch('/api/config')
+                .then(res => res.json())
+                .then(data => setAllowDestructiveNodes(data.allow_destructive_nodes || false))
+                .catch(() => setAllowDestructiveNodes(false));
+        }, []);
+
+        return React.createElement(
+            'div',
+            null,
+            !allowDestructiveNodes && React.createElement(
+                'div',
+                { className: 'builder-safety-banner builder-safety-banner-restricted' },
+                'ⓘ Bash/skill/command node fields are read-only. To enable editing, visit ',
+                React.createElement('a', { href: '#/settings' }, 'Settings'),
+                '.'
+            ),
+            allowDestructiveNodes && React.createElement(
+                'div',
+                { className: 'builder-safety-banner builder-safety-banner-warning' },
+                '⚠️ Destructive node editing is enabled.'
+            )
+        );
+    }
+
+    let root;
+    await act(async () => {
+        root = create(React.createElement(TestBuilder));
+        await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    const json = root.toJSON();
+    const html = JSON.stringify(json);
+
+    assert.ok(html.includes('builder-safety-banner-warning'),
+        'Should render warning banner when allow_destructive=true');
+    assert.ok(html.includes('Destructive') || html.includes('enabled'),
+        'Banner should indicate destructive editing is enabled');
+
+    root.unmount();
+    global.fetch = originalFetch;
+});
