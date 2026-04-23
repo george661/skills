@@ -1,0 +1,24 @@
+name: parent_uses_child_output
+config:
+  checkpoint_prefix: parent-uses-child
+
+inputs: {}
+
+nodes:
+  - id: call_child
+    name: Call Child
+    type: command
+    command: child_with_outputs
+
+  - id: use_output
+    name: Use Child Output
+    type: bash
+    depends_on: [call_child]
+    script: |
+      echo '{"final": "parent_used_$call_child.result"}'
+    output_format: json
+
+outputs:
+  final:
+    node: use_output
+    field: final

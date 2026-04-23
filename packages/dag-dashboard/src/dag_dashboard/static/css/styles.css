@@ -3524,3 +3524,91 @@ select.form-control {
 .node-inspector-delete:hover {
     background-color: #c82333;
 }
+
+/* ========================================================================
+   YAML Preview Styles (GW-5250)
+   ======================================================================== */
+
+/* Toolbar for view mode toggle */
+.yaml-preview-toolbar {
+    display: flex;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-secondary, #2a2a2a);
+    border-bottom: 1px solid var(--border-color, #444);
+    align-items: center;
+}
+
+.yaml-preview-toolbar button {
+    padding: 6px 12px;
+    background: var(--bg-primary, #1a1a1a);
+    color: var(--text-secondary, #ccc);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.2s;
+}
+
+.yaml-preview-toolbar button:hover {
+    background: var(--bg-hover, #333);
+    color: var(--text-primary, #fff);
+}
+
+.yaml-preview-toolbar button.active {
+    background: var(--accent-primary, #0066cc);
+    color: #fff;
+    border-color: var(--accent-primary, #0066cc);
+}
+
+/* YAML preview pane container */
+.yaml-preview {
+    height: 100%;
+    overflow: auto;
+    background: var(--bg-primary, #1a1a1a);
+    padding: 16px;
+}
+
+.yaml-preview--split {
+    border-left: 1px solid var(--border-color, #444);
+}
+
+/* YAML code display */
+.yaml-preview-code {
+    font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 16px;
+    background: var(--bg-secondary, #2a2a2a);
+    color: var(--text-primary, #e0e0e0);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 4px;
+    overflow-x: auto;
+    white-space: pre;
+    tab-size: 2;
+    user-select: text; /* Allow text selection and copy */
+}
+
+/* Syntax highlighting */
+.yaml-key {
+    color: #79b8ff; /* Blue for keys */
+    font-weight: 500;
+}
+
+.yaml-string {
+    color: #9ecbff; /* Light blue for string values */
+}
+
+.yaml-number {
+    color: #f97583; /* Red for numbers */
+}
+
+.yaml-array {
+    color: #ffab70; /* Orange for arrays/flow sequences */
+}
+
+.yaml-comment {
+    color: #6a737d; /* Gray for comments */
+    font-style: italic;
+}
