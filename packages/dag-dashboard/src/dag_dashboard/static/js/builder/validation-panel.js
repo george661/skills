@@ -154,7 +154,7 @@
                   padding: '8px 12px',
                   marginBottom: '6px',
                   backgroundColor: '#fff3cd',
-                  border: '1px solid '#ffeaa7',
+                  border: '1px solid #ffeaa7',
                   borderRadius: '4px',
                   cursor: issue.node_id ? 'pointer' : 'default',
                   color: '#856404'

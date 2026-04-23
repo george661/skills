@@ -195,9 +195,9 @@ nodes:
     assert len(data["errors"]) > 0, "Expected duplicate_id or parse_error"
     
     error_codes = [err["code"] for err in data["errors"]]
-    # YAML parser may reject this as parse_error, or validator may catch as duplicate_id
-    assert any(code in ["duplicate_id", "parse_error"] for code in error_codes), \
-        f"Expected duplicate_id or parse_error, got: {error_codes}"
+    # Parser raises ValueError for duplicate node IDs before validator runs
+    assert "parse_error" in error_codes, \
+        f"Expected parse_error (parser catches duplicate IDs), got: {error_codes}"
 
 
 def test_post_workflows_validate_missing_required_node_field(client: TestClient):
