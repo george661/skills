@@ -42,6 +42,7 @@ def create_app(
     settings: Optional[Settings] = None,
     checkpoint_dir_fallback: Optional[str] = None,
     workflows_dirs: Optional[List[Path]] = None,
+    skills_dirs: Optional[List[Path]] = None,
 ) -> FastAPI:
     """Create and configure FastAPI application."""
 
@@ -86,6 +87,15 @@ def create_app(
         else:
             app.state.workflows_dirs = [Path("workflows")]
 
+        # Store skills_dirs for skills endpoints.
+        # Explicit skills_dirs kwarg takes precedence (used by tests).
+        if skills_dirs is not None:
+            app.state.skills_dirs = skills_dirs
+        elif settings:
+            app.state.skills_dirs = settings.skills_dirs
+        else:
+            app.state.skills_dirs = [Path("skills")]
+
         # Reload settings from db to pick up dashboard_settings overrides
         if settings:
             settings.reload_from_db(db_path)
@@ -127,6 +137,7 @@ def create_app(
     app.state.events_dir = events_dir
     app.state.checkpoint_prefix = checkpoint_prefix
     app.state.checkpoint_dir_fallback = checkpoint_dir_fallback
+    app.state.settings = settings
 
     # Store workflows_dirs up front so routes can access it without waiting for lifespan
     # (TestClient does not always trigger lifespan startup).
@@ -136,6 +147,15 @@ def create_app(
         app.state.workflows_dirs = settings.workflows_dirs
     else:
         app.state.workflows_dirs = [Path("workflows")]
+
+    # Store skills_dirs up front so routes can access it without waiting for lifespan
+    # (TestClient does not always trigger lifespan startup).
+    if skills_dirs is not None:
+        app.state.skills_dirs = skills_dirs
+    elif settings:
+        app.state.skills_dirs = settings.skills_dirs
+    else:
+        app.state.skills_dirs = [Path("skills")]
 
     # Register routes
     app.include_router(router)
@@ -180,11 +200,6 @@ def create_app(
     async def health() -> Dict[str, str]:
         """Health check endpoint."""
         return {"status": "ok"}
-
-    @app.get("/api/config")
-    async def api_config() -> Dict[str, bool]:
-        """Return feature flag configuration."""
-        return {"builder_enabled": settings.builder_enabled if settings else False}
 
     @app.get("/builder-config.js")
     async def builder_config_js() -> Response:
