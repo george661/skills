@@ -73,6 +73,24 @@ class NodeInspector {
     }
 
     renderCommonFields() {
+        let html = '';
+
+        // Type selector dropdown
+        const currentType = this.node.type || 'bash';
+        html += `
+            <div class="node-inspector-field">
+                <label>Type</label>
+                <select name="type">
+                    <option value="bash" ${currentType === 'bash' ? 'selected' : ''}>Bash</option>
+                    <option value="prompt" ${currentType === 'prompt' ? 'selected' : ''}>Prompt</option>
+                    <option value="skill" ${currentType === 'skill' ? 'selected' : ''}>Skill</option>
+                    <option value="command" ${currentType === 'command' ? 'selected' : ''}>Command</option>
+                    <option value="gate" ${currentType === 'gate' ? 'selected' : ''}>Gate</option>
+                    <option value="interrupt" ${currentType === 'interrupt' ? 'selected' : ''}>Interrupt</option>
+                </select>
+            </div>
+        `;
+
         const fields = [
             { name: 'id', label: 'ID', type: 'text', required: true, pattern: '^[a-zA-Z0-9_-]+$' },
             { name: 'name', label: 'Name', type: 'text', required: true },
@@ -80,8 +98,6 @@ class NodeInspector {
             { name: 'when', label: 'When (condition)', type: 'text' },
             { name: 'timeout', label: 'Timeout (seconds)', type: 'number', min: 0 },
         ];
-        
-        let html = '';
         
         for (const field of fields) {
             const value = this.node[field.name] || '';
@@ -112,7 +128,7 @@ class NodeInspector {
                 <label>Trigger Rule</label>
                 <select name="trigger_rule">
                     <option value="all_success" ${triggerRule === 'all_success' ? 'selected' : ''}>All Success</option>
-                    <option value="any_success" ${triggerRule === 'any_success' ? 'selected' : ''}>Any Success</option>
+                    <option value="one_success" ${triggerRule === 'one_success' ? 'selected' : ''}>Any Success</option>
                     <option value="all_done" ${triggerRule === 'all_done' ? 'selected' : ''}>All Done</option>
                 </select>
             </div>
@@ -206,7 +222,7 @@ class NodeInspector {
                 <select name="on_failure" ${readonly ? 'disabled' : ''}>
                     <option value="stop" ${onFailure === 'stop' ? 'selected' : ''}>Stop</option>
                     <option value="continue" ${onFailure === 'continue' ? 'selected' : ''}>Continue</option>
-                    <option value="degrade" ${onFailure === 'degrade' ? 'selected' : ''}>Degrade</option>
+                    <option value="skip_downstream" ${onFailure === 'skip_downstream' ? 'selected' : ''}>Skip Downstream</option>
                 </select>
             </div>
         `;
@@ -234,9 +250,9 @@ class NodeInspector {
             <div class="node-inspector-field">
                 <label>Model</label>
                 <select name="model">
-                    <option value="haiku" ${model === 'haiku' ? 'selected' : ''}>Haiku</option>
-                    <option value="sonnet" ${model === 'sonnet' ? 'selected' : ''}>Sonnet</option>
                     <option value="opus" ${model === 'opus' ? 'selected' : ''}>Opus</option>
+                    <option value="sonnet" ${model === 'sonnet' ? 'selected' : ''}>Sonnet</option>
+                    <option value="local" ${model === 'local' ? 'selected' : ''}>Local</option>
                 </select>
             </div>
         `;
@@ -247,8 +263,7 @@ class NodeInspector {
                 <label>Dispatch</label>
                 <select name="dispatch">
                     <option value="inline" ${dispatch === 'inline' ? 'selected' : ''}>Inline</option>
-                    <option value="agent" ${dispatch === 'agent' ? 'selected' : ''}>Agent</option>
-                    <option value="subagent" ${dispatch === 'subagent' ? 'selected' : ''}>Subagent</option>
+                    <option value="local" ${dispatch === 'local' ? 'selected' : ''}>Local</option>
                 </select>
             </div>
         `;
@@ -425,7 +440,17 @@ class NodeInspector {
         } else {
             value = e.target.value;
         }
-        
+
+        // Special handling for type change - update node and re-render
+        if (field === 'type') {
+            this.node.type = value;
+            this.render();
+            if (this.onChange) {
+                this.onChange(this.node);
+            }
+            return;
+        }
+
         // Validate field
         const error = this.validateField(field, value);
         if (error) {
@@ -485,7 +510,16 @@ class NodeInspector {
         if (typeRequirements[type] && typeRequirements[type].includes(field) && !value) {
             return 'This field is required';
         }
-        
+
+        // Prompt-specific validation: either prompt or prompt_file required
+        if (type === 'prompt' && (field === 'prompt' || field === 'prompt_file')) {
+            const hasPrompt = (field === 'prompt' ? value : this.node.prompt || '').trim();
+            const hasPromptFile = (field === 'prompt_file' ? value : this.node.prompt_file || '').trim();
+            if (!hasPrompt && !hasPromptFile) {
+                return 'Either prompt or prompt_file is required';
+            }
+        }
+
         return null;
     }
 
