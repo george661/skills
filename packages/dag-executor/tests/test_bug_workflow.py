@@ -166,10 +166,12 @@ class TestBugIntegrationWithMockExecution:
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"is_duplicate": true, "duplicate_key": "GW-0000"}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] in ["analyze_root_cause", "create_bug_issue", "failing_test_gate"]:
                 node["type"] = "bash"
                 node["script"] = 'echo "Should not execute"'
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "transition_and_link":
                 node["script"] = 'echo "Should not execute"'
 
@@ -221,6 +223,7 @@ class TestBugIntegrationWithMockExecution:
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"is_duplicate": false}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "duplicate_gate":
                 # Gate should pass when is_duplicate is false
                 node["type"] = "bash"
@@ -230,14 +233,17 @@ class TestBugIntegrationWithMockExecution:
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"hypothesis": "root cause found"}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "create_bug_issue":
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"bug_key": "GW-9999"}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "failing_test_gate":
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"test_branches": ["test-branch"]}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "transition_and_link":
                 node["script"] = 'echo "Transitioned and linked"'
 
