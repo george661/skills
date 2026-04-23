@@ -24,9 +24,20 @@ import {
 } from '@xyflow/react';
 
 import { useCanvasState } from './useCanvasState.js';
+import { useBuilderKeyboard } from './useBuilderKeyboard.js';
 import { makeNodeTypes } from './DagNode.jsx';
 
-function CanvasInner({ initialDag, readOnly, onGraphChange }) {
+function CanvasInner({
+    initialDag,
+    readOnly,
+    onGraphChange,
+    onSave,
+    onRun,
+    onToggleYaml,
+    onToggleValidation,
+    onToggleLibrary,
+    onDuplicate,
+}) {
     const rf = useReactFlow();
     const flowToPosition = useCallback(
         (screen) => {
@@ -37,7 +48,7 @@ function CanvasInner({ initialDag, readOnly, onGraphChange }) {
     );
 
     const state = useCanvasState(initialDag, { flowToPosition });
-    const { nodes, edges, onConnect, onNodesDelete, onEdgesDelete, onDrop, undo, toDag } = state;
+    const { nodes, edges, onConnect, onNodesDelete, onEdgesDelete, onDrop, undo, redo, toDag } = state;
 
     const nodeTypes = useMemo(() => makeNodeTypes({ readOnly }), [readOnly]);
 
@@ -46,20 +57,23 @@ function CanvasInner({ initialDag, readOnly, onGraphChange }) {
         if (typeof onGraphChange === 'function') onGraphChange(toDag());
     }, [nodes, edges, onGraphChange, toDag]);
 
-    // Cmd/Ctrl+Z → undo last delete (single level; full history is FR-10)
-    useEffect(() => {
-        const handler = (e) => {
-            const mod = e.metaKey || e.ctrlKey;
-            if (mod && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
-                e.preventDefault();
-                undo();
-            }
-        };
-        if (typeof document !== 'undefined') document.addEventListener('keydown', handler);
-        return () => {
-            if (typeof document !== 'undefined') document.removeEventListener('keydown', handler);
-        };
-    }, [undo]);
+    // Wire up keyboard shortcuts
+    const shortcuts = useMemo(() => ({
+        'mod+s': onSave || (() => {}),
+        'mod+z': undo,
+        'mod+shift+z': redo,
+        'mod+/': onToggleYaml || (() => {}),
+        'mod+.': onToggleValidation || (() => {}),
+        'mod+enter': onRun || (() => {}),
+        'mod+l': onToggleLibrary || (() => {}),
+        'mod+d': onDuplicate || (() => {}),
+        'delete': () => {
+            // Delete is handled by React Flow's deleteKeyCode prop
+            // We register it here for completeness but React Flow will fire onNodesDelete
+        },
+    }), [onSave, undo, redo, onToggleYaml, onToggleValidation, onRun, onToggleLibrary, onDuplicate]);
+
+    useBuilderKeyboard(shortcuts, { enabled: !readOnly });
 
     // Listen for undo event from toolbar
     useEffect(() => {
@@ -115,10 +129,30 @@ function CanvasInner({ initialDag, readOnly, onGraphChange }) {
     );
 }
 
-export function WorkflowCanvas({ initialDag = [], readOnly = false, onGraphChange }) {
+export function WorkflowCanvas({
+    initialDag = [],
+    readOnly = false,
+    onGraphChange,
+    onSave,
+    onRun,
+    onToggleYaml,
+    onToggleValidation,
+    onToggleLibrary,
+    onDuplicate,
+}) {
     return (
         <ReactFlowProvider>
-            <CanvasInner initialDag={initialDag} readOnly={readOnly} onGraphChange={onGraphChange} />
+            <CanvasInner
+                initialDag={initialDag}
+                readOnly={readOnly}
+                onGraphChange={onGraphChange}
+                onSave={onSave}
+                onRun={onRun}
+                onToggleYaml={onToggleYaml}
+                onToggleValidation={onToggleValidation}
+                onToggleLibrary={onToggleLibrary}
+                onDuplicate={onDuplicate}
+            />
         </ReactFlowProvider>
     );
 }

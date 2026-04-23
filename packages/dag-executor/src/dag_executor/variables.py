@@ -241,6 +241,35 @@ def extract_variable_references(value: Any) -> List[Tuple[str, str]]:
     return deduplicated
 
 
+def _remove_code_blocks(text: str) -> str:
+    """Remove triple-backtick code blocks and indented command examples from text.
+
+    Prompts often contain instructional code snippets with variable names that are
+    not actually resolved at workflow runtime. This function filters them out before
+    extracting variable references.
+
+    Args:
+        text: Input text potentially containing code blocks
+
+    Returns:
+        Text with code blocks replaced by empty strings
+    """
+    # Remove triple-backtick code blocks (```...```)
+    text = re.sub(r'```[^`]*```', '', text, flags=re.DOTALL)
+
+    # Remove indented code blocks (2+ spaces or tab at line start)
+    # Prompts use varying indentation levels for command examples
+    lines = text.split('\n')
+    filtered_lines = []
+    for line in lines:
+        # Skip lines that start with 2+ spaces or a tab (command examples in prompts)
+        if line.startswith('  ') or line.startswith('\t'):
+            continue
+        filtered_lines.append(line)
+
+    return '\n'.join(filtered_lines)
+
+
 def _collect_references(value: Any, refs: List[Tuple[str, str]]) -> None:
     """Recursively collect variable references from a value.
 
@@ -249,7 +278,11 @@ def _collect_references(value: Any, refs: List[Tuple[str, str]]) -> None:
         refs: List to append found references to (modified in place)
     """
     if isinstance(value, str):
-        matches = VARIABLE_PATTERN.finditer(value)
+        # Filter out code blocks and indented command examples from the string
+        # These often contain instructional variable names not resolved at runtime
+        filtered_str = _remove_code_blocks(value)
+
+        matches = VARIABLE_PATTERN.finditer(filtered_str)
         for match in matches:
             reference = match.group(1)  # e.g., "node.output.field" or "input"
             parts = reference.split('.', 1)
