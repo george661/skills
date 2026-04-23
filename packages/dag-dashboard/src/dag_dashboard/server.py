@@ -17,6 +17,7 @@ from .chat_routes import create_chat_router
 from .checkpoint_routes import router as checkpoint_router
 from .config import Settings
 from .drafts_routes import router as drafts_router
+from .validation_routes import router as validation_router
 from .database import ensure_dir, init_db
 from .event_collector import EventCollector
 from .notifier import SlackNotifier
@@ -145,6 +146,10 @@ def create_app(
 
     # Register drafts routes (always mounted - workflow editing)
     app.include_router(drafts_router)
+
+    # Register validation routes (builder feature)
+    if settings and settings.builder_enabled:
+        app.include_router(validation_router)
 
     # Register chat routes
     chat_router = create_chat_router(db_path)

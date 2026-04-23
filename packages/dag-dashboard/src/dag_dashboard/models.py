@@ -300,3 +300,28 @@ class DraftPublishResponse(BaseModel):
 
     published_path: str
     source_timestamp: str
+
+
+class ValidationIssueOut(BaseModel):
+    """Validation issue (error or warning) for a workflow node or workflow-level."""
+    model_config = {"extra": "forbid"}
+
+    severity: str = Field(..., description="Issue severity: 'error' or 'warning'")
+    node_id: Optional[str] = Field(None, description="Node ID causing the issue (null for workflow-level issues)")
+    code: str = Field(..., description="Machine-readable error code (e.g., 'required_field', 'cycle_detected')")
+    message: str = Field(..., description="Human-readable error message")
+
+
+class ValidateRequest(BaseModel):
+    """Request body for POST /api/workflows/validate."""
+    model_config = {"extra": "forbid"}
+
+    yaml: str = Field(..., description="Workflow definition YAML string to validate")
+
+
+class ValidateResponse(BaseModel):
+    """Response body for POST /api/workflows/validate."""
+    model_config = {"extra": "forbid"}
+
+    errors: List[ValidationIssueOut] = Field(default_factory=list, description="Validation errors")
+    warnings: List[ValidationIssueOut] = Field(default_factory=list, description="Validation warnings")
