@@ -49,6 +49,7 @@ function Builder() {
     const [provider, setProvider] = React.useState('');
     const [model, setModel] = React.useState('');
     const [hasClientErrors, setHasClientErrors] = React.useState(false);
+    const [allowDestructiveNodes, setAllowDestructiveNodes] = React.useState(false);
 
     // Workflow name: initialize from ?workflow= but remain editable.
     const initialWorkflowName = React.useMemo(() => {
@@ -70,6 +71,19 @@ function Builder() {
     React.useEffect(() => {
         setHasClientErrors(validation.errors.length > 0);
     }, [validation.errors]);
+
+    // Fetch allow_destructive_nodes config flag on mount
+    React.useEffect(() => {
+        fetch('/api/config')
+            .then(res => res.json())
+            .then(data => {
+                setAllowDestructiveNodes(data.allow_destructive_nodes || false);
+            })
+            .catch(err => {
+                console.error('Failed to fetch config:', err);
+                setAllowDestructiveNodes(false);
+            });
+    }, []);
 
     // Stable getDag reference for useAutosave
     const getDag = React.useCallback(() => dagRef.current, []);
@@ -194,6 +208,18 @@ function Builder() {
                 onViewModeChange={setViewMode}
             />
 
+            {!allowDestructiveNodes && (
+                <div className="builder-safety-banner builder-safety-banner-restricted">
+                    ⓘ Bash/skill/command node fields are read-only. To enable editing, visit <a href="#/settings">Settings</a>.
+                </div>
+            )}
+
+            {allowDestructiveNodes && (
+                <div className="builder-safety-banner builder-safety-banner-warning">
+                    ⚠️ Destructive node editing is enabled. Users can modify bash commands and skill references.
+                </div>
+            )}
+
             {saveStatus && (
                 <div
                     style={{
@@ -240,6 +266,7 @@ function Builder() {
                             key={isLoaded ? 'loaded' : 'loading'}
                             initialDag={initialDag}
                             readOnly={false}
+                            allowDestructiveNodes={allowDestructiveNodes}
                             onGraphChange={handleGraphChange}
                         />
                     </div>

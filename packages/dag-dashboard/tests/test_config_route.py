@@ -64,3 +64,33 @@ def test_config_endpoint_when_settings_missing(tmp_path):
         assert response.status_code == 200
         data = response.json()
         assert data["allow_destructive_nodes"] is False
+
+
+def test_config_reflects_db_override_after_put(tmp_path):
+    """Test that after PUT flips allow_destructive_nodes, GET /api/config reflects the new value."""
+    from dag_dashboard.settings_store import put_setting
+
+    db_dir = tmp_path
+    db_path = db_dir / "dashboard.db"
+    init_db(db_path)
+    events_dir = tmp_path / "events"
+    events_dir.mkdir()
+
+    # Start with default (False)
+    settings = Settings()
+    app = create_app(db_dir, events_dir=events_dir, settings=settings)
+
+    with TestClient(app) as client:
+        # Verify initial state
+        response = client.get("/api/config")
+        assert response.status_code == 200
+        assert response.json()["allow_destructive_nodes"] is False
+
+        # PUT to flip it to True
+        response = client.put("/api/settings", json={"updates": {"allow_destructive_nodes": True}})
+        assert response.status_code == 200
+
+        # Verify GET /api/config now returns True (settings reloaded from db)
+        response = client.get("/api/config")
+        assert response.status_code == 200
+        assert response.json()["allow_destructive_nodes"] is True
