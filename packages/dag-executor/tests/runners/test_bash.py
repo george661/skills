@@ -324,6 +324,44 @@ async def test_bash_mixed_stdout_stderr_preserves_stream_order(bash_node):
 
 
 @pytest.mark.asyncio
+async def test_bash_script_substitution():
+    """Test that script body substitution from resolved_inputs works."""
+    bash_node = NodeDef(
+        id="greet",
+        name="Greet",
+        type="bash",
+        script="echo 'Hello $name'"  # Raw script with unsubstituted variable
+    )
+
+    # resolved_inputs contains the substituted script body
+    ctx = RunnerContext(
+        node_def=bash_node,
+        resolved_inputs={
+            "script": "echo 'Hello Alice'",  # Resolved script body
+            "name": "Alice"
+        }
+    )
+
+    mock_subprocess = _create_mock_subprocess_exec(
+        stdout_lines=["Hello Alice\n"],
+        returncode=0
+    )
+
+    with patch("asyncio.create_subprocess_exec", side_effect=mock_subprocess):
+        runner = BashRunner()
+        result = await runner._run_async(ctx)
+
+        assert result.status == NodeStatus.COMPLETED
+
+        # Verify subprocess was called with the RESOLVED script body, not raw node_def.script
+        call_args = mock_subprocess.call_args[0]
+        assert call_args[0] == "bash"
+        assert call_args[1] == "-c"
+        assert call_args[2] == "echo 'Hello Alice'", \
+            "Script body should be resolved from ctx.resolved_inputs['script'], not ctx.node_def.script"
+
+
+@pytest.mark.asyncio
 async def test_bash_live_streaming_1hz_for_10s():
     """Integration test: verify live streaming with real subprocess outputting 1 line/sec for 10 seconds.
 

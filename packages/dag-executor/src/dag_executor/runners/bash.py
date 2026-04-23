@@ -39,7 +39,7 @@ class BashRunner(BaseRunner):
         Returns:
             NodeResult with execution status and output
         """
-        script = ctx.node_def.script
+        script = ctx.resolved_inputs.get("script", ctx.node_def.script)
         if script is None:
             raise ValueError("script field is required for type=bash")
 
