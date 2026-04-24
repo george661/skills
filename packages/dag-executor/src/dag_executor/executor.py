@@ -1355,12 +1355,22 @@ class WorkflowExecutor:
         if node_def.condition:
             inputs_to_resolve["condition"] = node_def.condition
 
+        # For bash scripts, extract names assigned inside the script itself.
+        # Those are bash-local variables — the subshell expands them, so
+        # resolve_variables must leave them literal or it'll fail with
+        # "Cannot resolve variable reference: $local_name".
+        skip_names: Optional[set[str]] = None
+        if node_def.type == "bash" and node_def.script:
+            from dag_executor.bash_locals import extract_bash_locals
+            skip_names = extract_bash_locals(node_def.script)
+
         # Resolve variables
         resolved = resolve_variables(
             inputs_to_resolve,
             ctx.node_outputs,
             ctx.workflow_inputs,
-            channel_store=ctx.channel_store
+            channel_store=ctx.channel_store,
+            skip_names=skip_names,
         )
 
         return resolved  # type: ignore[no-any-return]

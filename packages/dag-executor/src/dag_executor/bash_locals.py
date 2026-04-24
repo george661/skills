@@ -26,9 +26,10 @@ def extract_bash_locals(script: str) -> Set[str]:
     for match in re.finditer(assignment_pattern, script, re.MULTILINE):
         locals_set.add(match.group(1))
     
-    # Pattern 1b: jq --arg variable_name "$source"
-    # The jq variable names themselves act like locals in the jq context
-    jq_arg_pattern = r'--arg\s+([A-Za-z_][A-Za-z0-9_]*)\s+'
+    # Pattern 1b: jq --arg / --argjson variable_name "$source"
+    # jq's `--arg` and `--argjson` both bind a filter-local name; references
+    # inside the filter (e.g. `$name`) must stay literal so jq can expand them.
+    jq_arg_pattern = r'--arg(?:json)?\s+([A-Za-z_][A-Za-z0-9_]*)\s+'
     for match in re.finditer(jq_arg_pattern, script):
         locals_set.add(match.group(1))
     

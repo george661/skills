@@ -64,7 +64,8 @@ def resolve_variables(
     value: Any,
     node_outputs: Dict[str, Dict[str, Any]],
     workflow_inputs: Dict[str, Any],
-    channel_store: Optional["ChannelStore"] = None
+    channel_store: Optional["ChannelStore"] = None,
+    skip_names: Optional[set[str]] = None,
 ) -> Any:
     """Resolve variable references in a value.
 
@@ -73,6 +74,9 @@ def resolve_variables(
         node_outputs: Map of node_id -> output dict
         workflow_inputs: Map of input_name -> value
         channel_store: Optional ChannelStore for channel-based variable resolution
+        skip_names: Single-segment names to leave untouched (e.g. bash-local
+            variables assigned within a bash script). These pass through with
+            their leading `$` intact so the subshell handles them natively.
 
     Returns:
         The value with all variable references resolved
@@ -81,11 +85,11 @@ def resolve_variables(
         VariableResolutionError: If a reference cannot be resolved
     """
     if isinstance(value, str):
-        return _resolve_string(value, node_outputs, workflow_inputs, channel_store)
+        return _resolve_string(value, node_outputs, workflow_inputs, channel_store, skip_names)
     elif isinstance(value, dict):
-        return {k: resolve_variables(v, node_outputs, workflow_inputs, channel_store) for k, v in value.items()}
+        return {k: resolve_variables(v, node_outputs, workflow_inputs, channel_store, skip_names) for k, v in value.items()}
     elif isinstance(value, list):
-        return [resolve_variables(item, node_outputs, workflow_inputs, channel_store) for item in value]
+        return [resolve_variables(item, node_outputs, workflow_inputs, channel_store, skip_names) for item in value]
     else:
         # Primitives (int, bool, None, etc.) pass through unchanged
         return value
@@ -95,14 +99,19 @@ def _resolve_string(
     value: str,
     node_outputs: Dict[str, Dict[str, Any]],
     workflow_inputs: Dict[str, Any],
-    channel_store: Optional["ChannelStore"] = None
+    channel_store: Optional["ChannelStore"] = None,
+    skip_names: Optional[set[str]] = None,
 ) -> Any:
     """Resolve variable references in a string.
 
     If the string is a pure reference (e.g., "$node.output"), return the resolved object directly.
     If the string contains mixed content (e.g., "Hello $name"), perform string interpolation.
     Supports callable references like $repo_path(slug).
+    `skip_names` is a set of single-segment names that should be left literal
+    (used for bash-local variable names — the subshell handles their expansion).
     """
+    skip = skip_names or set()
+
     # First check for callable patterns (like $repo_path(...))
     callable_matches = list(CALLABLE_PATTERN.finditer(value))
 
@@ -119,7 +128,7 @@ def _resolve_string(
 
         resolved = _resolve_callable(func_name, arg, node_outputs, workflow_inputs, channel_store)
         result = result.replace(full_match, str(resolved))
-    
+
     # Now handle regular variable patterns
     matches = list(VARIABLE_PATTERN.finditer(result))
 
@@ -127,16 +136,22 @@ def _resolve_string(
         # No references, return unchanged
         return value
 
-    # Check if this is a pure reference (entire string is just the reference)
+    # Check if this is a pure reference (entire string is just the reference).
+    # Pure-reference returns bypass skip_names — callers passing a bare "$foo"
+    # expect substitution. skip_names only protects mixed-content strings.
     if len(matches) == 1 and matches[0].group(0) == result and not callable_matches:
-        # Pure reference - return the resolved object directly
         reference = matches[0].group(1)
-        return _resolve_reference(reference, node_outputs, workflow_inputs, channel_store)
+        first_segment = reference.split(".")[0]
+        if first_segment not in skip:
+            return _resolve_reference(reference, node_outputs, workflow_inputs, channel_store)
 
     # Mixed content - perform string interpolation
     for match in matches:
         full_match = match.group(0)  # e.g., "$node.output.field"
         reference = match.group(1)    # e.g., "node.output.field"
+        first_segment = reference.split(".")[0]
+        if first_segment in skip:
+            continue  # leave literal — bash will expand it
         resolved = _resolve_reference(reference, node_outputs, workflow_inputs, channel_store)
         # Convert resolved value to string for interpolation
         result = result.replace(full_match, str(resolved))
