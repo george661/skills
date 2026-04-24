@@ -179,6 +179,18 @@ class CommandRunner(BaseRunner):
                 # inputs_map overrides positional args (kwargs-override-args semantics)
                 sub_workflow_inputs[key] = resolved_value
 
+        # Apply schema defaults for any declared input the parent didn't
+        # supply (matches the top-level CLI behavior in cli.py). Without
+        # this, optional inputs with defaults fail `$name` resolution at
+        # runtime because they never landed in workflow_inputs.
+        # getattr guard: test scaffolding may pass Mock(spec=WorkflowDef)
+        # which doesn't expose `inputs` as a real dict.
+        schema_inputs = getattr(workflow_def, "inputs", None)
+        if isinstance(schema_inputs, dict):
+            for input_name, input_def in schema_inputs.items():
+                if input_name not in sub_workflow_inputs and getattr(input_def, "default", None) is not None:
+                    sub_workflow_inputs[input_name] = input_def.default
+
         # Generate a unique run_id for the sub-workflow
         sub_run_id = str(uuid.uuid4())
 

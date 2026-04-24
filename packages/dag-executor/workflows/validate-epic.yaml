@@ -169,15 +169,16 @@ nodes:
     type: prompt
     depends_on:
       - audit_artifacts
-    model: opus
+    model: sonnet
     mode: completion     # pure reasoning over upstream audit outputs
     context: shared
     output_format: json
     writes:
       - ac_coverage
     prompt: |
-      Reconcile the acceptance criteria from the PRP with the
-      implementation status from children audit.
+      You are analyzing epic validation results. Reply with ONLY a single
+      JSON object in a ```json code fence — no prose, no tables, no
+      explanation outside the fence.
 
       Epic: $epic
       PRP: $load_spec.prp_reference
@@ -185,12 +186,15 @@ nodes:
       Children Done: $audit_children.children_done /
         $audit_children.children_total
 
-      Return JSON:
+      Respond with:
+
+      ```json
       {
-        "ac_coverage_percent": 80,
-        "uncovered_acs": ["AC-1", "AC-3"],
-        "findings": "Description of coverage gaps"
+        "ac_coverage_percent": <0-100 integer>,
+        "uncovered_acs": ["<AC-key>", ...],
+        "findings": "<one-sentence summary of coverage gaps>"
       }
+      ```
 
   # ══════════════════════════════════════════════════════════════════
   # Phase 4: Integration Seams Check
@@ -201,14 +205,16 @@ nodes:
     type: prompt
     depends_on:
       - ac_reconciliation
-    model: opus
+    model: sonnet
     mode: completion     # pure reasoning; load_spec already collected repo list
     context: shared
     output_format: json
     writes:
       - seam_findings
     prompt: |
-      Analyze integration seams across affected repositories.
+      You are analyzing cross-repo integration seams. Reply with ONLY a
+      single JSON object in a ```json code fence — no prose outside the
+      fence.
 
       Epic: $epic
       Affected Repos: $load_spec.affected_repos
@@ -218,11 +224,12 @@ nodes:
       - Shared type definitions
       - Event schema compatibility
 
-      Return JSON:
+      ```json
       {
-        "seam_issues": [],
-        "recommendations": "None or description"
+        "seam_issues": ["<issue>", ...],
+        "recommendations": "<summary or 'None'>"
       }
+      ```
     edges:
       - target: invariants_audit
         condition: "load_spec.design_session != 'None'"
@@ -238,15 +245,15 @@ nodes:
     type: prompt
     depends_on:
       - integration_check
-    model: opus
+    model: sonnet
     mode: completion     # pure reasoning over design session data in upstream state
     context: shared
     output_format: json
     writes:
       - invariants
     prompt: |
-      Audit the design invariants from design session
-      $load_spec.design_session.
+      You are auditing design-session invariants. Reply with ONLY a single
+      JSON object in a ```json code fence — no prose outside the fence.
 
       Epic: $epic
       Design Session: $load_spec.design_session
@@ -256,11 +263,12 @@ nodes:
       - Performance requirements
       - Security boundaries
 
-      Return JSON:
+      ```json
       {
-        "invariants_violated": [],
-        "invariants_satisfied": ["INV-1", "INV-2"]
+        "invariants_violated": ["<INV-key>", ...],
+        "invariants_satisfied": ["<INV-key>", ...]
       }
+      ```
 
   # ══════════════════════════════════════════════════════════════════
   # Phase 6: Produce Verdict
@@ -273,26 +281,34 @@ nodes:
       - audit_children
       - invariants_audit
     trigger_rule: one_success
-    model: opus
+    model: sonnet
     mode: completion     # pure synthesis of upstream audit findings
     context: shared
     output_format: json
     writes:
       - verdict
     prompt: |
-      Synthesize all audit findings and produce a validation verdict.
+      You are producing a final validation verdict. Reply with ONLY a
+      single JSON object in a ```json code fence — no prose outside the
+      fence.
 
       Epic: $epic
       Children Audit: $audit_children.hard_gate_failures failures
       Artifact Audit: $audit_artifacts.hard_gate_failures failures
       AC Coverage: $ac_reconciliation.ac_coverage_percent%
 
-      Return JSON:
+      Verdict rules:
+      - APPROVED: zero failures, coverage >= 90
+      - INCOMPLETE: coverage 60-89 or minor gate failures
+      - BLOCKED: major gate failures or coverage < 60
+
+      ```json
       {
-        "verdict": "APPROVED | INCOMPLETE | BLOCKED",
-        "report_path": "/tmp/validate-epic-report.md",
-        "summary": "One-line summary of findings"
+        "verdict": "APPROVED" | "INCOMPLETE" | "BLOCKED",
+        "report_path": "/tmp/validate-epic-$epic-report.md",
+        "summary": "<one-sentence summary>"
       }
+      ```
 
   # ══════════════════════════════════════════════════════════════════
   # Phase 7: Transition Epic
@@ -354,7 +370,7 @@ nodes:
     type: prompt
     depends_on:
       - store_episode
-    model: opus
+    model: sonnet
     mode: completion     # formatting markdown from workflow state
     prompt: |
       Print a human-readable summary of the validation results.
