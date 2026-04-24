@@ -1,0 +1,42 @@
+---
+name: Validate Epic Audit Artifacts (Stub)
+config:
+  checkpoint_prefix: vale-artifacts
+  worktree: false
+
+inputs:
+  epic:
+    type: string
+    required: true
+  affected_repos:
+    type: string
+    required: true
+
+outputs:
+  hard_gate_failures: {node: audit_stub, field: hard_gate_failures}
+  deploy_gates: {node: audit_stub, field: deploy_gates}
+  test_artifact_gates: {node: audit_stub, field: test_artifact_gates}
+  smoke_gate: {node: audit_stub, field: smoke_gate}
+  json_path: {node: audit_stub, field: json_path}
+
+nodes:
+  - id: audit_stub
+    name: Stub Artifacts Audit
+    type: prompt
+    model: haiku
+    dispatch: local
+    output_format: json
+    prompt: |
+      Return mock audit data for validate-epic artifacts audit.
+
+      Output JSON with these exact fields:
+      {
+        "hard_gate_failures": 0,
+        "deploy_gates": "passed",
+        "test_artifact_gates": "passed",
+        "smoke_gate": "passed",
+        "json_path": "/tmp/validate-epic-stub-artifacts.json"
+      }
+
+      This is a stub implementation. GW-5314 will replace this with
+      real audit logic while preserving the output schema.

@@ -1,0 +1,38 @@
+---
+name: Validate Epic Audit Children (Stub)
+config:
+  checkpoint_prefix: vale-children
+  worktree: false
+
+inputs:
+  epic:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+outputs:
+  hard_gate_failures: {node: audit_stub, field: hard_gate_failures}
+  children_total: {node: audit_stub, field: children_total}
+  children_done: {node: audit_stub, field: children_done}
+  json_path: {node: audit_stub, field: json_path}
+
+nodes:
+  - id: audit_stub
+    name: Stub Children Audit
+    type: prompt
+    model: haiku
+    dispatch: local
+    output_format: json
+    prompt: |
+      Return mock audit data for validate-epic children audit.
+
+      Output JSON with these exact fields:
+      {
+        "hard_gate_failures": 0,
+        "children_total": 5,
+        "children_done": 5,
+        "json_path": "/tmp/validate-epic-stub-children.json"
+      }
+
+      This is a stub implementation. GW-5313 will replace this with
+      real audit logic while preserving the output schema.
