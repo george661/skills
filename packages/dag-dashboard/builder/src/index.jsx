@@ -13,6 +13,7 @@ import { YamlCodeView } from './YamlCodeView.jsx';
 import VersionDrawer from './VersionDrawer.jsx';
 import useVersionDrawer from './useVersionDrawer.js';
 import NodeLibrary from './NodeLibrary.jsx';
+import { useNodeInspector } from './useNodeInspector.js';
 
 function serializeMetadata({ name, description, provider, model }) {
     const lines = [];
@@ -77,6 +78,7 @@ function Builder() {
     const [model, setModel] = React.useState('');
     const [hasClientErrors, setHasClientErrors] = React.useState(false);
     const [allowDestructiveNodes, setAllowDestructiveNodes] = React.useState(false);
+    const [selectedNode, setSelectedNode] = React.useState(null);
 
     // GW-5253: viewport-aware layout. Mobile forces single-column canvas-only view
     // regardless of the user's selected viewMode. User selection is preserved so
@@ -167,12 +169,38 @@ function Builder() {
         return () => document.removeEventListener('keydown', handleKeyDown);
     }, [forceSave]);
 
+    // Listen for node selection from canvas (GW-5332)
+    React.useEffect(() => {
+        const handleNodeSelected = (e) => {
+            setSelectedNode(e.detail);
+        };
+        if (typeof document !== 'undefined') {
+            document.addEventListener('dag-builder:node-selected', handleNodeSelected);
+            return () => document.removeEventListener('dag-builder:node-selected', handleNodeSelected);
+        }
+    }, []);
+
     // Keep dagRef + dag state + autosave dirty flag in sync.
     const handleGraphChange = React.useCallback((nextDag) => {
         dagRef.current = nextDag;
         setDag(nextDag);
         markDirty();
     }, [markDirty]);
+
+    // Derive availableNodeIds for inspector's depends_on dropdown (GW-5332)
+    const availableNodeIds = React.useMemo(() => {
+        if (!selectedNode) return [];
+        return dag.filter(n => n.id !== selectedNode.id).map(n => n.id);
+    }, [dag, selectedNode]);
+
+    // Mount NodeInspector when node is selected (GW-5332)
+    const inspectorRef = React.useRef(null);
+    const inspectorInstanceRef = useNodeInspector({
+        selectedNode,
+        allowDestructive: allowDestructiveNodes,
+        availableNodeIds,
+        containerRef: inspectorRef,
+    });
 
     // Autosave-driven unsaved indicator.
     const hasUnsavedChanges = status === 'unsaved' || status === 'saving';
@@ -317,7 +345,7 @@ function Builder() {
                     <div
                         style={{
                             display: effectiveViewMode === 'full' ? 'none' : 'flex',
-                            flex: effectiveViewMode === 'split' ? '0 0 60%' : '1',
+                            flex: (effectiveViewMode === 'split' || (!isMobile && selectedNode)) ? '0 0 60%' : '1',
                             minWidth: 0,
                         }}
                     >
@@ -330,8 +358,22 @@ function Builder() {
                         />
                     </div>
 
-                    {/* YAML preview (GW-5250) — shown in split and full modes. Hidden on mobile. */}
-                    {effectiveViewMode !== 'hidden' && (
+                    {/* NodeInspector (GW-5332) — shown when node is selected. Hidden on mobile and when YAML is in full mode. */}
+                    {!isMobile && selectedNode && effectiveViewMode !== 'full' && (
+                        <div
+                            ref={inspectorRef}
+                            className="node-inspector"
+                            style={{
+                                flex: '0 0 40%',
+                                minWidth: 0,
+                                overflow: 'auto',
+                                borderLeft: '1px solid var(--border-primary, #333)',
+                            }}
+                        />
+                    )}
+
+                    {/* YAML preview (GW-5250) — shown in split and full modes. Hidden on mobile. Hidden when inspector is open. */}
+                    {effectiveViewMode !== 'hidden' && !selectedNode && (
                         <div
                             style={{
                                 flex: effectiveViewMode === 'split' ? '0 0 40%' : '1',

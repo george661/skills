@@ -30,6 +30,7 @@ function generateId(prefix) {
  *   onNodesDelete: Function,
  *   onEdgesDelete: Function,
  *   onDrop: Function,
+ *   updateNode: Function,
  *   undo: Function,
  *   redo: Function,
  *   canUndo: boolean,
@@ -72,10 +73,38 @@ export function useCanvasState(initialDag = [], opts = {}) {
         if (!Array.isArray(deleted) || deleted.length === 0) return;
         const deletedIds = new Set(deleted.map(e => e.id));
         const prev = history.state;
-        
+
         const next = {
             ...prev,
             edges: prev.edges.filter(e => !deletedIds.has(e.id)),
+        };
+        history.push(next);
+    }, [history]);
+
+    /**
+     * Updates an existing node's data.raw and data.name by id.
+     * @param {object} updatedNodeData - The complete updated node shape (must have id)
+     */
+    const updateNode = useCallback((updatedNodeData) => {
+        if (!updatedNodeData || !updatedNodeData.id) return;
+        const prev = history.state;
+        const nodeIndex = prev.nodes.findIndex(n => n.id === updatedNodeData.id);
+        if (nodeIndex === -1) return; // unknown id — no-op
+
+        const next = {
+            ...prev,
+            nodes: prev.nodes.map((node) =>
+                node.id === updatedNodeData.id
+                    ? {
+                        ...node,
+                        data: {
+                            ...node.data,
+                            name: updatedNodeData.name || node.data.name,
+                            raw: updatedNodeData,
+                        },
+                    }
+                    : node
+            ),
         };
         history.push(next);
     }, [history]);
@@ -149,6 +178,7 @@ export function useCanvasState(initialDag = [], opts = {}) {
         onNodesDelete,
         onEdgesDelete,
         onDrop,
+        updateNode,
         undo: history.undo,
         redo: history.redo,
         canUndo: history.canUndo,

@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import { create, act } from 'react-test-renderer';
 
+// Ensure window is available globally for component code that checks typeof window
+if (typeof window === 'undefined') {
+    global.window = {};
+}
+
 test('Builder: WorkflowCanvas receives loaded DAG via keyed remount', async () => {
     // This test verifies the keyed remount pattern by checking that:
     // 1. initialDag starts as null
@@ -217,4 +222,297 @@ test('Builder renders warning banner when allow_destructive=true', async () => {
 
     root.unmount();
     global.fetch = originalFetch;
+});
+
+// ===== NodeInspector Integration Tests (GW-5332) =====
+// These tests verify the event bridge between Builder and NodeInspector (via WorkflowCanvas).
+// They test the ACTUAL source code behavior by simulating the integration pattern.
+
+test('useNodeInspector: dispatches dag-builder:node-update event via onChange', async () => {
+    // Import and test the actual hook from src/useNodeInspector.js
+    const { useNodeInspector } = await import('../src/useNodeInspector.js');
+
+    // Setup mock environment
+    const eventListeners = {};
+    const originalDocument = global.document;
+    global.document = {
+        addEventListener: (event, handler) => {
+            if (!eventListeners[event]) eventListeners[event] = [];
+            eventListeners[event].push(handler);
+        },
+        removeEventListener: (event, handler) => {
+            if (eventListeners[event]) {
+                eventListeners[event] = eventListeners[event].filter(h => h !== handler);
+            }
+        },
+        dispatchEvent: (customEvent) => {
+            const handlers = eventListeners[customEvent.type] || [];
+            handlers.forEach(h => h(customEvent));
+        }
+    };
+
+    const originalCustomEvent = global.CustomEvent;
+    global.CustomEvent = function(type, options) {
+        this.type = type;
+        this.detail = options?.detail;
+    };
+
+    let capturedOnChange = null;
+    const originalNodeInspector = global.window?.NodeInspector;
+    global.window = global.window || {};
+    global.window.NodeInspector = function(props) {
+        capturedOnChange = props.onChange;
+        this.destroy = () => {};
+        this.update = () => {};
+    };
+
+    // Component that uses the actual hook
+    function TestComponent() {
+        const [selectedNode] = React.useState({ id: 'n1', name: 'node1', node_type: 'bash' });
+        const [refContainer] = React.useState({ nodeType: 'mock-dom-element' }); // Stable container
+        const containerRef = React.useRef(refContainer);
+
+        useNodeInspector({
+            selectedNode,
+            allowDestructive: false,
+            availableNodeIds: [],
+            containerRef
+        });
+
+        return React.createElement('div', null, 'Inspector Container');
+    }
+
+    let root;
+    let eventCaptured = null;
+
+    await act(async () => {
+        root = create(React.createElement(TestComponent));
+        await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    // Verify NodeInspector was instantiated
+    assert.ok(capturedOnChange, 'NodeInspector onChange callback should be captured');
+
+    // Setup listener for the event
+    const handler = (e) => { eventCaptured = e; };
+    global.document.addEventListener('dag-builder:node-update', handler);
+
+    // Simulate NodeInspector calling onChange (as it would when user edits)
+    await act(async () => {
+        capturedOnChange({ id: 'n1', name: 'updated-name', node_type: 'bash' });
+        await new Promise(resolve => setTimeout(resolve, 10));
+    });
+
+    // Verify the event was dispatched with correct detail
+    assert.ok(eventCaptured, 'dag-builder:node-update event should be dispatched');
+    assert.equal(eventCaptured.type, 'dag-builder:node-update');
+    assert.deepStrictEqual(eventCaptured.detail, { id: 'n1', name: 'updated-name', node_type: 'bash' });
+
+    // Cleanup
+    root.unmount();
+    global.window.NodeInspector = originalNodeInspector;
+    global.document = originalDocument;
+    global.CustomEvent = originalCustomEvent;
+});
+
+test('useNodeInspector: dispatches dag-builder:node-delete event via onDelete', async () => {
+    // Import and test the actual hook from src/useNodeInspector.js
+    const { useNodeInspector } = await import('../src/useNodeInspector.js');
+
+    const eventListeners = {};
+    const originalDocument = global.document;
+    global.document = {
+        addEventListener: (event, handler) => {
+            if (!eventListeners[event]) eventListeners[event] = [];
+            eventListeners[event].push(handler);
+        },
+        removeEventListener: (event, handler) => {
+            if (eventListeners[event]) {
+                eventListeners[event] = eventListeners[event].filter(h => h !== handler);
+            }
+        },
+        dispatchEvent: (customEvent) => {
+            const handlers = eventListeners[customEvent.type] || [];
+            handlers.forEach(h => h(customEvent));
+        }
+    };
+
+    const originalCustomEvent = global.CustomEvent;
+    global.CustomEvent = function(type, options) {
+        this.type = type;
+        this.detail = options?.detail;
+    };
+
+    let capturedOnDelete = null;
+    const originalNodeInspector = global.window?.NodeInspector;
+    global.window = global.window || {};
+    global.window.NodeInspector = function(props) {
+        capturedOnDelete = props.onDelete;
+        this.destroy = () => {};
+        this.update = () => {};
+    };
+
+    function TestComponent() {
+        const [selectedNode] = React.useState({ id: 'n1', name: 'node1', node_type: 'bash' });
+        const [refContainer] = React.useState({ nodeType: 'mock-dom-element' });
+        const containerRef = React.useRef(refContainer);
+
+        useNodeInspector({
+            selectedNode,
+            allowDestructive: false,
+            availableNodeIds: [],
+            containerRef
+        });
+
+        return React.createElement('div', null, 'Inspector Container');
+    }
+
+    let root;
+    let eventCaptured = null;
+
+    await act(async () => {
+        root = create(React.createElement(TestComponent));
+        await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    assert.ok(capturedOnDelete, 'NodeInspector onDelete callback should be captured');
+
+    const handler = (e) => { eventCaptured = e; };
+    global.document.addEventListener('dag-builder:node-delete', handler);
+
+    await act(async () => {
+        capturedOnDelete('n1');
+        await new Promise(resolve => setTimeout(resolve, 10));
+    });
+
+    assert.ok(eventCaptured, 'dag-builder:node-delete event should be dispatched');
+    assert.equal(eventCaptured.type, 'dag-builder:node-delete');
+    assert.equal(eventCaptured.detail, 'n1');
+
+    root.unmount();
+    global.window.NodeInspector = originalNodeInspector;
+    global.document = originalDocument;
+    global.CustomEvent = originalCustomEvent;
+});
+
+test('useCanvasEventBridge: listens for dag-builder:node-update event and calls updateNode', async () => {
+    // Import and test the actual hook from src/useCanvasEventBridge.js
+    const { useCanvasEventBridge } = await import('../src/useCanvasEventBridge.js');
+
+    const eventListeners = {};
+    const originalDocument = global.document;
+    global.document = {
+        addEventListener: (event, handler) => {
+            if (!eventListeners[event]) eventListeners[event] = [];
+            eventListeners[event].push(handler);
+        },
+        removeEventListener: (event, handler) => {
+            if (eventListeners[event]) {
+                eventListeners[event] = eventListeners[event].filter(h => h !== handler);
+            }
+        },
+        dispatchEvent: (customEvent) => {
+            const handlers = eventListeners[customEvent.type] || [];
+            handlers.forEach(h => h(customEvent));
+        }
+    };
+
+    const originalCustomEvent = global.CustomEvent;
+    global.CustomEvent = function(type, options) {
+        this.type = type;
+        this.detail = options?.detail;
+    };
+
+    let capturedUpdate = null;
+    const mockUpdateNode = (nodeData) => { capturedUpdate = nodeData; };
+
+    // Component that uses the actual hook
+    function TestComponent() {
+        const [updateNode] = React.useState(() => mockUpdateNode);
+
+        useCanvasEventBridge(updateNode, () => {});
+
+        return React.createElement('div', null, 'Canvas');
+    }
+
+    let root;
+    await act(async () => {
+        root = create(React.createElement(TestComponent));
+        await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    // Dispatch node-update event (as Builder's onChange would)
+    const updatedNode = { id: 'n1', name: 'updated', node_type: 'bash' };
+    await act(async () => {
+        global.document.dispatchEvent(new global.CustomEvent('dag-builder:node-update', { detail: updatedNode }));
+        await new Promise(resolve => setTimeout(resolve, 10));
+    });
+
+    // Verify updateNode was called with the event detail
+    assert.deepStrictEqual(capturedUpdate, updatedNode, 'updateNode should be called with event detail');
+
+    root.unmount();
+    global.document = originalDocument;
+    global.CustomEvent = originalCustomEvent;
+});
+
+test('useCanvasEventBridge: listens for dag-builder:node-delete event and calls onNodesDelete', async () => {
+    // Import and test the actual hook from src/useCanvasEventBridge.js
+    const { useCanvasEventBridge } = await import('../src/useCanvasEventBridge.js');
+
+    const eventListeners = {};
+    const originalDocument = global.document;
+    global.document = {
+        addEventListener: (event, handler) => {
+            if (!eventListeners[event]) eventListeners[event] = [];
+            eventListeners[event].push(handler);
+        },
+        removeEventListener: (event, handler) => {
+            if (eventListeners[event]) {
+                eventListeners[event] = eventListeners[event].filter(h => h !== handler);
+            }
+        },
+        dispatchEvent: (customEvent) => {
+            const handlers = eventListeners[customEvent.type] || [];
+            handlers.forEach(h => h(customEvent));
+        }
+    };
+
+    const originalCustomEvent = global.CustomEvent;
+    global.CustomEvent = function(type, options) {
+        this.type = type;
+        this.detail = options?.detail;
+    };
+
+    let capturedDeletes = null;
+    const mockOnNodesDelete = (nodes) => { capturedDeletes = nodes; };
+
+    // Component that uses the actual hook
+    function TestComponent() {
+        const [onNodesDelete] = React.useState(() => mockOnNodesDelete);
+
+        useCanvasEventBridge(() => {}, onNodesDelete);
+
+        return React.createElement('div', null, 'Canvas');
+    }
+
+    let root;
+    await act(async () => {
+        root = create(React.createElement(TestComponent));
+        await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    // Dispatch node-delete event (as Builder's onDelete would)
+    const nodeId = 'n1';
+    await act(async () => {
+        global.document.dispatchEvent(new global.CustomEvent('dag-builder:node-delete', { detail: nodeId }));
+        await new Promise(resolve => setTimeout(resolve, 10));
+    });
+
+    // Verify onNodesDelete was called with wrapped node id
+    assert.deepStrictEqual(capturedDeletes, [{ id: nodeId }], 'onNodesDelete should be called with wrapped node id');
+
+    root.unmount();
+    global.document = originalDocument;
+    global.CustomEvent = originalCustomEvent;
 });
