@@ -126,7 +126,7 @@ nodes:
           case "$issuetype" in
             "Story"|"Bug")
               # Warning for Story/Bug without PR
-              gates_pr_merged="\"warning\""
+              gates_pr_merged='"warning"'
               flags=$(echo "$flags" | jq '. + ["missing_pr_for_story"]')
               ;;
             "Task"|"Sub-task"|"Spike")
@@ -139,8 +139,8 @@ nodes:
         # Gate D: Validation Report
         issue_data=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$key\", \"fields\": \"comment\"}" 2>/dev/null || echo '{}')
         
-        # Check for validation report in comments
-        has_report=$(echo "$issue_data" | jq -r '.fields.comment.comments[]?.body.content[]?.content[]?.text // empty' 2>/dev/null | grep -c "## Validation Report" || echo "0")
+        # Check for validation report in comments (recursive search catches nested ADF)
+        has_report=$(echo "$issue_data" | jq -r '.. | .text? // empty' | grep -c "## Validation Report" || echo "0")
         
         if [ "$has_report" -gt 0 ]; then
           gates_validation_report="true"
@@ -159,7 +159,7 @@ nodes:
           flags=$(echo "$flags" | jq '. + ["stale_step_label"]')
         fi
         
-        # Label consistency gate
+        # Label consistency gate (placeholder — always passes for now)
         gates_labels_clean="true"
         
         # Build child record
@@ -169,7 +169,7 @@ nodes:
           --arg status "$status" \
           --argjson gates_status_done "$gates_status_done" \
           --argjson gates_outcome_clean "$gates_outcome_clean" \
-          --arg gates_pr_merged "$gates_pr_merged" \
+          --argjson gates_pr_merged "$gates_pr_merged" \
           --argjson gates_validation_report "$gates_validation_report" \
           --argjson gates_labels_clean "$gates_labels_clean" \
           --argjson flags "$flags" \
@@ -270,7 +270,6 @@ nodes:
         }'
     output_format: json
     reads:
-      - children_list
       - audit_results
     writes:
       - aggregate_summary
