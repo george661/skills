@@ -1,9 +1,13 @@
 """
-Provider-swap test: verify workflows use unified skill paths.
+Skill-path sanity test: verify shipped workflows only reference skill dirs
+that actually exist in ~/.claude/skills.
 
-This test ensures all 5 DAG workflows (work, review, plan, validate, implement)
-use provider-agnostic skill paths (skills/vcs/, skills/issues/, skills/ci/)
-rather than provider-specific paths (skills/bitbucket/, skills/jira/, etc.).
+GW-5356: earlier revisions asserted an aspirational unified-router scheme
+(skills/issues/, skills/ci/) that was never implemented. The live tree is a
+mix of provider-specific dirs (jira/, concourse/, bitbucket/) and some real
+unified aliases (vcs/). This test enforces "reference a real dir" rather than
+any particular architectural preference — callers that discover a workflow
+should be able to invoke its skill commands without ERR_MODULE_NOT_FOUND.
 """
 
 import re
@@ -12,28 +16,29 @@ from typing import List, Set
 import yaml
 import pytest
 
-# Known gaps — provider-specific paths that haven't been migrated yet
-# All skills have been migrated to unified routers as of GW-5050
-KNOWN_GAPS: List[str] = []
-
-# Unified skill path prefixes (provider-agnostic)
-UNIFIED_PREFIXES = [
-    "skills/vcs/",
-    "skills/issues/",
-    "skills/ci/",
-]
-
-# Provider-specific skill paths (should NOT be used)
-PROVIDER_SPECIFIC_PREFIXES = [
-    "skills/bitbucket/",
+# Skill directories that actually ship today. Kept in sync with the live
+# tree under ~/.claude/skills and this repo's skills/ directory.
+KNOWN_SKILL_DIRS = {
     "skills/jira/",
-    "skills/concourse/",
-    "skills/fly/",  # allowed only for KNOWN_GAPS
+    "skills/bitbucket/",
     "skills/github/",
-    "skills/github-mcp/",
-    "skills/github-actions/",
+    "skills/concourse/",
+    "skills/fly/",
+    "skills/vcs/",        # real hybrid router (PR ops)
+    "skills/ci/",         # real hybrid router (build/CI ops)
+    "skills/playwright/",
+    "skills/slack/",
+    "skills/agentdb/",
+    "skills/domain-map/",
+    "skills/cml/",
     "skills/linear/",
-]
+}
+
+# Aspirational alias dirs that were specified in prior tickets (GW-5045) but
+# never shipped. References to these will hard-fail at runtime.
+NEVER_SHIPPED_ALIASES = {
+    "skills/issues/",
+}
 
 WORKFLOW_DIR = Path(__file__).parent.parent / "workflows"
 WORKFLOW_NAMES = ["work", "review", "plan", "validate", "implement"]
@@ -85,69 +90,67 @@ def find_skill_paths(scripts: List[str]) -> Set[str]:
     return skill_paths
 
 
-def categorize_skill_paths(skill_paths: Set[str]) -> dict:
-    """Categorize skill paths as unified, provider-specific, or other."""
-    categorized: dict = {
-        "unified": [],
-        "provider_specific": [],
-        "known_gaps": [],
-        "other": [],
-    }
-    
-    for path in skill_paths:
-        if path in KNOWN_GAPS:
-            categorized["known_gaps"].append(path)
-        elif any(path.startswith(prefix) for prefix in UNIFIED_PREFIXES):
-            categorized["unified"].append(path)
-        elif any(path.startswith(prefix) for prefix in PROVIDER_SPECIFIC_PREFIXES):
-            categorized["provider_specific"].append(path)
-        else:
-            categorized["other"].append(path)
-    
-    return categorized
-
-
 @pytest.mark.parametrize("workflow_name", WORKFLOW_NAMES)
-def test_workflow_uses_unified_skill_paths(workflow_name):
-    """Verify workflow uses only unified skill paths (no provider-specific)."""
+def test_workflow_uses_real_skill_paths(workflow_name):
+    """Every skill path referenced by a workflow must exist in KNOWN_SKILL_DIRS.
+
+    Prevents the GW-5356 class of bug: a workflow compiles clean at lint time
+    but calls `npx tsx ~/.claude/skills/<alias>/foo.ts` where <alias> is not
+    a real directory, so the node silently fails at runtime.
+    """
     workflow = load_workflow(workflow_name)
     scripts = extract_bash_scripts(workflow)
     skill_paths = find_skill_paths(scripts)
-    categorized = categorize_skill_paths(skill_paths)
-    
-    # All provider-specific paths should be in KNOWN_GAPS
-    unexpected_provider_specific = [
-        p for p in categorized["provider_specific"]
-        if p not in KNOWN_GAPS
+
+    unknown = [
+        p for p in sorted(skill_paths)
+        if not any(p.startswith(prefix) for prefix in KNOWN_SKILL_DIRS)
     ]
-    
-    assert not unexpected_provider_specific, (
-        f"Workflow {workflow_name} uses provider-specific skill paths "
-        f"that are not in KNOWN_GAPS: {unexpected_provider_specific}"
+    never_shipped = [
+        p for p in sorted(skill_paths)
+        if any(p.startswith(prefix) for prefix in NEVER_SHIPPED_ALIASES)
+    ]
+
+    assert not never_shipped, (
+        f"Workflow {workflow_name} references aliases that were never "
+        f"implemented: {never_shipped}"
+    )
+    assert not unknown, (
+        f"Workflow {workflow_name} references skill paths that aren't in "
+        f"KNOWN_SKILL_DIRS: {unknown}. Either the path is wrong or the "
+        f"registry in test_provider_swap.py needs updating."
     )
 
 
-def test_known_gaps_exist():
-    """Verify KNOWN_GAPS are actually present in the workflows."""
-    # If KNOWN_GAPS is empty, all migrations are complete — test passes
-    if not KNOWN_GAPS:
-        pytest.skip("All provider-specific skills have been migrated to unified routers")
+def test_known_skill_dirs_exist_on_disk():
+    """Every entry in KNOWN_SKILL_DIRS must exist under ~/.claude/skills or
+    this repo's skills/ tree. Keeps the registry honest."""
+    home_skills = Path.home() / ".claude" / "skills"
+    repo_skills = Path(__file__).parent.parent.parent.parent / "skills"
 
-    all_skill_paths = set()
+    missing = []
+    for entry in sorted(KNOWN_SKILL_DIRS):
+        dirname = entry.removeprefix("skills/").rstrip("/")
+        if not ((home_skills / dirname).is_dir() or (repo_skills / dirname).is_dir()):
+            missing.append(entry)
+
+    assert not missing, (
+        f"KNOWN_SKILL_DIRS contains entries that don't exist on disk: {missing}"
+    )
+
+
+def _legacy_known_gaps_placeholder():
+    """Stub retained so any external harness that imports this module by
+    attribute name (rare) doesn't crash. Can be deleted in a future pass."""
+    all_skill_paths: Set[str] = set()
 
     for workflow_name in WORKFLOW_NAMES:
         workflow = load_workflow(workflow_name)
         scripts = extract_bash_scripts(workflow)
         skill_paths = find_skill_paths(scripts)
         all_skill_paths.update(skill_paths)
-
-    found_gaps = [gap for gap in KNOWN_GAPS if gap in all_skill_paths]
-
-    # At least one known gap should exist (otherwise test expectation is stale)
-    assert found_gaps, (
-        f"KNOWN_GAPS are documented but not found in workflows. "
-        f"Expected gaps: {KNOWN_GAPS}, Found: {found_gaps}"
-    )
+    # Body retained only for symbol stability; no assertion.
+    _ = all_skill_paths
 
 
 def test_all_workflows_parse():
@@ -175,20 +178,7 @@ def test_skill_path_coverage():
     )
 
 
-def test_unified_paths_are_used():
-    """Verify at least one workflow uses unified skill paths."""
-    all_skill_paths = set()
-    
-    for workflow_name in WORKFLOW_NAMES:
-        workflow = load_workflow(workflow_name)
-        scripts = extract_bash_scripts(workflow)
-        skill_paths = find_skill_paths(scripts)
-        all_skill_paths.update(skill_paths)
-    
-    categorized = categorize_skill_paths(all_skill_paths)
-    
-    # At least one unified path should be used
-    assert categorized["unified"], (
-        f"No unified skill paths found. This suggests workflows haven't adopted "
-        f"the router pattern yet. Found: {sorted(all_skill_paths)}"
-    )
+# test_unified_paths_are_used removed in GW-5356: it asserted the existence
+# of a unified-router scheme that never shipped in full. The `skills/vcs/`
+# and `skills/ci/` routers that did ship are counted by
+# test_workflow_uses_real_skill_paths via KNOWN_SKILL_DIRS.

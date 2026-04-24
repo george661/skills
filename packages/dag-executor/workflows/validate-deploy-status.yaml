@@ -40,7 +40,7 @@ nodes:
     name: Load Issue Data
     type: bash
     script: |
-      npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"summary,status,labels,description\"}"
+      npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"summary,status,labels,description\"}"
     output_format: json
     writes:
       - issue_data
@@ -59,7 +59,7 @@ nodes:
       fi
       
       # Get latest builds for the repo
-      npx tsx ~/.claude/skills/ci/list_builds.ts "{\"pipeline\": \"$repo\", \"limit\": 5}"
+      npx tsx ~/.claude/skills/concourse/list_builds.ts "{\"pipeline\": \"$repo\", \"limit\": 5}"
     output_format: json
     reads:
       - issue_data

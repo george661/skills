@@ -223,21 +223,21 @@ class TestExitHooksAndFailureHandling:
         assert gate.on_failure == OnFailure.CONTINUE
 
 
-class TestIssuesRouterUsage:
-    """Test 6: All Jira operations use issues/ router (GW-5045 requirement)."""
+class TestSkillPaths:
+    """Test 6: Skill invocations reference real skill directories.
 
-    def test_no_direct_jira_refs(self, workflow: WorkflowDef) -> None:
-        """groom.yaml should have zero ~/.claude/skills/jira/ references."""
+    GW-5356: the prior TestIssuesRouterUsage asserted a `skills/issues/`
+    alias that was never implemented (GW-5045 requirement never shipped).
+    The live Jira skills live at `skills/jira/`.
+    """
+
+    def test_uses_real_skill_paths(self, workflow: WorkflowDef) -> None:
         with open(WORKFLOW_PATH, 'r') as f:
             content = f.read()
-        
-        # Should NOT have direct jira/ skill references
-        assert '/.claude/skills/jira/' not in content, \
-            "Found direct jira/ skill reference - must use issues/ router"
-        
-        # Should have issues/ router references
-        assert '/.claude/skills/issues/' in content, \
-            "No issues/ router references found - required for Jira ops"
+        assert '/.claude/skills/jira/' in content, \
+            "groom workflow must drive Jira through ~/.claude/skills/jira/"
+        assert '/.claude/skills/issues/' not in content, \
+            "skills/issues/ alias was never implemented"
 
 
 class TestBashNodeEnvironmentVariables:

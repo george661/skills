@@ -43,6 +43,9 @@ htmlcov/
 /test-*/
 /vale/
 /validate-run-tests/
+/validate-epic-audit-children/
+/validate-epic-audit-artifacts/
+/Validate*/
 implementation-plan.md
 
 # Playwright

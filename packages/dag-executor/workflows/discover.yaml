@@ -106,7 +106,7 @@ nodes:
       Run these searches and aggregate results:
 
       1. Jira epics — derive 2-3 keywords from the idea, then:
-         cd $PROJECT_ROOT && npx tsx ~/.claude/skills/issues/search_issues.ts \
+         cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
            '{"jql": "project = ${TENANT_PROJECT} AND issuetype = Epic AND status != Done AND text ~ \"<keyword>\"", "fields": ["key","summary","status"]}'
 
       2. Roadmap initiatives — read the roadmap file and grep for the keywords:
@@ -263,7 +263,7 @@ nodes:
         '{project: $project, issue_type: "Epic", summary: $summary, description: $description, labels: ["tier:1-epic", "status:proposed"]}')
 
       # Create epic using issues router
-      result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "$request")
+      result=$(npx tsx ~/.claude/skills/jira/create_issue.ts "$request")
 
       epic_key=$(echo "$result" | jq -r '.key')
 

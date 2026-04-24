@@ -80,7 +80,7 @@ nodes:
       
       Search for potential parent Epics if needed:
       ```bash
-      npx tsx ~/.claude/skills/issues/search_issues.ts '{"jql": "project = ${TENANT_PROJECT} AND issuetype = Epic AND text ~ \"<search-term>\"", "max_results": 5}'
+      npx tsx ~/.claude/skills/jira/search_issues.ts '{"jql": "project = ${TENANT_PROJECT} AND issuetype = Epic AND text ~ \"<search-term>\"", "max_results": 5}'
       ```
       
       Output as JSON: {"issue_type": "Epic|Epic-child|standalone", "parent_key": "GW-XXXX or null"}
@@ -103,7 +103,7 @@ nodes:
       
       Use the issues router to search existing issues:
       ```bash
-      npx tsx ~/.claude/skills/issues/search_issues.ts '{"jql": "project = ${TENANT_PROJECT} AND text ~ \"${refinement_refined_summary}\"", "max_results": 5}'
+      npx tsx ~/.claude/skills/jira/search_issues.ts '{"jql": "project = ${TENANT_PROJECT} AND text ~ \"${refinement_refined_summary}\"", "max_results": 5}'
       ```
       
       Determine if this is a duplicate of an existing issue.
@@ -138,21 +138,21 @@ nodes:
       
       # Create issue
       if [ "$issue_type" = "Epic" ]; then
-        issue_result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "{\"project_key\": \"${TENANT_PROJECT}\", \"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Epic\", \"labels\": [\"step:backlog\"]}")
+        issue_result=$(npx tsx ~/.claude/skills/jira/create_issue.ts "{\"project_key\": \"${TENANT_PROJECT}\", \"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Epic\", \"labels\": [\"step:backlog\"]}")
       elif [ "$issue_type" = "Epic-child" ] && [ -n "$parent_key" ]; then
-        issue_result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "{\"project_key\": \"${TENANT_PROJECT}\", \"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Story\", \"labels\": [\"step:backlog\"], \"parent\": \"$parent_key\"}")
+        issue_result=$(npx tsx ~/.claude/skills/jira/create_issue.ts "{\"project_key\": \"${TENANT_PROJECT}\", \"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Story\", \"labels\": [\"step:backlog\"], \"parent\": \"$parent_key\"}")
       else
-        issue_result=$(npx tsx ~/.claude/skills/issues/create_issue.ts "{\"project_key\": \"${TENANT_PROJECT}\", \"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Task\", \"labels\": [\"step:backlog\"]}")
+        issue_result=$(npx tsx ~/.claude/skills/jira/create_issue.ts "{\"project_key\": \"${TENANT_PROJECT}\", \"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"Task\", \"labels\": [\"step:backlog\"]}")
       fi
       
       issue_key=$(echo "$issue_result" | jq -r '.key')
       
       # Transition to To Do
-      transitions=$(npx tsx ~/.claude/skills/issues/list_transitions.ts "{\"issue_key\": \"$issue_key\"}")
+      transitions=$(npx tsx ~/.claude/skills/jira/list_transitions.ts "{\"issue_key\": \"$issue_key\"}")
       transition_id=$(echo "$transitions" | jq -r '.transitions[] | select(.name == "To Do") | .id')
-      npx tsx ~/.claude/skills/issues/transition_issue.ts "{\"issue_key\": \"$issue_key\", \"transition_id\": \"$transition_id\"}"
+      npx tsx ~/.claude/skills/jira/transition_issue.ts "{\"issue_key\": \"$issue_key\", \"transition_id\": \"$transition_id\"}"
       
       # Update labels
-      npx tsx ~/.claude/skills/issues/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": [\"step:to-do\", \"outcome:success-issue-created\"], \"notify_users\": false}"
+      npx tsx ~/.claude/skills/jira/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": [\"step:to-do\", \"outcome:success-issue-created\"], \"notify_users\": false}"
       
       echo "{\"issue_key\": \"$issue_key\", \"status\": \"complete\"}"

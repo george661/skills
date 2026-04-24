@@ -158,18 +158,22 @@ class TestConditionalEdge:
             "Default edge must route to finalize"
 
 
-class TestIssuesRouter:
-    """Test 7: Issues router usage for Jira operations."""
+class TestSkillPaths:
+    """Test 7: Skill invocations reference real skill directories.
 
-    def test_create_epic_uses_issues_router(self, nodes_by_id: Dict[str, NodeDef]) -> None:
-        """create_epic node script calls skills/issues/create_issue.ts (not skills/jira/)."""
+    GW-5356: the prior test asserted a `skills/issues/` router alias that was
+    never implemented. The live create_issue skill lives at
+    `~/.claude/skills/jira/create_issue.ts`.
+    """
+
+    def test_create_epic_calls_real_skill(self, nodes_by_id: Dict[str, NodeDef]) -> None:
         create_epic = nodes_by_id["create_epic"]
         assert hasattr(create_epic, 'script') and create_epic.script, \
             "create_epic must have a script"
-        assert "skills/issues/create_issue.ts" in create_epic.script, \
-            "create_epic must call skills/issues/create_issue.ts"
-        assert "skills/jira/" not in create_epic.script, \
-            "create_epic must NOT call skills/jira/ directly (use issues router)"
+        assert "skills/jira/create_issue.ts" in create_epic.script, \
+            "create_epic must call ~/.claude/skills/jira/create_issue.ts"
+        assert "skills/issues/" not in create_epic.script, \
+            "skills/issues/ alias was never implemented"
 
 
 class TestExecutionWiring:

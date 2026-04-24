@@ -49,9 +49,9 @@ nodes:
       cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts \
         "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"groom-$epic_key\", \"k\": 3}"
       # Set step label on Jira
-      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
       labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("step:") | not)) + ["step:grooming"] | @json')
-      npx tsx ~/.claude/skills/issues/update_issue.ts "{\"issue_key\": \"$epic_key\", \"labels\": $labels, \"notify_users\": false}"
+      npx tsx ~/.claude/skills/jira/update_issue.ts "{\"issue_key\": \"$epic_key\", \"labels\": $labels, \"notify_users\": false}"
 
   # ──────────────────────────────────────────────────────────
   # Phase 0.5: Design Discovery
@@ -83,16 +83,16 @@ nodes:
     output_format: json
     script: |
       # Fetch Epic details
-      epic=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
+      epic=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
         "{\"issue_key\": \"$epic_key\", \"fields\": \"summary,description,labels,status,issuelinks,comment\"}")
       
       # Verify Epic status is GROOMING (or transition to it)
       current_status=$(echo "$epic" | jq -r '.fields.status.name')
       if [ "$current_status" != "GROOMING" ]; then
-        transitions=$(npx tsx ~/.claude/skills/issues/list_transitions.ts "{\"issue_key\": \"$epic_key\"}")
+        transitions=$(npx tsx ~/.claude/skills/jira/list_transitions.ts "{\"issue_key\": \"$epic_key\"}")
         groom_transition=$(echo "$transitions" | jq -r '.transitions[] | select(.name == "GROOMING") | .id')
         if [ -n "$groom_transition" ]; then
-          npx tsx ~/.claude/skills/issues/transition_issue.ts "{\"issue_key\": \"$epic_key\", \"transition_id\": \"$groom_transition\"}"
+          npx tsx ~/.claude/skills/jira/transition_issue.ts "{\"issue_key\": \"$epic_key\", \"transition_id\": \"$groom_transition\"}"
         fi
       fi
       
@@ -276,7 +276,7 @@ nodes:
         priority=$(echo "$issue_def" | jq -r '.priority // "Medium"')
         labels=$(echo "$issue_def" | jq -r '.labels | @json')
         
-        created_issue=$(npx tsx ~/.claude/skills/issues/create_issue.ts \
+        created_issue=$(npx tsx ~/.claude/skills/jira/create_issue.ts \
           "{\"project_key\": \"${TENANT_PROJECT}\", \"summary\": \"$summary\", \"description\": \"$description\", \"issue_type\": \"$issue_type\", \"priority\": \"$priority\", \"labels\": $labels}")
         
         issue_key=$(echo "$created_issue" | jq -r '.key')
@@ -305,11 +305,11 @@ nodes:
         tier=$(echo "$issue" | jq -r '.tier')
         
         # Get current labels and add tier label
-        current=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$key\", \"fields\": \"labels\"}")
+        current=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$key\", \"fields\": \"labels\"}")
         labels=$(echo "$current" | jq -r ".fields.labels // [] | . + [\"tier:$tier\"] | unique | @json")
         
         # Update labels
-        npx tsx ~/.claude/skills/issues/update_issue.ts \
+        npx tsx ~/.claude/skills/jira/update_issue.ts \
           "{\"issue_key\": \"$key\", \"labels\": $labels, \"notify_users\": false}"
       done
 
@@ -337,7 +337,7 @@ nodes:
         echo "$task" | jq -c '.blocks[]' | while read -r blocked_id; do
           blocked_key=$(echo "$issues" | jq -r ".[] | select(.task_id == \"$blocked_id\") | .key")
           
-          npx tsx ~/.claude/skills/issues/add_issue_link.ts \
+          npx tsx ~/.claude/skills/jira/add_issue_link.ts \
             "{\"inward_issue_key\": \"$blocker_key\", \"outward_issue_key\": \"$blocked_key\", \"link_type\": \"Blocks\"}"
         done
       done
@@ -448,11 +448,11 @@ nodes:
       echo "$DAG_ISSUE_LIST" | jq -c '.[]' | while read -r issue; do
         key=$(echo "$issue" | jq -r '.key')
         
-        transitions=$(npx tsx ~/.claude/skills/issues/list_transitions.ts "{\"issue_key\": \"$key\"}")
+        transitions=$(npx tsx ~/.claude/skills/jira/list_transitions.ts "{\"issue_key\": \"$key\"}")
         todo_transition=$(echo "$transitions" | jq -r '.transitions[] | select(.name == "To Do") | .id')
         
         if [ -n "$todo_transition" ]; then
-          npx tsx ~/.claude/skills/issues/transition_issue.ts \
+          npx tsx ~/.claude/skills/jira/transition_issue.ts \
             "{\"issue_key\": \"$key\", \"transition_id\": \"$todo_transition\"}"
         fi
       done
@@ -488,7 +488,7 @@ nodes:
         comment+="\n"
       done
       
-      npx tsx ~/.claude/skills/issues/add_comment.ts \
+      npx tsx ~/.claude/skills/jira/add_comment.ts \
         "{\"issue_key\": \"$epic_key\", \"body\": \"$comment\"}"
 
   # ──────────────────────────────────────────────────────────
@@ -524,18 +524,18 @@ nodes:
       - evaluate_completeness
     script: |
       # Transition Epic to "Groomed" status
-      transitions=$(npx tsx ~/.claude/skills/issues/list_transitions.ts "{\"issue_key\": \"$epic_key\"}")
+      transitions=$(npx tsx ~/.claude/skills/jira/list_transitions.ts "{\"issue_key\": \"$epic_key\"}")
       groomed_transition=$(echo "$transitions" | jq -r '.transitions[] | select(.name == "Groomed" or .name == "GROOMED") | .id')
       
       if [ -n "$groomed_transition" ]; then
-        npx tsx ~/.claude/skills/issues/transition_issue.ts \
+        npx tsx ~/.claude/skills/jira/transition_issue.ts \
           "{\"issue_key\": \"$epic_key\", \"transition_id\": \"$groomed_transition\"}"
       fi
       
       # Add outcome label
-      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$epic_key\", \"fields\": \"labels\"}")
       labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("outcome:") | not)) + ["outcome:success-groomed"] | @json')
-      npx tsx ~/.claude/skills/issues/update_issue.ts \
+      npx tsx ~/.claude/skills/jira/update_issue.ts \
         "{\"issue_key\": \"$epic_key\", \"labels\": $labels, \"notify_users\": false}"
 
   # ──────────────────────────────────────────────────────────

@@ -50,7 +50,7 @@ nodes:
       # Escape for JSON
       report_json=$(jq -n --arg body "$report_body" '{body: $body}')
       
-      npx tsx ~/.claude/skills/issues/add_comment.ts "{\"issue_key\": \"$issue_key\", \"body\": $(echo "$report_json" | jq -r .body)}"
+      npx tsx ~/.claude/skills/jira/add_comment.ts "{\"issue_key\": \"$issue_key\", \"body\": $(echo "$report_json" | jq -r .body)}"
       
       echo '{"report_posted": true}'
     output_format: json

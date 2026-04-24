@@ -38,7 +38,7 @@ nodes:
     type: bash
     script: |
       # Phase 1: Fetch children using JQL
-      children=$(npx tsx ~/.claude/skills/issues/search_issues.ts \
+      children=$(npx tsx ~/.claude/skills/jira/search_issues.ts \
         "{\"jql\": \"parent = $epic\", \"fields\": [\"key\",\"summary\",\"status\",\"labels\",\"priority\",\"issuelinks\",\"issuetype\"]}")
       
       # Check if empty
@@ -137,7 +137,7 @@ nodes:
         fi
         
         # Gate D: Validation Report
-        issue_data=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$key\", \"fields\": \"comment\"}" 2>/dev/null || echo '{}')
+        issue_data=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$key\", \"fields\": \"comment\"}" 2>/dev/null || echo '{}')
         
         # Check for validation report in comments (recursive search catches nested ADF)
         has_report=$(echo "$issue_data" | jq -r '.. | .text? // empty' | grep -c "## Validation Report" || echo "0")

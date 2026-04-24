@@ -40,7 +40,7 @@ nodes:
     name: Load Criteria
     type: bash
     script: |
-      npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"description,comment\"}"
+      npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"description,comment\"}"
     output_format: json
     writes:
       - criteria
