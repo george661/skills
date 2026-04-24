@@ -349,26 +349,31 @@ nodes:
     type: bash
     depends_on:
       - transition_epic
+    # Episode storage is bookkeeping — a failure here should not block
+    # the print_summary tail or fail the whole workflow.
+    on_failure: continue
     reads:
       - verdict
     script: |
-      # GW-5356: build the JSON payload with jq so upstream dict/string
-      # values from $verdict (a channel read) get properly JSON-encoded
-      # instead of being interpolated as bare Python repr into a shell
-      # double-quoted string.
+      # GW-5356: build the payload with jq so string values are
+      # properly JSON-encoded. The verdict channel holds the scalar
+      # verdict string ("APPROVED" | "INCOMPLETE" | "BLOCKED") because
+      # the prompt runner spreads dict keys onto matching state
+      # channels; the report_path and summary from produce_verdict's
+      # output aren't declared as channels and aren't available here.
       payload=$(jq -nc \
         --arg session "${TENANT_NAMESPACE:-default}" \
         --arg task "validate-epic-$epic" \
         --arg epic "$epic" \
-        --argjson verdict "$verdict" \
+        --arg verdict "$verdict" \
         '{
           session_id: $session,
           task: $task,
-          input: {epic: $epic, verdict: $verdict.verdict},
-          output: $verdict.summary,
-          reward: 1,
-          success: true,
-          critique: "Validation complete"
+          input: {epic: $epic, verdict: $verdict},
+          output: ("validate-epic verdict: " + $verdict),
+          reward: (if $verdict == "APPROVED" then 1 else 0 end),
+          success: ($verdict == "APPROVED"),
+          critique: ("Validation verdict: " + $verdict)
         }')
       npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "$payload"
 
