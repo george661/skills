@@ -48,7 +48,7 @@ function CanvasInner({
     );
 
     const state = useCanvasState(initialDag, { flowToPosition });
-    const { nodes, edges, onConnect, onNodesDelete, onEdgesDelete, onDrop, undo, redo, toDag } = state;
+    const { nodes, edges, onConnect, onNodesDelete, onEdgesDelete, onDrop, updateNode, undo, redo, toDag } = state;
 
     const nodeTypes = useMemo(() => makeNodeTypes({ readOnly }), [readOnly]);
 
@@ -83,6 +83,28 @@ function CanvasInner({
             if (typeof window !== 'undefined') window.removeEventListener('dag-builder:undo', handler);
         };
     }, [undo]);
+
+    // Listen for node-update event from inspector
+    useEffect(() => {
+        const handler = (e) => {
+            if (e.detail && updateNode) updateNode(e.detail);
+        };
+        if (typeof document !== 'undefined') document.addEventListener('dag-builder:node-update', handler);
+        return () => {
+            if (typeof document !== 'undefined') document.removeEventListener('dag-builder:node-update', handler);
+        };
+    }, [updateNode]);
+
+    // Listen for node-delete event from inspector
+    useEffect(() => {
+        const handler = (e) => {
+            if (e.detail && onNodesDelete) onNodesDelete([{ id: e.detail }]);
+        };
+        if (typeof document !== 'undefined') document.addEventListener('dag-builder:node-delete', handler);
+        return () => {
+            if (typeof document !== 'undefined') document.removeEventListener('dag-builder:node-delete', handler);
+        };
+    }, [onNodesDelete]);
 
     const onDragOver = useCallback((event) => {
         event.preventDefault();

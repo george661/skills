@@ -215,3 +215,56 @@ test('51 consecutive connects, then 50 undos, final state equals state after sec
     
     root.unmount();
 });
+
+test('updateNode updates existing node data.raw and data.name', () => {
+    const ref = { current: null };
+    const initialDag = [
+        { id: 'a', name: 'node_a', node_type: 'bash', script: 'echo a' },
+        { id: 'b', name: 'node_b', node_type: 'prompt' },
+    ];
+    const root = harnessWith(initialDag, ref);
+
+    const updatedNode = { id: 'a', name: 'renamed_a', node_type: 'bash', script: 'echo updated' };
+    act(() => { ref.current.updateNode(updatedNode); });
+
+    const nodeA = ref.current.nodes.find(n => n.id === 'a');
+    assert.ok(nodeA, 'node a should still exist');
+    assert.equal(nodeA.data.name, 'renamed_a');
+    assert.deepEqual(nodeA.data.raw, updatedNode);
+
+    root.unmount();
+});
+
+test('updateNode is a no-op for unknown ids', () => {
+    const ref = { current: null };
+    const initialDag = [{ id: 'a', name: 'node_a', node_type: 'bash' }];
+    const root = harnessWith(initialDag, ref);
+
+    const before = ref.current.nodes.length;
+    const unknownNode = { id: 'nonexistent', name: 'fake', node_type: 'bash' };
+    act(() => { ref.current.updateNode(unknownNode); });
+
+    assert.equal(ref.current.nodes.length, before);
+    assert.ok(!ref.current.nodes.some(n => n.id === 'nonexistent'));
+
+    root.unmount();
+});
+
+test('updateNode pushes undo history (undo restores prior state)', () => {
+    const ref = { current: null };
+    const initialDag = [{ id: 'a', name: 'original', node_type: 'bash', script: 'echo original' }];
+    const root = harnessWith(initialDag, ref);
+
+    const originalName = ref.current.nodes[0].data.name;
+    const updatedNode = { id: 'a', name: 'updated', node_type: 'bash', script: 'echo updated' };
+    act(() => { ref.current.updateNode(updatedNode); });
+
+    assert.equal(ref.current.nodes[0].data.name, 'updated');
+    assert.equal(ref.current.canUndo, true);
+
+    act(() => { ref.current.undo(); });
+
+    assert.equal(ref.current.nodes[0].data.name, originalName);
+
+    root.unmount();
+});
