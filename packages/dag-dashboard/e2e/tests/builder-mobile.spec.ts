@@ -55,8 +55,15 @@ test.describe('builder at desktop (regression)', () => {
   });
 });
 
+const iPadMini = devices['iPad Mini'];
 test.describe('builder at iPad portrait (768×1024)', () => {
-  test.use({ ...devices['iPad Mini'], viewport: { width: 768, height: 1024 } });
+  test.use({
+    viewport: { width: 768, height: 1024 },
+    userAgent: iPadMini.userAgent,
+    deviceScaleFactor: iPadMini.deviceScaleFactor,
+    isMobile: iPadMini.isMobile,
+    hasTouch: iPadMini.hasTouch,
+  });
 
   test('toolbar, canvas, and action buttons are visible without horizontal scroll', async ({
     page,
@@ -98,8 +105,15 @@ test.describe('builder at iPad portrait (768×1024)', () => {
   });
 });
 
+const iPhoneSE = devices['iPhone SE'];
 test.describe('builder at iPhone SE (320×568)', () => {
-  test.use({ ...devices['iPhone SE'], viewport: { width: 320, height: 568 } });
+  test.use({
+    viewport: { width: 320, height: 568 },
+    userAgent: iPhoneSE.userAgent,
+    deviceScaleFactor: iPhoneSE.deviceScaleFactor,
+    isMobile: iPhoneSE.isMobile,
+    hasTouch: iPhoneSE.hasTouch,
+  });
 
   test('loads without horizontal scroll and shows canvas', async ({ page }) => {
     await expectNoConsoleErrors(page, async () => {
