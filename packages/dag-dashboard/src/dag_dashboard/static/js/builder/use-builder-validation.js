@@ -7,9 +7,11 @@
 (function() {
   'use strict';
   
-  // Ensure React is available
+  // Ensure React is available. Validation scripts load before the builder
+  // bundle (which bundles React), so this is expected to no-op on non-builder
+  // routes. Use debug so it doesn't trip console-error-strict E2E tests.
   if (typeof React === 'undefined' || typeof React.useState === 'undefined') {
-    console.error('useBuilderValidation: React hooks not available');
+    console.debug('useBuilderValidation: React hooks not available (expected outside /builder)');
     return;
   }
   

@@ -26,6 +26,7 @@ import {
 import { useCanvasState } from './useCanvasState.js';
 import { useBuilderKeyboard } from './useBuilderKeyboard.js';
 import { makeNodeTypes } from './DagNode.jsx';
+import { useCanvasEventBridge } from './useCanvasEventBridge.js';
 
 function CanvasInner({
     initialDag,
@@ -48,7 +49,7 @@ function CanvasInner({
     );
 
     const state = useCanvasState(initialDag, { flowToPosition });
-    const { nodes, edges, onConnect, onNodesDelete, onEdgesDelete, onDrop, undo, redo, toDag } = state;
+    const { nodes, edges, onConnect, onNodesDelete, onEdgesDelete, onDrop, updateNode, undo, redo, toDag } = state;
 
     const nodeTypes = useMemo(() => makeNodeTypes({ readOnly }), [readOnly]);
 
@@ -83,6 +84,9 @@ function CanvasInner({
             if (typeof window !== 'undefined') window.removeEventListener('dag-builder:undo', handler);
         };
     }, [undo]);
+
+    // Listen for node-update and node-delete events from inspector (GW-5332)
+    useCanvasEventBridge(updateNode, onNodesDelete);
 
     const onDragOver = useCallback((event) => {
         event.preventDefault();
