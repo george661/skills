@@ -156,7 +156,7 @@ nodes:
     dispatch: local
     inputs_map:
       epic: "$epic"
-      affected_repos: "$load_spec.affected_repos"
+      repos: "$load_spec.affected_repos"
     writes:
       - artifact_audit
 

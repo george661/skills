@@ -282,26 +282,25 @@ class TestStubChildContracts:
     def test_artifacts_stub_has_required_inputs(
         self, artifacts_stub: WorkflowDef
     ) -> None:
-        """Artifacts stub has epic and affected_repos inputs."""
+        """Artifacts workflow has epic and repos inputs (GW-5314 real impl)."""
         assert "epic" in artifacts_stub.inputs
         assert artifacts_stub.inputs["epic"].required is True
-        assert "affected_repos" in artifacts_stub.inputs
-        assert artifacts_stub.inputs["affected_repos"].required is True
+        assert "repos" in artifacts_stub.inputs
+        assert artifacts_stub.inputs["repos"].required is True
 
     def test_artifacts_stub_outputs(
         self, artifacts_stub: WorkflowDef
     ) -> None:
-        """Artifacts stub has correct output fields."""
+        """Artifacts workflow has correct output fields (GW-5314 real impl)."""
         expected_outputs = [
             "hard_gate_failures",
             "deploy_gates",
             "test_artifact_gates",
             "smoke_gate",
-            "json_path",
         ]
         for output_name in expected_outputs:
             assert output_name in artifacts_stub.outputs, (
-                f"Expected output {output_name} not found in artifacts stub"
+                f"Expected output {output_name} not found in artifacts workflow"
             )
 
 
