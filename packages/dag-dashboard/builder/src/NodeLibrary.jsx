@@ -13,6 +13,8 @@
  * - Toggle visibility with header button
  */
 
+import React from 'react';
+
 // Node types (6 runner types from dag-executor)
 const NODE_TYPES = [
     { name: 'bash', description: 'Execute bash script' },
@@ -224,7 +226,4 @@ class NodeLibrary extends React.Component {
     }
 }
 
-// Export for use in builder bundle (GW-5242)
-if (typeof module !== 'undefined' && module.exports) {
-    module.exports = NodeLibrary;
-}
+export default NodeLibrary;

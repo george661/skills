@@ -37,3 +37,8 @@ htmlcov/
 .agent-context.json
 .dag-checkpoints/
 implementation-plan.md
+
+# Playwright
+**/playwright-report/
+**/test-results/
+**/playwright/.cache/

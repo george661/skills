@@ -28,11 +28,12 @@ class TestWriteDraft:
         assert stat.S_IMODE(dir_stat.st_mode) == 0o755
 
     def test_write_draft_returns_timestamp_format(self, tmp_path: Path) -> None:
-        """Returned string matches ^\\d{8}T\\d{6}Z$."""
+        """Returned string matches ^\\d{8}T\\d{6}_\\d{6}Z$ (microsecond precision)."""
         ts = drafts_fs.write_draft(tmp_path, "test-workflow", "key: value")
-        
+
         import re
-        assert re.match(r'^\d{8}T\d{6}Z$', ts), f"Timestamp {ts} doesn't match expected format"
+        assert re.match(r'^\d{8}T\d{6}_\d{6}Z$', ts), f"Timestamp {ts} doesn't match expected format"
+        assert len(ts) == 23, f"Timestamp should be 23 chars (YYYYMMDDTHHMMSS_uuuuuuZ), got {len(ts)}"
 
     def test_write_draft_file_perms_0644(self, tmp_path: Path) -> None:
         """Draft files have 0o644 permissions."""
@@ -114,6 +115,15 @@ class TestWriteDraft:
                 # OR the mock needs to be more sophisticated
             except RuntimeError as e:
                 assert "collision" in str(e).lower() or "retry" in str(e).lower()
+
+    def test_timestamp_pattern_matches_written_timestamp(self, tmp_path: Path) -> None:
+        """TIMESTAMP_PATTERN regex matches timestamps written by write_draft."""
+        import re
+        ts = drafts_fs.write_draft(tmp_path, "test-workflow", "key: value")
+
+        # TIMESTAMP_PATTERN should be exported from drafts_fs
+        pattern = re.compile(drafts_fs.TIMESTAMP_PATTERN)
+        assert pattern.match(ts), f"TIMESTAMP_PATTERN doesn't match written timestamp {ts}"
 
 
 class TestReadDraft:
@@ -273,9 +283,9 @@ class TestPublish:
         lines = log_content.strip().split('\n')
         assert len(lines) == 1
         
-        # Check format: YYYY-MM-DDTHH:MM:SSZ  publisher  published YYYYMMDDTHHMMSSZ
+        # Check format: YYYY-MM-DDTHH:MM:SSZ  publisher  published YYYYMMDDTHHMMSS_uuuuuuZ
         import re
-        pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z  .+  published \d{8}T\d{6}Z$'
+        pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z  .+  published \d{8}T\d{6}_\d{6}Z$'
         assert re.match(pattern, lines[0]), f"Log line doesn't match format: {lines[0]}"
 
     def test_publish_log_is_append_only(self, tmp_path: Path) -> None:
@@ -300,9 +310,9 @@ class TestPublish:
         log_file = tmp_path / ".drafts" / "test-workflow" / "PUBLISHED.log"
         log_line = log_file.read_text().strip()
         
-        # PRP format: 2026-04-21T16:05:00Z  dashboard-ui  alice@host  published 20260421T160102Z
+        # PRP format: 2026-04-21T16:05:00Z  dashboard-ui  alice@host  published 20260421T160102_000000Z
         import re
-        pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z  dashboard-ui  alice@host  published \d{8}T\d{6}Z$'
+        pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z  dashboard-ui  alice@host  published \d{8}T\d{6}_\d{6}Z$'
         assert re.match(pattern, log_line), f"Log line doesn't match PRP format: {log_line}"
 
 
