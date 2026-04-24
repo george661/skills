@@ -129,7 +129,18 @@ class ExecutionContext:
         concurrency_limit: Max concurrent node executions
         stopped: Set to True when workflow should halt (on_failure=stop)
         interrupted: Set to True when workflow hits an interrupt node
-        skipped_nodes: Set of node IDs marked for skipping
+        skipped_nodes: Set of node IDs explicitly marked for skipping
+            (e.g. by stop/cancel paths). Conditional-edge skips are
+            NOT stored here — see edge_exclusions/edge_inclusions below.
+        edge_exclusions: Per-target votes from upstream nodes whose
+            `edges:` evaluated and chose NOT to route to this target.
+            Maps target_node_id -> set of source_node_ids that excluded it.
+        edge_inclusions: Per-target votes from upstream nodes whose
+            `edges:` evaluated and chose to route to this target. Used to
+            override exclusions from other upstream nodes. A target is
+            effectively skipped only when it has exclusions AND no
+            inclusions — otherwise some upstream routed through it and
+            it should run.
     """
     node_outputs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     node_statuses: Dict[str, NodeStatus] = field(default_factory=dict)
@@ -143,6 +154,8 @@ class ExecutionContext:
     cancelled: bool = False
     cancelled_by: Optional[str] = None
     skipped_nodes: Set[str] = field(default_factory=set)
+    edge_exclusions: Dict[str, Set[str]] = field(default_factory=dict)
+    edge_inclusions: Dict[str, Set[str]] = field(default_factory=dict)
     pool: Optional[ThreadPoolExecutor] = field(default=None, repr=False)
     semaphore: Optional[asyncio.Semaphore] = field(default=None, repr=False)
     subprocess_registry: Optional[SubprocessRegistry] = field(default=None, repr=False)
@@ -716,11 +729,27 @@ class WorkflowExecutor:
 
                 return
 
-        # Check if already skipped
-        if node_id in ctx.skipped_nodes:
+        # Check if this node should be skipped due to conditional-edge
+        # routing or an explicit skip marker.
+        #
+        # Two skip sources:
+        #   1. skipped_nodes — set directly for stop/cancel flows.
+        #   2. Edge votes — a target is skipped only if at least one
+        #      upstream with `edges:` excluded it AND no upstream included
+        #      it. A single inclusion from any upstream unblocks the node.
+        edge_excluded = (
+            node_id in ctx.edge_exclusions
+            and node_id not in ctx.edge_inclusions
+        )
+        if node_id in ctx.skipped_nodes or edge_excluded:
+            reason = (
+                "Marked for skipping"
+                if node_id in ctx.skipped_nodes
+                else "Excluded by all upstream conditional edges"
+            )
             ctx.node_results[node_id] = NodeResult(
                 status=NodeStatus.SKIPPED,
-                error="Marked for skipping"
+                error=reason,
             )
             ctx.node_statuses[node_id] = NodeStatus.SKIPPED
             # Emit NODE_SKIPPED event
@@ -1180,9 +1209,15 @@ class WorkflowExecutor:
             matching_edge_index = default_edge_index
             is_default = True
 
-        # Mark all non-matching edge targets for skipping
+        # Record per-target inclusion / exclusion votes from this source.
+        # Non-matching targets become exclusions; matching ones become
+        # inclusions. A downstream target is effectively skipped only when
+        # some upstream excluded it AND no upstream included it — a single
+        # inclusion unblocks the node (GW-5356 fix: the prior implementation
+        # added every non-matching target to a global skipped_nodes set,
+        # which permanently blocked a node even when a later upstream
+        # routed through it).
         if matching_targets and matching_edge_index is not None:
-            # Collect all possible targets from all edges
             all_edge_targets = set()
             for edge in node_def.edges:
                 if edge.targets:
@@ -1190,10 +1225,12 @@ class WorkflowExecutor:
                 elif edge.target:
                     all_edge_targets.add(edge.target)
 
-            # Skip targets that are not in the matching set
+            matching_set = set(matching_targets)
             for target in all_edge_targets:
-                if target not in matching_targets:
-                    ctx.skipped_nodes.add(target)
+                if target in matching_set:
+                    ctx.edge_inclusions.setdefault(target, set()).add(node_def.id)
+                else:
+                    ctx.edge_exclusions.setdefault(target, set()).add(node_def.id)
 
             # Emit EDGE_TRAVERSED events for taken edges
             if event_emitter:
