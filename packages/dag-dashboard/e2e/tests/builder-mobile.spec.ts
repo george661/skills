@@ -120,11 +120,23 @@ test.describe('builder at iPad portrait (768×1024)', () => {
 
     // React Flow's pinch-zoom listens to wheel events with ctrlKey=true,
     // which is how browsers synthesise pinch gestures on touch surfaces.
+    // Playwright's page.mouse.wheel() does not support ctrlKey, so dispatch
+    // the WheelEvent directly on the canvas element.
     const canvas = page.locator('.react-flow').first();
     const box = await canvas.boundingBox();
     if (!box) throw new Error('canvas has no bounding box');
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.wheel(0, -200);
+    await canvas.evaluate((el, pos) => {
+      const rect = el.getBoundingClientRect();
+      const event = new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        clientX: rect.left + pos.x,
+        clientY: rect.top + pos.y,
+        deltaY: -200,
+        ctrlKey: true,
+      });
+      el.dispatchEvent(event);
+    }, { x: box.width / 2, y: box.height / 2 });
 
     await expect
       .poll(async () => viewport.evaluate((el) => (el as HTMLElement).style.transform))
