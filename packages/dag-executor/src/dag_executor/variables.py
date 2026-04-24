@@ -3,12 +3,37 @@
 Resolves variable references in the form:
 - $node-id.output.field — references to node outputs
 - $input-name — references to workflow inputs
+- $ENV_VAR — process environment variables on the whitelist
 """
+import os
 import re
 from typing import Any, Dict, List, Tuple, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from dag_executor.channels import ChannelStore
+
+
+# Process environment variables that bash scripts may reference as `$NAME` in their
+# script bodies. Kept in sync with validator.ENV_VAR_WHITELIST (validator imports
+# this set). The lint pass and runtime resolver MUST agree: anything the lint lets
+# through without a matching input/output/channel must resolve at runtime.
+ENV_VAR_WHITELIST = frozenset({
+    "PROJECT_ROOT",
+    "TENANT_NAMESPACE",
+    "TENANT_PROJECT",
+    "TENANT_DOMAIN_PATH",
+    "TENANT_DOCS_REPO",
+    "TENANT_SMOKE_TEST_PATH",
+    "DAG_EVENTS_DIR",
+    "DAG_CREATE_ISSUES_BATCH",
+    "DAG_DEPENDENCY_GRAPH",
+    "DAG_ISSUE_LIST",
+    "HOME",
+    "PATH",
+    "PWD",
+    "USER",
+    "SHELL",
+})
 
 
 class VariableResolutionError(Exception):
@@ -215,6 +240,11 @@ def _resolve_reference(
         return _traverse_path(
             parts[1:], workflow_inputs[parts[0]], reference, node_outputs, workflow_inputs, channel_version
         )
+
+    # Last-resort: single-segment reference to a whitelisted process env var.
+    # Matches validator.ENV_VAR_WHITELIST so lint and runtime agree.
+    if len(parts) == 1 and parts[0] in ENV_VAR_WHITELIST:
+        return os.environ.get(parts[0], "")
 
     # Not found - raise error with context
     available_nodes = list(node_outputs.keys())

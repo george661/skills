@@ -867,6 +867,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Parse inputs
         inputs = parse_inputs(args.inputs)
 
+        # Apply schema defaults for any declared input the caller didn't supply.
+        # Without this, a workflow with `default: world` on an optional input
+        # would still blow up at runtime when the input is referenced but not passed.
+        for input_name, input_def in workflow_def.inputs.items():
+            if input_name not in inputs and input_def.default is not None:
+                inputs[input_name] = input_def.default
+
         # Inject model override if provided
         if args.model_override:
             inputs["__model_override__"] = args.model_override

@@ -23,23 +23,7 @@ from dag_executor.schema import (
 
 # Explicit whitelist of known environment variables that appear in workflows
 # Unknown ALL_CAPS names will produce lint errors
-ENV_VAR_WHITELIST = {
-    "PROJECT_ROOT",
-    "TENANT_NAMESPACE",
-    "TENANT_PROJECT",
-    "TENANT_DOMAIN_PATH",
-    "TENANT_DOCS_REPO",
-    "TENANT_SMOKE_TEST_PATH",
-    "DAG_EVENTS_DIR",
-    "DAG_CREATE_ISSUES_BATCH",
-    "DAG_DEPENDENCY_GRAPH",
-    "DAG_ISSUE_LIST",
-    "HOME",
-    "PATH",
-    "PWD",
-    "USER",
-    "SHELL",
-}
+from dag_executor.variables import ENV_VAR_WHITELIST
 
 
 @dataclass
