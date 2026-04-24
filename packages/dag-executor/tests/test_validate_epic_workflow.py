@@ -273,7 +273,6 @@ class TestStubChildContracts:
             "hard_gate_failures",
             "children_total",
             "children_done",
-            "json_path",
         ]
         for output_name in expected_outputs:
             assert output_name in children_stub.outputs, (

@@ -129,9 +129,8 @@ nodes:
       - load_spec
     command: validate-epic-audit-children
     dispatch: local
-    args:
-      - "--epic"
-      - "$epic"
+    inputs_map:
+      epic: "$epic"
     writes:
       - children_audit
     edges:
@@ -155,11 +154,9 @@ nodes:
       - audit_children
     command: validate-epic-audit-artifacts
     dispatch: local
-    args:
-      - "--epic"
-      - "$epic"
-      - "--affected-repos"
-      - "$load_spec.affected_repos"
+    inputs_map:
+      epic: "$epic"
+      affected_repos: "$load_spec.affected_repos"
     writes:
       - artifact_audit
 
