@@ -26,9 +26,11 @@ def _resolve_sub_workflow(reference: str, parent_source: Optional[Path]) -> Opti
 
     Returns the first existing file, or None if nothing matched.
     """
-    # 1. Literal path (handles e.g. "foo/bar.yaml" or "/abs/path.yaml")
+    # 1. Literal path (handles e.g. "foo/bar.yaml" or "/abs/path.yaml").
+    # Require a regular file — a matching directory name at CWD (e.g. a
+    # stale `.dag-checkpoints/` leak) should not pre-empt the search.
     direct = Path(reference)
-    if direct.exists():
+    if direct.is_file():
         return direct
 
     # Bare-name candidates — try both extensions
@@ -52,7 +54,7 @@ def _resolve_sub_workflow(reference: str, parent_source: Optional[Path]) -> Opti
     for base in search_dirs:
         for name in candidate_names:
             candidate = base / name
-            if candidate.exists():
+            if candidate.is_file():
                 return candidate
 
     return None

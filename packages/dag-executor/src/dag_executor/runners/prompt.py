@@ -1,10 +1,55 @@
 """Prompt runner for LLM invocation nodes."""
 import json
 import logging
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
+
+
+_JSON_FENCE_RE = re.compile(
+    r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _extract_json_object(text: str) -> Any:
+    """Try to pull a JSON object / array out of an LLM response.
+
+    Strategy:
+      1. Direct parse — works when the model returns pure JSON.
+      2. Markdown code-fence — `​```json ... ``​`` wrapping (agent harness
+         commonly adds prose before and the fenced JSON after).
+      3. Brace-to-brace scan — last resort for unfenced `{...}` at the end
+         of the response.
+
+    Returns the parsed object, or None if nothing resolved.
+    """
+    if not text:
+        return None
+    stripped = text.strip()
+    try:
+        return json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Try fenced code blocks; prefer the last one (agents often narrate, then
+    # produce the final answer).
+    matches = list(_JSON_FENCE_RE.finditer(text))
+    for match in reversed(matches):
+        try:
+            return json.loads(match.group(1))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    # Brace-scan: last balanced {...} in the text.
+    start = text.rfind("{")
+    end = text.rfind("}")
+    if 0 <= start < end:
+        try:
+            return json.loads(text[start : end + 1])
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return None
 
 from dag_executor.artifacts import detect_artifacts
 from dag_executor.conversations import (
@@ -297,18 +342,15 @@ class PromptRunner(BaseRunner):
                     # Log but don't fail the node - session data is secondary to LLM response
                     logger.warning(f"Failed to append conversation message: {e}")
 
-            # GW-5308: If output_format is JSON, spread parsed fields into output dict
-            # while preserving the raw text in "response" for backward compatibility
+            # GW-5308 / GW-5356: If output_format is JSON, spread parsed fields
+            # into output dict. Agent-mode output typically wraps the JSON in
+            # prose + markdown fences (e.g. ```json ... ```); try those paths
+            # in order before giving up.
             output_dict = {}
             if node.output_format == OutputFormat.JSON:
-                try:
-                    parsed = json.loads(full_output)
-                    if isinstance(parsed, dict):
-                        # Spread parsed fields first
-                        output_dict.update(parsed)
-                except (json.JSONDecodeError, ValueError) as e:
-                    # Invalid JSON - log and fall back to text-only behavior
-                    logger.debug(f"Failed to parse JSON output: {e}")
+                parsed = _extract_json_object(full_output)
+                if isinstance(parsed, dict):
+                    output_dict.update(parsed)
 
             # Always set response last to guarantee backward compat
             # (raw text wins if parsed JSON contains a "response" key)

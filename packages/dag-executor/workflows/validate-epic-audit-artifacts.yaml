@@ -16,6 +16,7 @@ inputs:
   expected_routes:
     type: string
     required: false
+    default: ""
 
 state:
   resolved_repo_paths:

@@ -280,6 +280,26 @@ def _resolve_reference(
     if len(parts) == 1 and parts[0] in ENV_VAR_WHITELIST:
         return os.environ.get(parts[0], "")
 
+    # Hyphen-prefix handling: the validator allows $foo-bar when `foo` is a
+    # valid input/node/channel by treating the hyphen as bash's implicit
+    # string concatenation boundary. Mirror that here — split on the first
+    # hyphen, resolve the prefix, and interpolate the rest as a literal
+    # string suffix. Without this, `$epic-artifacts.json` gives a runtime
+    # resolver error even though lint passed. The suffix preserves any
+    # trailing segments (dots become plain string concatenation).
+    if "-" in parts[0]:
+        prefix, sep, first_suffix = parts[0].partition("-")
+        try:
+            prefix_value = _resolve_reference(prefix, node_outputs, workflow_inputs, channel_store)
+        except VariableResolutionError:
+            prefix_value = None
+        if prefix_value is not None:
+            remaining = ".".join(parts[1:])
+            tail = f"{sep}{first_suffix}"
+            if remaining:
+                tail = f"{tail}.{remaining}"
+            return f"{prefix_value}{tail}"
+
     # Not found - raise error with context
     available_nodes = list(node_outputs.keys())
     available_inputs = list(workflow_inputs.keys())
