@@ -1,11 +1,61 @@
 """Command runner for recursive workflow execution nodes."""
 import asyncio
 import concurrent.futures
+import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Coroutine, Dict, TypeVar
+from pathlib import Path
+from typing import Any, Coroutine, Dict, List, Optional, TypeVar
 
 _T = TypeVar("_T")
+
+
+def _resolve_sub_workflow(reference: str, parent_source: Optional[Path]) -> Optional[Path]:
+    """Resolve a `command:` field to a concrete YAML path.
+
+    A `command:` value is either:
+      - an absolute or relative filesystem path ending in .yaml/.yml, or
+      - a bare workflow name (e.g. "validate-epic-audit-children") expected to
+        live alongside the parent workflow or in a known install location.
+
+    Search order:
+      1. The literal string as a path (covers both ".yaml-ful" and absolute refs)
+      2. `<parent-dir>/<name>.yaml` and `.yml` — the common co-located case
+      3. Each entry in `DAG_DASHBOARD_WORKFLOWS_DIR` (colon-separated)
+      4. `~/.claude/workflows/<name>.yaml`
+
+    Returns the first existing file, or None if nothing matched.
+    """
+    # 1. Literal path (handles e.g. "foo/bar.yaml" or "/abs/path.yaml")
+    direct = Path(reference)
+    if direct.exists():
+        return direct
+
+    # Bare-name candidates — try both extensions
+    candidate_names: List[str] = []
+    if reference.endswith(".yaml") or reference.endswith(".yml"):
+        candidate_names.append(reference)
+    else:
+        candidate_names.extend([reference + ".yaml", reference + ".yml"])
+
+    search_dirs: List[Path] = []
+    # 2. Parent workflow's directory
+    if parent_source is not None:
+        search_dirs.append(parent_source.parent)
+    # 3. DAG_DASHBOARD_WORKFLOWS_DIR (colon-separated list)
+    env_dirs = os.environ.get("DAG_DASHBOARD_WORKFLOWS_DIR", "")
+    if env_dirs:
+        search_dirs.extend(Path(d) for d in env_dirs.split(os.pathsep) if d)
+    # 4. ~/.claude/workflows
+    search_dirs.append(Path.home() / ".claude" / "workflows")
+
+    for base in search_dirs:
+        for name in candidate_names:
+            candidate = base / name
+            if candidate.exists():
+                return candidate
+
+    return None
 
 
 def _run_coroutine_sync(coro: "Coroutine[Any, Any, _T]") -> _T:
@@ -64,20 +114,45 @@ class CommandRunner(BaseRunner):
             raise ValueError("command field is required for type=command")
         args = ctx.node_def.args or []
         inputs_map = ctx.node_def.inputs_map or {}
-        
-        # Load sub-workflow
+
+        # Try loading the reference as-is first. This preserves the existing
+        # contract where `command:` is either a path or a name patched into a
+        # test loader. Only if that fails with FileNotFoundError do we run the
+        # name-to-path resolver (parent dir + DAG_DASHBOARD_WORKFLOWS_DIR +
+        # ~/.claude/workflows) and retry.
+        parent_source = ctx.workflow_def._source_path if ctx.workflow_def is not None else None
+
+        workflow_def = None
+        load_error: Optional[Exception] = None
         try:
             workflow_def = load_workflow(command)
         except FileNotFoundError as e:
-            return NodeResult(
-                status=NodeStatus.FAILED,
-                error=f"Failed to load workflow '{command}': {str(e)}"
-            )
+            load_error = e
         except Exception as e:
             return NodeResult(
                 status=NodeStatus.FAILED,
                 error=f"Failed to load workflow '{command}': {str(e)}"
             )
+
+        if workflow_def is None:
+            resolved_path = _resolve_sub_workflow(command, parent_source)
+            if resolved_path is not None:
+                try:
+                    workflow_def = load_workflow(str(resolved_path))
+                except Exception as e:
+                    return NodeResult(
+                        status=NodeStatus.FAILED,
+                        error=f"Failed to load workflow '{command}': {str(e)}"
+                    )
+            else:
+                return NodeResult(
+                    status=NodeStatus.FAILED,
+                    error=(
+                        f"Failed to load workflow '{command}': {load_error}. "
+                        f"Searched parent dir, DAG_DASHBOARD_WORKFLOWS_DIR, and ~/.claude/workflows. "
+                        f"Pass an absolute/relative path or place the file alongside the parent."
+                    ),
+                )
         
         # Build inputs for sub-workflow from args and resolved inputs
         sub_workflow_inputs = {}

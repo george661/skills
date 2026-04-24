@@ -1610,16 +1610,28 @@ class WorkflowExecutor:
 
     def _get_node_timeout(self, node_def: NodeDef) -> float:
         """Get timeout for a node.
-        
+
         Args:
             node_def: Node definition
-        
+
         Returns:
             Timeout in seconds
         """
         if node_def.timeout:
             return float(node_def.timeout)
-        
+
+        # Prompt nodes differ dramatically by mode. Agent mode drives the full
+        # Claude Code harness which can take 3-10 minutes on real workflows
+        # (tool use, skill calls, file reads). Completion mode is a bare LLM
+        # call and completes in seconds. Split the default so agent mode isn't
+        # capped at 300s while completion mode doesn't hang on a wedged call.
+        if node_def.type == "prompt":
+            from dag_executor.schema import NodeMode
+            mode = node_def.mode or NodeMode.AGENT
+            if mode == NodeMode.AGENT:
+                return 900.0  # 15 min — matches the outer dispatch-local timeout
+            return 180.0      # 3 min — completion calls should be sub-minute
+
         # Use default based on node type
         return float(self.DEFAULT_TIMEOUTS.get(node_def.type, 60))
     

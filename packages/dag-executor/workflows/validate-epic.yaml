@@ -95,7 +95,7 @@ nodes:
     depends_on:
       - resume_check
     model: opus
-    dispatch: inline
+    mode: agent          # needs harness: fetches Jira, reads PRP file from disk
     context: shared
     output_format: json
     writes:
@@ -170,7 +170,7 @@ nodes:
     depends_on:
       - audit_artifacts
     model: opus
-    dispatch: inline
+    mode: completion     # pure reasoning over upstream audit outputs
     context: shared
     output_format: json
     writes:
@@ -202,7 +202,7 @@ nodes:
     depends_on:
       - ac_reconciliation
     model: opus
-    dispatch: inline
+    mode: completion     # pure reasoning; load_spec already collected repo list
     context: shared
     output_format: json
     writes:
@@ -239,7 +239,7 @@ nodes:
     depends_on:
       - integration_check
     model: opus
-    dispatch: inline
+    mode: completion     # pure reasoning over design session data in upstream state
     context: shared
     output_format: json
     writes:
@@ -274,7 +274,7 @@ nodes:
       - invariants_audit
     trigger_rule: one_success
     model: opus
-    dispatch: inline
+    mode: completion     # pure synthesis of upstream audit findings
     context: shared
     output_format: json
     writes:
@@ -304,7 +304,7 @@ nodes:
     depends_on:
       - produce_verdict
     model: opus
-    dispatch: inline
+    mode: agent          # drives Jira: transitions, label updates, comment posting
     context: shared
     output_format: json
     writes:
@@ -355,7 +355,7 @@ nodes:
     depends_on:
       - store_episode
     model: opus
-    dispatch: inline
+    mode: completion     # formatting markdown from workflow state
     prompt: |
       Print a human-readable summary of the validation results.
 

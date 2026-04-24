@@ -1,6 +1,7 @@
 """Pydantic v2 models for DAG executor workflow definitions."""
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
@@ -620,6 +621,11 @@ class WorkflowDef(BaseModel):
     # Private attribute to store YAML line numbers (not part of the schema)
     # Avoids memory leak from id()-based dict keys (id() recycles after GC)
     _node_lines: Dict[str, int] = PrivateAttr(default_factory=dict)
+
+    # Private: path the workflow was loaded from (None when built in-memory or
+    # parsed from string). Used by the command runner to resolve sub-workflow
+    # references relative to the parent's directory.
+    _source_path: Optional[Path] = PrivateAttr(default=None)
 
 
 # Rebuild models to resolve forward references

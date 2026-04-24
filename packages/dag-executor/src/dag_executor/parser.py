@@ -39,7 +39,11 @@ def load_workflow(yaml_path: str) -> WorkflowDef:
         raise FileNotFoundError(f"Workflow file not found: {yaml_path}")
 
     yaml_content = path.read_text()
-    return load_workflow_from_string(yaml_content)
+    workflow = load_workflow_from_string(yaml_content)
+    # Stamp the source path so downstream runners (e.g. command) can resolve
+    # sub-workflow references relative to the parent YAML's directory.
+    workflow._source_path = path.resolve()
+    return workflow
 
 
 def load_workflow_from_string(yaml_string: str) -> WorkflowDef:

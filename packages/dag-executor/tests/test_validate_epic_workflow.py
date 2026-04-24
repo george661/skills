@@ -117,14 +117,20 @@ class TestPhaseNodes:
         for node_id in expected_nodes:
             assert node_id in nodes_by_id, f"Expected node {node_id} not found"
 
-    def test_load_spec_is_prompt_opus_inline(
+    def test_load_spec_is_prompt_opus_agent_mode(
         self, nodes_by_id: Dict[str, NodeDef]
     ) -> None:
-        """Phase 0.5 load_spec is prompt node with model:opus, dispatch:inline."""
+        """Phase 0.5 load_spec is prompt node with model:opus, mode:agent.
+
+        load_spec needs the Claude Code harness because it fetches Jira and
+        reads PRP files from disk — both require tools. Other phases are
+        pure-reasoning and use mode:completion.
+        """
+        from dag_executor.schema import NodeMode
         node = nodes_by_id["load_spec"]
         assert node.type == "prompt"
         assert node.model == "opus"
-        assert node.dispatch == DispatchMode.INLINE
+        assert node.mode == NodeMode.AGENT
 
     def test_semantic_nodes_have_context_shared(
         self, nodes_by_id: Dict[str, NodeDef]
