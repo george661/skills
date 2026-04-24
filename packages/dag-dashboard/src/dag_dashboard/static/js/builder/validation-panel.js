@@ -8,9 +8,11 @@
 (function() {
   'use strict';
   
-  // Ensure React is available (loaded via builder bundle)
+  // Ensure React is available (loaded via builder bundle). Validation scripts
+  // load before the builder bundle, so this is expected to no-op on non-builder
+  // routes. Use debug so it doesn't trip console-error-strict E2E tests.
   if (typeof React === 'undefined') {
-    console.error('ValidationPanel: React not loaded');
+    console.debug('ValidationPanel: React not loaded (expected outside /builder)');
     return;
   }
   
