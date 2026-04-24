@@ -12,6 +12,7 @@ import { useAutosave } from './useAutosave.js';
 import { YamlCodeView } from './YamlCodeView.jsx';
 import VersionDrawer from './VersionDrawer.jsx';
 import useVersionDrawer from './useVersionDrawer.js';
+import NodeLibrary from './NodeLibrary.jsx';
 
 function serializeMetadata({ name, description, provider, model }) {
     const lines = [];
@@ -34,6 +35,29 @@ function buildWorkflowYaml({ name, description, provider, model, dag }) {
     return serializeMetadata({ name, description, provider, model }) + dagToYaml(dag || []);
 }
 
+// GW-5253: inline media-query hook — browser-only (the builder bundle never runs under SSR).
+// Embeds the query string into the compiled bundle so the static CSS test
+// can grep for `max-width: 767px` to confirm the mobile switch shipped.
+function useMediaQuery(query) {
+    const [matches, setMatches] = React.useState(() => {
+        if (typeof window === 'undefined' || !window.matchMedia) return false;
+        return window.matchMedia(query).matches;
+    });
+    React.useEffect(() => {
+        if (typeof window === 'undefined' || !window.matchMedia) return undefined;
+        const mql = window.matchMedia(query);
+        const onChange = () => setMatches(mql.matches);
+        onChange();
+        if (mql.addEventListener) mql.addEventListener('change', onChange);
+        else mql.addListener(onChange);
+        return () => {
+            if (mql.removeEventListener) mql.removeEventListener('change', onChange);
+            else mql.removeListener(onChange);
+        };
+    }, [query]);
+    return matches;
+}
+
 /**
  * Builder root. Integrates BuilderToolbar (GW-5247), WorkflowCanvas,
  * YamlCodeView (GW-5250), and autosave (GW-5248) into a single workflow editor.
@@ -52,6 +76,16 @@ function Builder() {
     const [provider, setProvider] = React.useState('');
     const [model, setModel] = React.useState('');
     const [hasClientErrors, setHasClientErrors] = React.useState(false);
+    const [allowDestructiveNodes, setAllowDestructiveNodes] = React.useState(false);
+
+    // GW-5253: viewport-aware layout. Mobile forces single-column canvas-only view
+    // regardless of the user's selected viewMode. User selection is preserved so
+    // desktop behaviour is restored on viewport change.
+    const isMobile = useMediaQuery('(max-width: 767px)');
+    const effectiveViewMode = isMobile ? 'hidden' : viewMode;
+
+    // GW-5333: NodeLibrary visibility state (default: visible, hidden on mobile)
+    const [isLibraryVisible, setIsLibraryVisible] = React.useState(true);
 
     // Workflow name: initialize from ?workflow= but remain editable.
     const initialWorkflowName = React.useMemo(() => {
@@ -73,6 +107,19 @@ function Builder() {
     React.useEffect(() => {
         setHasClientErrors(validation.errors.length > 0);
     }, [validation.errors]);
+
+    // Fetch allow_destructive_nodes config flag on mount
+    React.useEffect(() => {
+        fetch('/api/config')
+            .then(res => res.json())
+            .then(data => {
+                setAllowDestructiveNodes(data.allow_destructive_nodes || false);
+            })
+            .catch(err => {
+                console.error('Failed to fetch config:', err);
+                setAllowDestructiveNodes(false);
+            });
+    }, []);
 
     // Stable getDag reference for useAutosave
     const getDag = React.useCallback(() => dagRef.current, []);
@@ -199,10 +246,11 @@ function Builder() {
                 description={description}
                 provider={provider}
                 model={model}
-                viewMode={viewMode}
+                viewMode={effectiveViewMode}
                 hasUnsavedChanges={hasUnsavedChanges}
                 hasClientErrors={hasClientErrors}
                 hasPublishableDraft={!!toolbarActions.lastSavedTimestamp}
+                isMobile={isMobile}
                 onChangeWorkflowName={setWorkflowName}
                 onChangeDescription={setDescription}
                 onChangeProvider={setProvider}
@@ -215,6 +263,18 @@ function Builder() {
                 onViewModeChange={setViewMode}
                 onOpenVersions={versionDrawer.open}
             />
+
+            {!allowDestructiveNodes && (
+                <div className="builder-safety-banner builder-safety-banner-restricted">
+                    ⓘ Bash/skill/command node fields are read-only. To enable editing, visit <a href="#/settings">Settings</a>.
+                </div>
+            )}
+
+            {allowDestructiveNodes && (
+                <div className="builder-safety-banner builder-safety-banner-warning">
+                    ⚠️ Destructive node editing is enabled. Users can modify bash commands and skill references.
+                </div>
+            )}
 
             {saveStatus && (
                 <div
@@ -250,11 +310,14 @@ function Builder() {
                         overflow: 'hidden',
                     }}
                 >
+                    {/* NodeLibrary (GW-5333) — hidden on mobile */}
+                    {!isMobile && <NodeLibrary />}
+
                     {/* Canvas — hidden in full mode but still mounted to preserve state */}
                     <div
                         style={{
-                            display: viewMode === 'full' ? 'none' : 'flex',
-                            flex: viewMode === 'split' ? '0 0 60%' : '1',
+                            display: effectiveViewMode === 'full' ? 'none' : 'flex',
+                            flex: effectiveViewMode === 'split' ? '0 0 60%' : '1',
                             minWidth: 0,
                         }}
                     >
@@ -262,20 +325,21 @@ function Builder() {
                             key={`${isLoaded ? 'loaded' : 'loading'}-${restoreKey}`}
                             initialDag={initialDag}
                             readOnly={false}
+                            allowDestructiveNodes={allowDestructiveNodes}
                             onGraphChange={handleGraphChange}
                         />
                     </div>
 
-                    {/* YAML preview (GW-5250) — shown in split and full modes */}
-                    {viewMode !== 'hidden' && (
+                    {/* YAML preview (GW-5250) — shown in split and full modes. Hidden on mobile. */}
+                    {effectiveViewMode !== 'hidden' && (
                         <div
                             style={{
-                                flex: viewMode === 'split' ? '0 0 40%' : '1',
+                                flex: effectiveViewMode === 'split' ? '0 0 40%' : '1',
                                 minWidth: 0,
                                 overflow: 'auto',
                             }}
                         >
-                            <YamlCodeView dag={dag} viewMode={viewMode} />
+                            <YamlCodeView dag={dag} viewMode={effectiveViewMode} />
                         </div>
                     )}
                 </div>

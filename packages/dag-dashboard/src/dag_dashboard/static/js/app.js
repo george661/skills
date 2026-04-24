@@ -113,6 +113,15 @@ class Router {
             return;
         }
 
+        if (hash.startsWith('/conversations/')) {
+            const conversationId = hash.split('/')[2];
+            this.currentRoute = '/conversations/:id';
+            if (this.routes['/conversations/:id']) {
+                this.routes['/conversations/:id'](conversationId);
+            }
+            return;
+        }
+
         // Handle checkpoint routes
         if (hash.startsWith('/checkpoints/compare/')) {
             const parts = hash.split('/').filter(Boolean);
@@ -764,6 +773,43 @@ async function renderWorkflowDetail(runId) {
     }
 }
 
+async function renderConversationDetail(conversationId) {
+    const container = document.getElementById('route-container');
+
+    container.innerHTML = `
+        <div>
+            <a href="#/" style="color: var(--primary); text-decoration: none; display: inline-block; margin-bottom: 1rem;">
+                ← Back to Dashboard
+            </a>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                <h2 style="margin: 0;">Conversation View</h2>
+            </div>
+            <div style="margin-bottom: 1rem; padding: 1rem; background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border);">
+                <h3 style="margin-bottom: 0.5rem;">Conversation ID:</h3>
+                <code style="color: var(--text-secondary);">${escapeHtml(conversationId)}</code>
+            </div>
+            <section id="chat-container" class="chat-section"></section>
+        </div>
+    `;
+
+    try {
+        // Initialize chat panel in conversation mode
+        const chatPanel = new window.ChatPanel('chat-container', {
+            mode: 'conversation',
+            conversationId: conversationId
+        });
+        chatPanel.render();
+
+    } catch (error) {
+        console.error('Error loading conversation:', error);
+        container.innerHTML += `
+            <div style="padding: 1rem; background: var(--error); color: white; border-radius: var(--radius); margin-top: 1rem;">
+                Error loading conversation: ${escapeHtml(error.message)}
+            </div>
+        `;
+    }
+}
+
 function setupExecutingBanner(nodes) {
     const banner = document.getElementById('executing-banner');
     const nodeNameEl = document.getElementById('executing-node-name');
@@ -1011,6 +1057,7 @@ router.register('/workflows', window.renderWorkflowsList);
 router.register('/workflows/:name', window.renderWorkflowDetail);
 router.register('/workflow-trigger/:name', window.renderWorkflowTriggerForm);
 router.register('/workflow/:runId', renderWorkflowDetail);
+router.register('/conversations/:id', renderConversationDetail);
 router.register('/checkpoints', renderCheckpointWorkflows);
 router.register('/checkpoints/:wf', renderCheckpointRuns);
 router.register('/checkpoints/:wf/:runId', renderCheckpointRunDetail);

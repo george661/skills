@@ -1,15 +1,30 @@
 /**
  * ChatPanel - Per-workflow chat UI component
  * Displays a chat interface for a specific workflow run with SSE live updates
+ * Can also display conversation-wide history (read-only mode)
  */
 class ChatPanel {
-  constructor(containerId, runId) {
+  constructor(containerId, runIdOrOptions) {
     this.containerId = containerId;
-    this.runId = runId;
     this.container = document.getElementById(containerId);
     this.messages = new Map(); // dedupe by message id
     this.isNearBottom = true;
-    
+
+    // Support two constructor signatures:
+    // new ChatPanel(containerId, runId) - existing run mode
+    // new ChatPanel(containerId, { mode: 'conversation', conversationId }) - new conversation mode
+    if (typeof runIdOrOptions === 'string') {
+      this.mode = 'run';
+      this.runId = runIdOrOptions;
+      this.conversationId = null;
+    } else if (typeof runIdOrOptions === 'object') {
+      this.mode = runIdOrOptions.mode || 'run';
+      this.runId = runIdOrOptions.runId || null;
+      this.conversationId = runIdOrOptions.conversationId || null;
+    } else {
+      throw new Error('Invalid constructor arguments');
+    }
+
     if (!this.container) {
       throw new Error(`Container #${containerId} not found`);
     }
@@ -19,32 +34,45 @@ class ChatPanel {
    * Render the chat panel UI
    */
   render() {
+    const uniqueId = this.mode === 'conversation' ? this.conversationId : this.runId;
+    const isReadOnly = this.mode === 'conversation';
+
+    // Render input form only if not in read-only conversation mode
+    const inputFormHtml = isReadOnly
+      ? `<div class="chat-read-only-hint">
+           <p>Read-only view across runs — send messages from the originating run</p>
+         </div>`
+      : `<form class="chat-input-form" id="chat-form-${uniqueId}">
+           <textarea
+             class="chat-input"
+             id="chat-input-${uniqueId}"
+             placeholder="Type a message... (Cmd/Ctrl+Enter to send)"
+             rows="3"
+           ></textarea>
+           <button type="submit" class="chat-send-btn">Send</button>
+           <p class="chat-input-hint">Limit: 10 messages per minute</p>
+         </form>`;
+
     this.container.innerHTML = `
       <div class="chat-panel">
         <div class="chat-header">
           <h3>Chat</h3>
         </div>
-        <div class="chat-messages" id="chat-messages-${this.runId}">
+        <div class="chat-messages" id="chat-messages-${uniqueId}">
           <div class="chat-empty-state">No messages yet</div>
         </div>
-        <form class="chat-input-form" id="chat-form-${this.runId}">
-          <textarea
-            class="chat-input"
-            id="chat-input-${this.runId}"
-            placeholder="Type a message... (Cmd/Ctrl+Enter to send)"
-            rows="3"
-          ></textarea>
-          <button type="submit" class="chat-send-btn">Send</button>
-          <p class="chat-input-hint">Limit: 10 messages per minute</p>
-        </form>
+        ${inputFormHtml}
       </div>
     `;
 
-    this.messagesContainer = document.getElementById(`chat-messages-${this.runId}`);
-    this.form = document.getElementById(`chat-form-${this.runId}`);
-    this.input = document.getElementById(`chat-input-${this.runId}`);
+    this.messagesContainer = document.getElementById(`chat-messages-${uniqueId}`);
 
-    this._attachEventListeners();
+    if (!isReadOnly) {
+      this.form = document.getElementById(`chat-form-${uniqueId}`);
+      this.input = document.getElementById(`chat-input-${uniqueId}`);
+      this._attachEventListeners();
+    }
+
     this._setupScrollTracking();
     this._loadHistory();
   }
@@ -54,7 +82,12 @@ class ChatPanel {
    */
   async _loadHistory() {
     try {
-      const response = await fetch(`/api/workflows/${this.runId}/chat/history?limit=50`);
+      // Route to the correct endpoint based on mode
+      const url = this.mode === 'conversation'
+        ? `/api/conversations/${this.conversationId}/messages?limit=50`
+        : `/api/workflows/${this.runId}/chat/history?limit=50`;
+
+      const response = await fetch(url);
       if (!response.ok) {
         console.error('Failed to load chat history:', response.status);
         return;

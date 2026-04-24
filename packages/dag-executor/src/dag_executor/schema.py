@@ -68,9 +68,15 @@ class TriggerRule(str, Enum):
 
 
 class ModelTier(str, Enum):
-    """LLM model tier for prompt nodes."""
+    """LLM model tier for prompt nodes.
+
+    Resolved to a concrete provider + model via ~/.claude/config/model-routing.json:
+    opus/sonnet/haiku typically map to Bedrock Anthropic model IDs; local maps to
+    an Ollama alias. Adding a new tier here also requires an entry in model-routing.json.
+    """
     OPUS = "opus"
     SONNET = "sonnet"
+    HAIKU = "haiku"
     LOCAL = "local"
 
 
@@ -81,9 +87,21 @@ class ContextMode(str, Enum):
 
 
 class DispatchMode(str, Enum):
-    """Execution dispatch mode for nodes."""
-    INLINE = "inline"  # Execute in current process
-    LOCAL = "local"  # Execute in separate local process
+    """Execution dispatch mode for nodes.
+
+    Current semantics:
+    - bash/gate/interrupt: always in-process. `inline` is a no-op confirmation,
+      `local` is rejected at parse time.
+    - prompt/skill/command: execute via subprocess regardless of this value.
+      The field is informational — a validator warning fires to surface that
+      it does not change runtime behavior yet. Model routing is handled
+      separately via `model:` + ~/.claude/config/model-routing.json.
+
+    PRP-PLAT-006 will extend this enum with `remote` and give `inline`/`local`
+    first-class runtime semantics on prompt/skill/command nodes.
+    """
+    INLINE = "inline"  # Execute in current process (enforced on bash/gate/interrupt)
+    LOCAL = "local"  # Execute in separate local process (current default for prompt/skill/command)
 
 
 class OnFailure(str, Enum):
@@ -399,6 +417,17 @@ class NodeDef(BaseModel):
                 raise ValueError("message field is required for type=interrupt")
             if self.resume_key is None:
                 raise ValueError("resume_key field is required for type=interrupt")
+
+        # bash, gate, and interrupt nodes always run in-process. `dispatch: local`
+        # has no meaning for them — reject it loudly rather than silently ignoring.
+        # `dispatch: inline` is accepted as a no-op confirmation. See PRP-PLAT-006
+        # for the future `remote` mode that will give dispatch first-class runtime
+        # semantics on prompt/skill/command nodes.
+        if self.type in ("bash", "gate", "interrupt") and self.dispatch == DispatchMode.LOCAL:
+            raise ValueError(
+                f"dispatch: local is not valid on type={self.type} nodes "
+                f"(they always run in-process)"
+            )
 
         # Validate edges if present
         if self.edges is not None:

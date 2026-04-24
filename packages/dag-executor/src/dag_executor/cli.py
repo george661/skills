@@ -315,6 +315,23 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--conversation",
+        help=(
+            "Conversation ID for session continuity. When provided, the workflow "
+            "reuses the active session from this conversation instead of minting "
+            "a new one. Requires --db or DAG_DASHBOARD_DB environment variable."
+        ),
+    )
+
+    parser.add_argument(
+        "--db",
+        help=(
+            "Path to dashboard database for conversation storage. "
+            "Defaults to DAG_DASHBOARD_DB environment variable."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -871,6 +888,16 @@ def main(argv: Optional[List[str]] = None) -> None:
         else:
             run_id = str(uuid.uuid4())
 
+        # Resolve conversation_id and db_path for session continuity
+        conversation_id = args.conversation
+        db_path = None
+        if conversation_id or args.db:
+            db_path_str = args.db or os.environ.get('DAG_DASHBOARD_DB')
+            if not db_path_str:
+                print("Error: --db required or set DAG_DASHBOARD_DB when using --conversation", file=sys.stderr)
+                sys.exit(1)
+            db_path = Path(db_path_str)
+
         # Setup event emitter if streaming, progress, notifications, or events_dir configured.
         # events_dir forces event logging so the dashboard collector can tail runs.
         event_emitter = None
@@ -969,6 +996,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     event_emitter=event_emitter,
                     run_id=run_id,
                     events_dir=events_dir,
+                    conversation_id=conversation_id,
+                    db_path=db_path,
                 )
         finally:
             # Cleanup notification listener if attached

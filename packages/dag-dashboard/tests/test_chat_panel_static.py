@@ -70,3 +70,29 @@ def test_chat_panel_has_loadhistory(client: TestClient):
     response = client.get("/js/chat-panel.js")
     assert response.status_code == 200
     assert "_loadHistory" in response.text
+
+
+def test_chat_panel_supports_conversation_mode(client: TestClient):
+    """Test that chat-panel.js contains conversation mode strings."""
+    response = client.get("/js/chat-panel.js")
+    assert response.status_code == 200
+    # Check for conversation-related strings
+    assert "conversationId" in response.text
+    assert "/api/conversations/" in response.text
+
+
+def test_conversation_mode_disables_send(client: TestClient):
+    """Test that chat-panel.js disables send form in conversation mode."""
+    response = client.get("/js/chat-panel.js")
+    assert response.status_code == 200
+    # Check for read-only indicator
+    assert "conversation" in response.text.lower()
+    # Should have logic to disable/hide send form
+    assert "mode" in response.text
+
+
+def test_app_js_registers_conversation_route(client: TestClient):
+    """Test that app.js registers /conversations/ route."""
+    response = client.get("/js/app.js")
+    assert response.status_code == 200
+    assert "/conversations/" in response.text

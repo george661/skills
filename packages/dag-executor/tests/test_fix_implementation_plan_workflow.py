@@ -217,6 +217,7 @@ class TestFixIntegrationWithMockExecution:
                 node["type"] = "bash"
                 node["script"] = 'echo "Should not execute"'
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "post_revised_plan":
                 node["script"] = 'echo "No changes needed"'
             elif node["id"] == "store_episode":
@@ -271,6 +272,7 @@ class TestFixIntegrationWithMockExecution:
                 node["type"] = "bash"
                 node["script"] = 'echo \'{"status": "FIXED", "changes": "Added missing test"}\''
                 node.pop("prompt", None)
+                node.pop("dispatch", None)
             elif node["id"] == "post_revised_plan":
                 node["script"] = 'echo "Posted revised plan to Jira"'
             elif node["id"] == "store_episode":

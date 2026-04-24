@@ -464,6 +464,23 @@ class WorkflowValidator:
                     message=f"Unknown node type '{node.type}' (valid: {', '.join(sorted(valid_types))})",
                 ))
 
+            # AC-18 (PRP-PLAT-010 Task 12): dispatch on prompt/skill/command is
+            # currently informational. Emit a warning so authors know the field
+            # does not change runtime behavior — real semantics arrive with
+            # PRP-PLAT-006 (DAG Remote Dispatch, GW-5140).
+            if node.type in ("prompt", "skill", "command") and node.dispatch is not None:
+                result.issues.append(ValidationIssue(
+                    severity="warning",
+                    node_id=node.id,
+                    code="dispatch_informational",
+                    message=(
+                        f"dispatch: {node.dispatch.value} on type={node.type} is "
+                        "currently informational — execution semantics arrive with "
+                        "PRP-PLAT-006. Model routing is controlled by the `model:` "
+                        "field + model-routing.json."
+                    ),
+                ))
+
     def _check_skill_references(
         self,
         workflow_def: WorkflowDef,

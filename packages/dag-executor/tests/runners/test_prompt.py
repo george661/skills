@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import io
 import pytest
 
-from dag_executor.schema import NodeDef, NodeStatus, ModelTier
+from dag_executor.schema import NodeDef, NodeStatus, ModelTier, OutputFormat
 from dag_executor.runners.base import RunnerContext
 from dag_executor.runners.prompt import PromptRunner
 
@@ -644,3 +644,126 @@ class TestPromptRunnerSessionContext:
             call_args = mock_popen.call_args[0][0]
             # Should NOT include --session-id
             assert "--session-id" not in call_args
+
+# GW-5308: Test output_format JSON spreading into output dict
+def test_output_format_text_only_response_key():
+    """Test that output_format=TEXT (or None) produces only {response: ...}."""
+    node = NodeDef(
+        id="prompt1",
+        name="Text Prompt",
+        type="prompt",
+        prompt="What is 2+2?",
+        model=ModelTier.SONNET,
+        output_format=OutputFormat.TEXT
+    )
+    ctx = RunnerContext(node_def=node)
+
+    mock_process = MagicMock()
+    mock_process.stdout = io.StringIO("The answer is 4\n")
+    mock_process.stderr = MagicMock()
+    mock_process.stderr.read.return_value = ""
+    mock_process.stdin = MagicMock()
+    mock_process.wait.return_value = 0
+
+    with patch("subprocess.Popen", return_value=mock_process):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+        assert result.status == NodeStatus.COMPLETED
+        assert result.output == {"response": "The answer is 4\n"}
+        # No other keys should exist
+        assert len(result.output) == 1
+
+
+def test_output_format_json_spreads_parsed_fields():
+    """Test that output_format=JSON spreads parsed fields AND preserves response."""
+    node = NodeDef(
+        id="prompt1",
+        name="JSON Prompt",
+        type="prompt",
+        prompt="Generate JSON",
+        model=ModelTier.SONNET,
+        output_format=OutputFormat.JSON
+    )
+    ctx = RunnerContext(node_def=node)
+
+    json_output = '{"result": "success", "count": 42}\n'
+    mock_process = MagicMock()
+    mock_process.stdout = io.StringIO(json_output)
+    mock_process.stderr = MagicMock()
+    mock_process.stderr.read.return_value = ""
+    mock_process.stdin = MagicMock()
+    mock_process.wait.return_value = 0
+
+    with patch("subprocess.Popen", return_value=mock_process):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+        assert result.status == NodeStatus.COMPLETED
+        # Parsed fields should be spread
+        assert result.output["result"] == "success"
+        assert result.output["count"] == 42
+        # Raw text should still be in response
+        assert result.output["response"] == json_output
+
+
+def test_output_format_json_invalid_json_fallback():
+    """Test that invalid JSON with output_format=JSON falls back to text-only."""
+    node = NodeDef(
+        id="prompt1",
+        name="JSON Prompt",
+        type="prompt",
+        prompt="Generate JSON",
+        model=ModelTier.SONNET,
+        output_format=OutputFormat.JSON
+    )
+    ctx = RunnerContext(node_def=node)
+
+    # Invalid JSON output
+    invalid_json = "This is not valid JSON\n"
+    mock_process = MagicMock()
+    mock_process.stdout = io.StringIO(invalid_json)
+    mock_process.stderr = MagicMock()
+    mock_process.stderr.read.return_value = ""
+    mock_process.stdin = MagicMock()
+    mock_process.wait.return_value = 0
+
+    with patch("subprocess.Popen", return_value=mock_process):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+        assert result.status == NodeStatus.COMPLETED
+        # Should fall back to text-only behavior
+        assert result.output == {"response": invalid_json}
+
+
+def test_output_format_json_collision_response_preserved():
+    """Test that if parsed JSON contains 'response' key, raw text wins."""
+    node = NodeDef(
+        id="prompt1",
+        name="JSON Prompt",
+        type="prompt",
+        prompt="Generate JSON",
+        model=ModelTier.SONNET,
+        output_format=OutputFormat.JSON
+    )
+    ctx = RunnerContext(node_def=node)
+
+    # JSON that contains a "response" key
+    json_output = '{"response": "parsed_value", "other": "data"}\n'
+    mock_process = MagicMock()
+    mock_process.stdout = io.StringIO(json_output)
+    mock_process.stderr = MagicMock()
+    mock_process.stderr.read.return_value = ""
+    mock_process.stdin = MagicMock()
+    mock_process.wait.return_value = 0
+
+    with patch("subprocess.Popen", return_value=mock_process):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+        assert result.status == NodeStatus.COMPLETED
+        # Raw text should win - backward compat guarantee
+        assert result.output["response"] == json_output
+        # Other parsed fields should still be present
+        assert result.output["other"] == "data"

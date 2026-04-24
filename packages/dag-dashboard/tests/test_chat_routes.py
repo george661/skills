@@ -154,3 +154,17 @@ def test_post_node_chat_sse_broadcast_includes_node_id(test_app):
     assert "content" in data
     # Node ID is implicit in the endpoint path, but the stored message has it
     # The SSE broadcast will include node_id from the database record
+
+
+def test_conversation_router_mounts_cleanly(test_app):
+    """Verify conversation router mounts without route collisions."""
+    # The test_app fixture already includes both routers
+    # Just verify we can reach both the chat endpoint and the conversation endpoint
+    
+    # Chat endpoint should still work
+    response = test_app.get("/api/workflows/run-123/chat/history")
+    assert response.status_code == 200
+    
+    # Conversation endpoint should be accessible (returns 404 for unknown conversation)
+    response = test_app.get("/api/conversations/test-conv/messages")
+    assert response.status_code == 404

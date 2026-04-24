@@ -858,6 +858,39 @@ def get_workflow_chat_history(
         conn.close()
 
 
+def get_conversation_chat_history(
+    db_path: Path,
+    conversation_id: str,
+    limit: int = 50,
+    offset: int = 0
+) -> List[Dict[str, Any]]:
+    """Get paginated chat history for a conversation across all runs.
+
+    Args:
+        db_path: Path to SQLite database
+        conversation_id: Conversation ID
+        limit: Maximum number of messages to return
+        offset: Number of messages to skip
+
+    Returns:
+        List of chat messages ordered by created_at, id (chronological across runs)
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT * FROM chat_messages
+            WHERE conversation_id = ?
+            ORDER BY created_at ASC, id ASC
+            LIMIT ? OFFSET ?
+            """,
+            (conversation_id, limit, offset)
+        )
+        return [_row_to_dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
 def check_rate_limit(
     db_path: Path,
     run_id: str,

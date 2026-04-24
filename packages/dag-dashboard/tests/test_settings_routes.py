@@ -267,3 +267,51 @@ def test_node_log_line_cap_db_override_applied_on_startup(tmp_path: Path) -> Non
     with TestClient(app) as client:
         # Verify collector has the db value
         assert app.state.collector.node_log_line_cap == 12345
+
+
+def test_put_allow_destructive_nodes_true(client: TestClient) -> None:
+    """Test PUT /api/settings with allow_destructive_nodes=true returns 200."""
+    response = client.put("/api/settings", json={"updates": {"allow_destructive_nodes": True}})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "settings" in data
+    assert data["settings"]["allow_destructive_nodes"]["value"] is True
+
+
+def test_put_allow_destructive_nodes_false(client: TestClient) -> None:
+    """Test PUT /api/settings with allow_destructive_nodes=false returns 200."""
+    response = client.put("/api/settings", json={"updates": {"allow_destructive_nodes": False}})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "settings" in data
+    assert data["settings"]["allow_destructive_nodes"]["value"] is False
+
+
+def test_put_allow_destructive_nodes_rejects_non_bool(client: TestClient) -> None:
+    """Test PUT /api/settings rejects non-bool value for allow_destructive_nodes."""
+    response = client.put("/api/settings", json={"updates": {"allow_destructive_nodes": "yes"}})
+
+    assert response.status_code == 400
+    data = response.json()
+    assert "detail" in data
+    assert "errors" in data["detail"]
+    errors = {e["key"]: e["detail"] for e in data["detail"]["errors"]}
+    assert "allow_destructive_nodes" in errors
+    assert "must be boolean" in errors["allow_destructive_nodes"]
+
+
+def test_get_settings_includes_allow_destructive_nodes(client: TestClient) -> None:
+    """Test GET /api/settings includes allow_destructive_nodes in merged response."""
+    response = client.get("/api/settings")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "settings" in data
+    assert "allow_destructive_nodes" in data["settings"]
+
+    # Should have default value (False) and source "default"
+    setting = data["settings"]["allow_destructive_nodes"]
+    assert setting["value"] is False
+    assert setting["source"] == "default"

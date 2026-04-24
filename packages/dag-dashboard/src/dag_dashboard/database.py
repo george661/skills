@@ -1,4 +1,40 @@
-"""Database initialization and schema management."""
+"""Database initialization and schema management.
+
+Schema Coordination: PRP-PLAT-010 (GW-5303) and PRP-PLAT-009 (GW-5269)
+========================================================================
+
+The chat_messages table contains two orthogonal column groups for tracking
+message origin and semantic grouping:
+
+1. **Semantic Grouping (PRP-010, GW-5303)**: conversation_id, session_id,
+   parent_session_id, session_transition_reason
+   - Tracks which orchestrator run produced the message
+   - conversation_id: identifier for the overall conversation thread
+   - session_id: identifier for the specific orchestrator session
+
+2. **Transport Origin (PRP-009, GW-5269)**: source, source_ref
+   - Tracks where the message came from (web, slack, cli)
+   - source: one of 'web', 'slack', 'cli'
+   - source_ref: transport-specific reference
+
+**Coordination Rule for Web-Origin Rows:**
+
+When both PRP-009 and PRP-010 are deployed:
+- For web-origin rows: source='web', source_ref contains hostname only
+  (NOT conversation_id), because conversation_id is a dedicated first-class
+  column for semantic grouping
+- For slack-origin rows: source='slack', source_ref contains thread_ts
+- For cli-origin rows: source='cli', source_ref contains hostname
+
+**Migration Ordering:**
+
+Either PRP can land first. Whichever lands second MUST be additive:
+- ALTER TABLE ADD COLUMN only (no DROP, no RENAME)
+- No backfilling between source_ref and conversation_id
+- Tests in test_database.py encode this contract as a regression guard
+
+See GW-5323 for the coordination task that establishes this contract.
+"""
 import os
 import sqlite3
 from pathlib import Path
@@ -430,6 +466,12 @@ def init_db(db_path: Path, fts5_enabled: bool = False) -> None:
 
         try:
             cursor.execute("ALTER TABLE workflow_runs ADD COLUMN conversation_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        # Add index for conversation_id queries on chat_messages
+        try:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_conv_created ON chat_messages(conversation_id, created_at)")
         except sqlite3.OperationalError:
             pass
 
