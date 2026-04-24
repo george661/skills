@@ -248,20 +248,28 @@ def test_prompt_unresolved_reference_raises_variable_resolution_error():
         assert "missing_var" in result.node_results["prompt1"].error.lower()
 
 
-def test_prompt_file_path_unaffected_by_resolved_inputs():
-    """Test that prompt_file still uses --file, not stdin (regression guard)."""
+def test_prompt_file_path_unaffected_by_resolved_inputs(tmp_path):
+    """prompt_file still wins over resolved_inputs["prompt"] (regression guard).
+
+    GW-5356: transport is unified on stdin — the test now asserts the file
+    contents reach the subprocess, and the spurious "prompt" in resolved_inputs
+    is ignored.
+    """
+    prompt_path = tmp_path / "test.md"
+    prompt_path.write_text("USE THIS FILE BODY")
+
     node = NodeDef(
         id="p1",
         name="File Prompt",
         type="prompt",
-        prompt_file="prompts/test.md",
-        model=ModelTier.SONNET
+        prompt_file=str(prompt_path),
+        model=ModelTier.SONNET,
     )
 
-    # Even if resolved_inputs has a "prompt" key, prompt_file should take precedence
+    # Even with a stray "prompt" in resolved_inputs, prompt_file should win.
     ctx = RunnerContext(
         node_def=node,
-        resolved_inputs={"prompt": "should be ignored"}
+        resolved_inputs={"prompt": "should be ignored"},
     )
 
     mock_process = MagicMock()
@@ -275,9 +283,6 @@ def test_prompt_file_path_unaffected_by_resolved_inputs():
         result = runner.run(ctx)
 
         assert result.status == NodeStatus.COMPLETED
-
-        # Verify --file was used, not --prompt-stdin
+        mock_process.stdin.write.assert_called_with("USE THIS FILE BODY")
         call_args = mock_popen.call_args[0][0]
-        assert "--file" in call_args
-        assert "prompts/test.md" in call_args
-        assert "--prompt-stdin" not in call_args
+        assert "--file" not in call_args

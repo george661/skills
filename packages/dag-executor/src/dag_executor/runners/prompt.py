@@ -15,8 +15,21 @@ from dag_executor.conversations import (
     build_conversation_message_appended_event,
 )
 from dag_executor.events import EventType, WorkflowEvent
+from dag_executor.model_invocation import (
+    Invocation,
+    build_agent_invocation,
+    build_completion_invocation,
+    resolve_alias,
+)
 from dag_executor.model_resolver import resolve_model
-from dag_executor.schema import ContextMode, ModelTier, NodeResult, NodeStatus, OutputFormat
+from dag_executor.schema import (
+    ContextMode,
+    ModelTier,
+    NodeMode,
+    NodeResult,
+    NodeStatus,
+    OutputFormat,
+)
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 
 logger = logging.getLogger(__name__)
@@ -103,47 +116,54 @@ class PromptRunner(BaseRunner):
         # Resolve session for conversation continuity
         session_id, transition_reason, parent_session_id = _resolve_session(ctx)
 
-        # Dispatcher is installed by scripts/install.sh into ~/.claude/hooks/.
-        dispatch_script = Path.home() / ".claude" / "hooks" / "dispatch-local.sh"
-        cmd = [str(dispatch_script), "--model", resolved_model.value]
-
-        # Add session ID if conversation context is present
-        if session_id is not None:
-            cmd.extend(["--session-id", session_id])
-
-        # Handle prompt vs prompt_file. Inline prompts go via stdin (avoids arg
-        # length limits); prompt_file is passed through --file.
-        prompt_input = None
-
-        # prompt_file takes precedence (never resolved, always direct file reference)
+        # Resolve the prompt text. prompt_file takes precedence over inline
+        # prompt (schema enforces they're mutually exclusive). Both paths end
+        # up as a single string fed to the subprocess on stdin.
         if node.prompt_file is not None:
-            cmd.extend(["--file", node.prompt_file])
-        elif node.prompt is not None:
+            try:
+                prompt_input: str = Path(node.prompt_file).read_text()
+            except OSError as exc:
+                return NodeResult(
+                    status=NodeStatus.FAILED,
+                    error=f"prompt_file read failed: {exc}",
+                )
+        else:
             # Use resolved prompt from executor if available, else fall back to node.prompt
             resolved_prompt = ctx.resolved_inputs.get("prompt") if ctx.resolved_inputs else None
-            effective_prompt = resolved_prompt if resolved_prompt is not None else node.prompt
-            cmd.append("--prompt-stdin")
-            prompt_input = effective_prompt
+            prompt_input = resolved_prompt if resolved_prompt is not None else (node.prompt or "")
+
+        # GW-5356: branch on node.mode. Missing mode falls back to AGENT with
+        # a deprecation warning already emitted at dry-run (see validator).
+        mode = node.mode or NodeMode.AGENT
+
+        invocation: Invocation
+        if mode is NodeMode.AGENT:
+            invocation = build_agent_invocation(resolved_model, prompt_input, session_id=session_id)
+        else:
+            endpoint = resolve_alias(resolved_model)
+            invocation = build_completion_invocation(endpoint, prompt_input, session_id=session_id)
 
         # Execute CLI with streaming support
         process = None
         try:
             # Use Popen for line-by-line streaming
             process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE if prompt_input else None,
+                invocation.cmd,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                env=invocation.env,
+                text=True,
             )
 
             # Register with subprocess registry so cancel can SIGTERM it
             if ctx.subprocess_registry is not None:
                 ctx.subprocess_registry.register(process)
 
-            # Write input if provided
-            if prompt_input and process.stdin:
-                process.stdin.write(prompt_input)
+            # Always close stdin after writing; both invocation shapes read
+            # the prompt from stdin (empty string is a valid no-op payload).
+            if process.stdin:
+                process.stdin.write(invocation.stdin_text)
                 process.stdin.close()
 
             # Stream output line by line

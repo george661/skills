@@ -57,8 +57,19 @@ def test_prompt_inline_mode(inline_prompt_node):
         assert "--prompt-stdin" in call_args
 
 
-def test_prompt_file_mode(file_prompt_node):
-    """Test prompt_file mode constructs correct CLI args."""
+def test_prompt_file_mode(file_prompt_node, tmp_path, monkeypatch):
+    """prompt_file contents are read from disk and fed to the subprocess on stdin.
+
+    GW-5356: dispatch-local.sh never implemented --file; the old runner test
+    encoded an aspirational contract. Under the unified model_invocation layer,
+    both prompt_file and inline prompt end up as a single stdin payload — the
+    transport is the same regardless of mode.
+    """
+    # Stage a real prompt file so the runner can read it.
+    prompt_path = tmp_path / "analyze.md"
+    prompt_path.write_text("ANALYZE THIS FILE")
+    monkeypatch.setattr(file_prompt_node, "prompt_file", str(prompt_path))
+
     ctx = RunnerContext(node_def=file_prompt_node)
 
     mock_process = MagicMock()
@@ -72,11 +83,11 @@ def test_prompt_file_mode(file_prompt_node):
         result = runner.run(ctx)
 
         assert result.status == NodeStatus.COMPLETED
+        # Verify the file contents were written to stdin.
+        mock_process.stdin.write.assert_called_with("ANALYZE THIS FILE")
+        # Defense in depth: no dead --file flag lingering in the cmd.
         call_args = mock_popen.call_args[0][0]
-        # prompt_file → --file <path>, no stdin flag.
-        assert "--file" in call_args
-        assert "prompts/analyze.md" in call_args
-        assert "--prompt-stdin" not in call_args
+        assert "--file" not in call_args
 
 
 def test_prompt_model_tier_mapping():

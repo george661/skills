@@ -28,6 +28,8 @@ nodes:
   - id: ask_model
     name: Ask Model for a One-Liner
     type: prompt
+    mode: completion       # bare LLM call, no tools, no Claude Code harness
+    model: sonnet          # tier resolved via ~/.claude/config/model-routing.json
     context: shared
     prompt: |
       Give me a single short sentence about $topic. Just the sentence, nothing else.
