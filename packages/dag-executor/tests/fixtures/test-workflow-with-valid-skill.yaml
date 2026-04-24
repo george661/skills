@@ -1,0 +1,9 @@
+workflow:
+  id: test-valid-skill
+  description: Test workflow with valid skill reference
+
+nodes:
+  - id: test-node
+    type: bash
+    script: |
+      npx tsx ~/.claude/skills/issues/get_issue.ts '{"issue_key": "TEST-123"}'

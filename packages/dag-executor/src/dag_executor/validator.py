@@ -354,6 +354,7 @@ class WorkflowValidator:
         self._check_graph_structure(workflow_def, nodes_map, result)
         self._check_node_types(workflow_def, nodes_map, result)
         self._check_skill_references(workflow_def, nodes_map, result)
+        self._check_script_skill_paths(workflow_def, nodes_map, result, yaml_path)
         self._check_command_references(workflow_def, nodes_map, result)
         self._check_input_contracts(workflow_def, result)
         self._check_output_references(workflow_def, nodes_map, result)
@@ -756,3 +757,39 @@ class WorkflowValidator:
         contract_validator = ContractValidator(workflows_dir=self.workflows_dir)
         contract_issues = contract_validator.check_contracts(workflow_def)
         result.issues.extend(contract_issues)
+    def _check_script_skill_paths(
+        self,
+        workflow_def: WorkflowDef,
+        nodes_map: Dict[str, NodeDef],
+        result: ValidationResult,
+        yaml_path: Optional[str] = None,
+    ) -> None:
+        """Check bash script nodes for npx tsx ~/.claude/skills/... references.
+
+        Validates against repo skills/ directory (source of truth), not ~/.claude/skills/ (install target).
+        """
+        if not self.skills_dir or not self.skills_dir.exists():
+            # Skip if skills_dir not available (e.g., minimal CI environment)
+            return
+
+        skill_ref_pattern = re.compile(
+            r"npx\s+tsx\s+(~/.claude/skills/[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+\.(?:ts|sh|py|md))"
+        )
+
+        for node in workflow_def.nodes:
+            if node.type == "bash" and node.script:
+                for match in skill_ref_pattern.finditer(node.script):
+                    ref = match.group(1)
+                    # Translate ~/.claude/skills/... to repo skills/...
+                    repo_relative_path = ref.replace("~/.claude/skills/", "")
+                    repo_path = self.skills_dir / repo_relative_path
+                    if not repo_path.exists():
+                        yaml_ref = f" (workflow: {yaml_path})" if yaml_path else ""
+                        result.issues.append(
+                            ValidationIssue(
+                                severity="error",
+                                node_id=node.id,
+                                code="missing_script_skill",
+                                message=f"Bash script references missing skill file: {ref} (resolved to {repo_path}{yaml_ref})",
+                            )
+                        )
