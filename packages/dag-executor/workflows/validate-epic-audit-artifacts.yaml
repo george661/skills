@@ -13,6 +13,10 @@ inputs:
     type: string
     required: true
     pattern: "^[a-zA-Z0-9_-]+( [a-zA-Z0-9_-]+)*$"
+  expected_routes:
+    type: string
+    required: false
+    description: "Optional space-separated list of API routes to check (e.g., '/api/v1/users /api/v1/orgs'). If empty, route check returns n/a."
 
 state:
   resolved_repo_paths:
@@ -57,33 +61,32 @@ nodes:
     script: |
       # Phase 0: Resolve repository paths using the out-of-tree resolver (Task 11)
       # Loop through space-separated repos input and resolve each to absolute path
-      
-      declare -A repo_paths
+      # Uses parallel arrays (bash 3.2 compatible) instead of associative arrays
+
+      repo_names=()
+      repo_paths=()
       unresolved=()
-      
+
       for repo in $repos; do
         # Use resolve_repo_path from dag_executor.repo_paths (runtime API)
         repo_path=$(python3 -c "from dag_executor.repo_paths import resolve_repo_path; print(resolve_repo_path('$repo'))" 2>/dev/null || echo "")
-        
+
         if [ -n "$repo_path" ] && [ -d "$repo_path" ]; then
-          repo_paths["$repo"]="$repo_path"
+          repo_names+=("$repo")
+          repo_paths+=("$repo_path")
           # Fetch latest main for each resolved repo
           (cd "$repo_path" && git fetch origin main 2>/dev/null) || true
         else
           unresolved+=("$repo")
         fi
       done
-      
-      # Build JSON output
-      paths_json="{"
-      first=true
-      for repo in "${!repo_paths[@]}"; do
-        [ "$first" = false ] && paths_json+=","
-        paths_json+="\"$repo\":\"${repo_paths[$repo]}\""
-        first=false
-      done
-      paths_json+="}"
-      
+
+      # Build JSON output using jq from parallel arrays
+      paths_json=$(jq -n \
+        --argjson names "$(printf '%s\n' "${repo_names[@]}" | jq -R . | jq -s .)" \
+        --argjson paths "$(printf '%s\n' "${repo_paths[@]}" | jq -R . | jq -s .)" \
+        '[range($names | length) | {($names[.]): $paths[.]}] | add // {}')
+
       # Output results
       jq -n \
         --argjson paths "$paths_json" \
@@ -103,6 +106,7 @@ nodes:
     depends_on:
       - resolve_paths
     on_failure: continue
+    trigger_rule: all_done
     script: |
       # Phase 2: Deploy gate validation per repo
       # Routes by deploy-strategy from CLAUDE.md Validation Profile
@@ -134,10 +138,31 @@ nodes:
             # Use list_builds.ts skill to check Concourse
             build_check=$(npx tsx ~/.claude/skills/concourse/list_builds.ts "{\"pipeline\": \"$repo\", \"limit\": 1}" 2>/dev/null || echo '{"builds":[]}')
             build_count=$(echo "$build_check" | jq '.builds | length')
-            
+
             if [ "$build_count" -gt 0 ]; then
               latest_build=$(echo "$build_check" | jq -r '.builds[0]')
-              deploy_results+="\"$repo\":{\"strategy\":\"concourse\",\"result\":\"pass\",\"build\":$latest_build,\"profile_missing\":$profile_missing}"
+              build_sha=$(echo "$latest_build" | jq -r '.commit_sha // empty')
+              build_timestamp=$(echo "$latest_build" | jq -r '.end_time // empty')
+              deploy_stale=false
+
+              # Check SHA is ancestor of origin/main
+              if [ -n "$build_sha" ]; then
+                cd "$repo_path"
+                if ! git merge-base --is-ancestor "$build_sha" origin/main 2>/dev/null; then
+                  deploy_stale=true
+                fi
+
+                # Check build timestamp vs latest merged Epic PR
+                if [ -n "$build_timestamp" ]; then
+                  # Get latest merged PR timestamp that references epic
+                  latest_pr_time=$(gh pr list --repo "george661/$repo" --state merged --search "$epic" --limit 1 --json mergedAt --jq '.[0].mergedAt // empty' 2>/dev/null || echo "")
+                  if [ -n "$latest_pr_time" ] && [ "$build_timestamp" "<" "$latest_pr_time" ]; then
+                    deploy_stale=true
+                  fi
+                fi
+              fi
+
+              deploy_results+="\"$repo\":{\"strategy\":\"concourse\",\"result\":\"pass\",\"build\":$latest_build,\"deploy_stale\":$deploy_stale,\"profile_missing\":$profile_missing}"
             else
               deploy_results+="\"$repo\":{\"strategy\":\"concourse\",\"result\":\"fail\",\"error\":\"no_builds\",\"profile_missing\":$profile_missing}"
             fi
@@ -169,14 +194,6 @@ nodes:
             deploy_results+="\"$repo\":{\"strategy\":\"unknown\",\"result\":\"n/a\",\"profile_missing\":true}"
             ;;
         esac
-        
-        # gw-functions API Gateway addendum
-        if [ "$repo" = "gw-functions" ]; then
-          gw_functions_path="$repo_path"
-          # Check API Gateway deployment timestamp
-          apigw_check=$(aws apigateway get-stages --rest-api-id $(aws apigateway get-rest-apis --profile ghostdog-dev --query "items[?name=='gw-api-dev'].id" --output text) --profile ghostdog-dev 2>/dev/null || echo '{"item":[]}')
-          # Store in deploy_results (simplified for now)
-        fi
       done
       
       deploy_results+="}"
@@ -198,6 +215,7 @@ nodes:
     depends_on:
       - deploy_gate
     on_failure: continue
+    trigger_rule: all_done
     script: |
       # Phase 3: Test artifacts validation
       # Check that test-task child issues reference paths that exist on origin/main
@@ -218,14 +236,15 @@ nodes:
       
       # For each test task, extract file paths from description and verify
       missing_paths=()
-      
-      echo "$test_tasks" | jq -c '.issues[]' | while read -r task; do
+
+      # Use process substitution to avoid subshell - mutations must persist
+      while read -r task; do
         key=$(echo "$task" | jq -r '.key')
         desc=$(echo "$task" | jq -r '.fields.description.content[].content[]?.text // empty')
-        
+
         # Extract paths (simple pattern - improve as needed)
-        paths=$(echo "$desc" | grep -oE '[a-zA-Z0-9_/-]+\.(ts|js|py|go|yaml|json)' || true)
-        
+        paths=$(echo "$desc" | grep -oE '[a-zA-Z0-9_/-]+\.(ts|js|py|go|yaml|json|hurl|spec\.ts)' || true)
+
         for path in $paths; do
           # Determine which repo this path belongs to
           for repo in $(echo "$resolved_paths" | jq -r 'keys[]'); do
@@ -238,7 +257,7 @@ nodes:
           # Path not found in any repo
           missing_paths+=("$path")
         done
-      done
+      done < <(echo "$test_tasks" | jq -c '.issues[]')
       
       if [ ${#missing_paths[@]} -gt 0 ]; then
         jq -n \
@@ -263,6 +282,7 @@ nodes:
     depends_on:
       - test_artifacts
     on_failure: continue
+    trigger_rule: all_done
     script: |
       # Phase 4: Smoke baseline validation
       # Run gw-functions smoke tests if present and compare against baseline
@@ -327,6 +347,7 @@ nodes:
     depends_on:
       - smoke_baseline
     on_failure: continue
+    trigger_rule: all_done
     script: |
       # Phase 5: Migration validation
       # Check gw-migrations repo and DynamoDB table state
@@ -387,6 +408,7 @@ nodes:
     depends_on:
       - migration_check
     on_failure: continue
+    trigger_rule: all_done
     script: |
       # Phase 6: API Gateway route validation
       # Verify expected API paths exist in API Gateway
@@ -410,19 +432,32 @@ nodes:
       
       resources=$(aws apigateway get-resources --rest-api-id "$rest_api_id" \
         --profile ghostdog-dev --region us-east-1 2>/dev/null || echo '{"items":[]}')
-      
+
       resource_count=$(echo "$resources" | jq '.items | length')
-      
-      # Check for expected paths from PRP (simplified)
-      expected_paths=("/api/v1/users" "/api/v1/organizations" "/api/v1/sessions")
+
+      # Check for expected paths from input (or skip if not provided)
+      if [ -z "$expected_routes" ]; then
+        # No routes specified - return n/a
+        jq -n \
+          --argjson total "$resource_count" \
+          '{
+            route_gate: {
+              result: "n/a",
+              reason: "no expected routes provided",
+              total_resources: $total
+            }
+          }'
+        exit 0
+      fi
+
+      # Parse expected routes from input
       missing_paths=()
-      
-      for path in "${expected_paths[@]}"; do
+      for path in $expected_routes; do
         if ! echo "$resources" | jq -e ".items[] | select(.path == \"$path\")" > /dev/null 2>&1; then
           missing_paths+=("$path")
         fi
       done
-      
+
       if [ ${#missing_paths[@]} -gt 0 ]; then
         jq -n \
           --arg missing "$(IFS=,; echo "${missing_paths[*]}")" \
