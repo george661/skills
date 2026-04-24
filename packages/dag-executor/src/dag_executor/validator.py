@@ -466,6 +466,23 @@ class WorkflowValidator:
                     ),
                 ))
 
+            # GW-5356: mode is required on prompt nodes. Missing falls back to
+            # agent for backward compat, but emits a deprecation warning so
+            # authors migrate. Once all in-tree workflows declare mode, flip
+            # this to an error and drop the runner fallback.
+            if node.type == "prompt" and node.mode is None:
+                result.issues.append(ValidationIssue(
+                    severity="warning",
+                    node_id=node.id,
+                    code="prompt_mode_missing",
+                    message=(
+                        "prompt node is missing `mode:` — falling back to "
+                        "`mode: agent` (full Claude Code harness). Declare "
+                        "`mode: agent` for harness/tool use or `mode: completion` "
+                        "for bare LLM calls (no tools, no CLAUDE.md)."
+                    ),
+                ))
+
     def _check_skill_references(
         self,
         workflow_def: WorkflowDef,
