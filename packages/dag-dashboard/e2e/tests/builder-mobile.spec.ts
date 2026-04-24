@@ -3,14 +3,30 @@ import { test, expect, devices, type Page, type ConsoleMessage } from '@playwrig
 /**
  * Fail the block if any console error fires. Inlined because the shared
  * helpers module doesn't export this (yet).
+ *
+ * Filters browser-native resource-load errors for /drafts/current, which
+ * returns 404 when no draft has been saved yet — a legitimate fresh-workflow
+ * state, not a test failure.
  */
+const EXPECTED_RESOURCE_ERROR_PATTERNS = [
+  /Failed to load resource.*drafts\/current/i,
+  /drafts\/current.*404/i,
+];
+
+function isExpectedConsoleError(text: string): boolean {
+  return EXPECTED_RESOURCE_ERROR_PATTERNS.some((re) => re.test(text));
+}
+
 async function expectNoConsoleErrors(
   page: Page,
   run: () => Promise<void>,
 ): Promise<void> {
   const errors: string[] = [];
   const listener = (msg: ConsoleMessage): void => {
-    if (msg.type() === 'error') errors.push(msg.text());
+    if (msg.type() !== 'error') return;
+    const text = msg.text();
+    if (isExpectedConsoleError(text)) return;
+    errors.push(text);
   };
   page.on('console', listener);
   try {
