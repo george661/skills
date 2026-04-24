@@ -857,6 +857,7 @@ class WorkflowExecutor:
                 parent_run_id=run_id,
                 conversation_id=conversation_id,
                 db_path=db_path,
+                channel_store=ctx.channel_store,
                 _recursion_depth=ctx._recursion_depth,
             )
 
@@ -1359,10 +1360,18 @@ class WorkflowExecutor:
         # Those are bash-local variables — the subshell expands them, so
         # resolve_variables must leave them literal or it'll fail with
         # "Cannot resolve variable reference: $local_name".
+        #
+        # Also skip `reads:` state-channel names — the bash runner injects
+        # them into the subprocess environment directly, so substituting
+        # their (often-JSON) values inline into the script text would corrupt
+        # outer double-quoted strings. Env-var passthrough is the safe
+        # transport for structured values.
         skip_names: Optional[set[str]] = None
         if node_def.type == "bash" and node_def.script:
             from dag_executor.bash_locals import extract_bash_locals
             skip_names = extract_bash_locals(node_def.script)
+            if node_def.reads:
+                skip_names = skip_names | set(node_def.reads)
 
         # Resolve variables
         resolved = resolve_variables(

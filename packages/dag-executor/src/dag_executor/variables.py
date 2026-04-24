@@ -5,6 +5,7 @@ Resolves variable references in the form:
 - $input-name — references to workflow inputs
 - $ENV_VAR — process environment variables on the whitelist
 """
+import json
 import os
 import re
 from typing import Any, Dict, List, Tuple, Optional, TYPE_CHECKING
@@ -56,6 +57,24 @@ class VariableResolutionError(Exception):
 
 # Regex to match $variable or $node.field.nested or $function(args)
 VARIABLE_PATTERN = re.compile(r'\$([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*)')
+
+
+def _interpolate(value: Any) -> str:
+    """Render a resolved value for string interpolation inside a script.
+
+    Strings are inserted verbatim. Everything else goes through json.dumps so
+    bash/jq pipelines see valid JSON rather than Python's repr of a dict
+    (which uses single quotes and `True`/`False`/`None`). This matters for
+    workflows that pipe an upstream state channel through `jq`:
+    `echo "$children_list" | jq '.issues[]'` only works if the variable
+    expands to JSON, not Python-repr.
+    """
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value)
+    except (TypeError, ValueError):
+        return str(value)
 # Regex to match callable references like $repo_path(slug)
 CALLABLE_PATTERN = re.compile(r'\$([a-zA-Z0-9_-]+)\(([^)]+)\)')
 
@@ -127,7 +146,7 @@ def _resolve_string(
         arg = match.group(2).strip() # e.g., "skills"
 
         resolved = _resolve_callable(func_name, arg, node_outputs, workflow_inputs, channel_store)
-        result = result.replace(full_match, str(resolved))
+        result = result.replace(full_match, _interpolate(resolved))
 
     # Now handle regular variable patterns
     matches = list(VARIABLE_PATTERN.finditer(result))
@@ -154,7 +173,7 @@ def _resolve_string(
             continue  # leave literal — bash will expand it
         resolved = _resolve_reference(reference, node_outputs, workflow_inputs, channel_store)
         # Convert resolved value to string for interpolation
-        result = result.replace(full_match, str(resolved))
+        result = result.replace(full_match, _interpolate(resolved))
 
     return result
 
