@@ -3,6 +3,10 @@
 Covers all 9 check methods with positive and negative test cases.
 """
 from pathlib import Path
+from typing import List
+
+import pytest
+
 from dag_executor.schema import (
     NodeDef,
     WorkflowDef,
@@ -1255,49 +1259,32 @@ def test_reports_yaml_path_and_node_id():
 
 
 def test_all_shipped_workflows_pass_extended_lint():
-    """Test that extended lint runs on all workflows and reports any issues.
+    """Every shipped workflow must reference only skill files that exist in repo source.
 
-    Note: This test documents known issues rather than failing. Many workflows reference:
-    - Router abstractions (vcs/, issues/, ci/) where the actual implementation is in provider-specific subdirs
-    - External services (agentdb skills moved to agentdb-mcp service)
-    - Renamed files (to be fixed in follow-up workflow audit PR)
-
-    The validator implementation is correct - these are real issues to be addressed separately.
+    This is the AC-31 enforcement: `dag-exec --dry-run` (plus the bash-embedded skill
+    path lint) passes on every file under packages/dag-executor/workflows/*.yaml.
     """
     workflows_dir = Path(__file__).parent.parent / "workflows"
     skills_dir = Path(__file__).parent.parent.parent.parent / "skills"
 
     if not workflows_dir.exists():
-        # Skip if workflows directory not found
-        return
+        pytest.skip("workflows directory not found")
 
     from dag_executor.parser import load_workflow
 
     validator = WorkflowValidator(skills_dir=skills_dir, workflows_dir=workflows_dir)
 
-    all_issues = []
-    for workflow_file in workflows_dir.glob("*.yaml"):
+    failures: List[str] = []
+    for workflow_file in sorted(workflows_dir.glob("*.yaml")):
         if workflow_file.parent.name == ".deprecated":
             continue
-
-        # Load and validate each workflow
         workflow = load_workflow(str(workflow_file))
         result = validator.validate(workflow, yaml_path=str(workflow_file))
+        for e in result.errors:
+            if e.code == "missing_script_skill":
+                failures.append(f"{workflow_file.name}: {e.message}")
 
-        # Collect script skill issues for reporting
-        script_skill_errors = [
-            e for e in result.errors
-            if e.code == "missing_script_skill"
-        ]
-        if script_skill_errors:
-            all_issues.extend([(workflow_file.name, e) for e in script_skill_errors])
-
-    # Document issues found (but don't fail - these are known issues to be fixed separately)
-    if all_issues:
-        print(f"\n\nFound {len(all_issues)} script skill reference issues across workflows:")
-        for wf_name, issue in all_issues:
-            print(f"  {wf_name}: {issue.message}")
-        print("\nThese will be addressed in follow-up workflow audit PRs.\n")
-
-    # Test passes - the validator correctly identifies issues
-    assert True
+    assert not failures, (
+        f"{len(failures)} workflow(s) reference skill files missing from repo source:\n"
+        + "\n".join(failures)
+    )
