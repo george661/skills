@@ -4,17 +4,23 @@ import { test, expect, devices, type Page, type ConsoleMessage } from '@playwrig
  * Fail the block if any console error fires. Inlined because the shared
  * helpers module doesn't export this (yet).
  *
- * Filters browser-native resource-load errors for /drafts/current, which
- * returns 404 when no draft has been saved yet — a legitimate fresh-workflow
- * state, not a test failure.
+ * Filters browser-native resource-load errors whose source URL points at
+ * endpoints that are legitimately-404 in a fresh-workflow state (no draft
+ * saved yet, no gates pending, no checkpoints). The browser emits
+ * "Failed to load resource: ... 404" with the URL in msg.location().url —
+ * the msg text itself doesn't include the URL, so we have to inspect
+ * location to decide whether to ignore.
  */
-const EXPECTED_RESOURCE_ERROR_PATTERNS = [
-  /Failed to load resource.*drafts\/current/i,
-  /drafts\/current.*404/i,
+const EXPECTED_404_URL_PATTERNS = [
+  /\/api\/workflows\/[^/]+\/drafts\/current/,
+  /\/api\/checkpoints\/workflows/,
 ];
 
-function isExpectedConsoleError(text: string): boolean {
-  return EXPECTED_RESOURCE_ERROR_PATTERNS.some((re) => re.test(text));
+function isExpectedResourceError(msg: ConsoleMessage): boolean {
+  const text = msg.text();
+  if (!/Failed to load resource/i.test(text)) return false;
+  const url = msg.location()?.url ?? '';
+  return EXPECTED_404_URL_PATTERNS.some((re) => re.test(url));
 }
 
 async function expectNoConsoleErrors(
@@ -24,9 +30,8 @@ async function expectNoConsoleErrors(
   const errors: string[] = [];
   const listener = (msg: ConsoleMessage): void => {
     if (msg.type() !== 'error') return;
-    const text = msg.text();
-    if (isExpectedConsoleError(text)) return;
-    errors.push(text);
+    if (isExpectedResourceError(msg)) return;
+    errors.push(msg.text());
   };
   page.on('console', listener);
   try {
@@ -102,8 +107,14 @@ test.describe('builder at iPad portrait (768×1024)', () => {
   test('pinch-zoom (wheel+ctrlKey) changes canvas transform', async ({ page }) => {
     await openBuilder(page);
 
+    // React Flow keeps .react-flow__viewport at visibility:hidden until the
+    // initial transform is applied. Assert the parent .react-flow is visible
+    // and poll for viewport's transform to be set before driving interaction.
+    await expect(page.locator('.react-flow')).toBeVisible();
     const viewport = page.locator('.react-flow__viewport');
-    await expect(viewport).toBeVisible();
+    await expect
+      .poll(async () => viewport.evaluate((el) => (el as HTMLElement).style.transform))
+      .not.toEqual('');
 
     const before = await viewport.evaluate((el) => (el as HTMLElement).style.transform);
 
