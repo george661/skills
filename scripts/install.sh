@@ -1024,7 +1024,7 @@ setup_project_hooks() {
 install_skills() {
     log_section "Installing Skills"
 
-    local skills_src="${REPO_DIR}/.claude/skills"
+    local skills_src="${REPO_DIR}/skills"
     local skills_dst="${CLAUDE_DIR}/skills"
 
     if [[ ! -d "$skills_src" ]]; then

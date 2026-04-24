@@ -278,7 +278,7 @@ nodes:
       - validation_criteria
     script: |
       # Store validation criteria in AgentDB
-      npx tsx ~/.claude/skills/reflexion/reflexion_store_episode.ts \
+      npx tsx ~/.claude/skills/reflexion/reflexion_store.ts \
         "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"validation-$issue_key\", \"input\": $validation_criteria, \"output\": \"stored\", \"reward\": 0.5, \"success\": true}"
 
   # ──────────────────────────────────────────────────────────
@@ -294,7 +294,7 @@ nodes:
       - worktree_info
     script: |
       # Store full implementation plan in AgentDB
-      npx tsx ~/.claude/skills/reflexion/reflexion_store_episode.ts \
+      npx tsx ~/.claude/skills/reflexion/reflexion_store.ts \
         "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"impl-plan-$issue_key\", \"input\": {\"issue_key\": \"$issue_key\", \"worktree_path\": \"${worktree_info.worktree_path}\", \"branch\": \"${worktree_info.branch}\"}, \"output\": $plan, \"reward\": 0.8, \"success\": true}"
 
   # ──────────────────────────────────────────────────────────

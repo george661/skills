@@ -1,0 +1,9 @@
+workflow:
+  id: test-missing-skill
+  description: Test workflow with missing skill reference
+
+nodes:
+  - id: test-node
+    type: bash
+    script: |
+      npx tsx ~/.claude/skills/bogus/nope.ts '{"test": "value"}'

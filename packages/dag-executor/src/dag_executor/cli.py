@@ -387,8 +387,15 @@ def run_dry_run(workflow_path: str) -> None:
     # Run pre-flight validation
     workflow_path_obj = Path(workflow_path)
     parent_dir = workflow_path_obj.parent
+
+    # Find repo root by walking up until we see a 'skills/' sibling directory
+    repo_root = workflow_path_obj.resolve()
+    while repo_root.parent != repo_root and not (repo_root / "skills").is_dir():
+        repo_root = repo_root.parent
+    skills_dir_candidate = repo_root / "skills"
+
     validator = WorkflowValidator(
-        skills_dir=parent_dir / "skills" if (parent_dir / "skills").exists() else None,
+        skills_dir=skills_dir_candidate if skills_dir_candidate.is_dir() else None,
         commands_dir=parent_dir / "commands" if (parent_dir / "commands").exists() else None,
         workflows_dir=parent_dir / "workflows" if (parent_dir / "workflows").exists() else None,
     )

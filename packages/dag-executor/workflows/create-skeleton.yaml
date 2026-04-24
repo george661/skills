@@ -191,8 +191,8 @@ nodes:
         if [ -z "$has_skeleton" ]; then
           # Link to first skeleton issue
           first_skeleton=$(echo "$skeleton_keys" | head -1)
-          npx tsx ~/.claude/skills/issues/link_issues.ts \
-            "{\"inward_key\": \"$child\", \"outward_key\": \"$first_skeleton\", \"link_type\": \"Blocks\"}" \
+          npx tsx ~/.claude/skills/issues/add_issue_link.ts \
+            "{\"inward_issue_key\": \"$child\", \"outward_issue_key\": \"$first_skeleton\", \"link_type\": \"Blocks\"}" \
             2>/dev/null || true
         fi
       done
