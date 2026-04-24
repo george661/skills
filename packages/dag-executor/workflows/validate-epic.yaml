@@ -349,17 +349,28 @@ nodes:
     type: bash
     depends_on:
       - transition_epic
+    reads:
+      - verdict
     script: |
-      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
-        \"session_id\": \"${TENANT_NAMESPACE}\",
-        \"task\": \"validate-epic-$epic\",
-        \"input\": {\"epic\": \"$epic\",
-          \"verdict\": \"$produce_verdict.verdict\"},
-        \"output\": \"$produce_verdict.summary\",
-        \"reward\": 1,
-        \"success\": true,
-        \"critique\": \"Validation complete\"
-      }"
+      # GW-5356: build the JSON payload with jq so upstream dict/string
+      # values from $verdict (a channel read) get properly JSON-encoded
+      # instead of being interpolated as bare Python repr into a shell
+      # double-quoted string.
+      payload=$(jq -nc \
+        --arg session "${TENANT_NAMESPACE:-default}" \
+        --arg task "validate-epic-$epic" \
+        --arg epic "$epic" \
+        --argjson verdict "$verdict" \
+        '{
+          session_id: $session,
+          task: $task,
+          input: {epic: $epic, verdict: $verdict.verdict},
+          output: $verdict.summary,
+          reward: 1,
+          success: true,
+          critique: "Validation complete"
+        }')
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "$payload"
 
   # ══════════════════════════════════════════════════════════════════
   # Phase 9: Print Summary
@@ -370,6 +381,8 @@ nodes:
     type: prompt
     depends_on:
       - store_episode
+    # Summary is cosmetic; still produce it even if episode storage failed.
+    trigger_rule: all_done
     model: sonnet
     mode: completion     # formatting markdown from workflow state
     prompt: |
