@@ -1,0 +1,576 @@
+---
+name: Validate Epic Audit Artifacts Sub-DAG
+config:
+  checkpoint_prefix: validate-epic-audit-artifacts
+  worktree: false
+
+inputs:
+  epic:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+  repos:
+    type: string
+    required: true
+    pattern: "^[a-zA-Z0-9_-]+( [a-zA-Z0-9_-]+)*$"
+  expected_routes:
+    type: string
+    required: false
+
+state:
+  resolved_repo_paths:
+    strategy: overwrite
+  deploy_gates:
+    strategy: overwrite
+  test_artifact_gates:
+    strategy: overwrite
+  smoke_gate:
+    strategy: overwrite
+  migration_gate:
+    strategy: overwrite
+  route_gate:
+    strategy: overwrite
+  hard_gate_failures:
+    strategy: overwrite
+
+outputs:
+  hard_gate_failures:
+    node: aggregate_result
+    field: hard_gate_failures
+  deploy_gates:
+    node: deploy_gate
+    field: deploy_gates
+  test_artifact_gates:
+    node: test_artifacts
+    field: test_artifact_gates
+  smoke_gate:
+    node: smoke_baseline
+    field: smoke_gate
+  migration_gate:
+    node: migration_check
+    field: migration_gate
+  route_gate:
+    node: route_check
+    field: route_gate
+
+nodes:
+  - id: resolve_paths
+    name: Resolve Repository Paths
+    type: bash
+    script: |
+      # Phase 0: Resolve repository paths using the out-of-tree resolver (Task 11)
+      # Loop through space-separated repos input and resolve each to absolute path
+      # Uses parallel arrays (bash 3.2 compatible) instead of associative arrays
+
+      repo_names=()
+      repo_paths=()
+      unresolved=()
+
+      for repo in $repos; do
+        # Use resolve_repo_path from dag_executor.repo_paths (runtime API)
+        repo_path=$(python3 -c "from dag_executor.repo_paths import resolve_repo_path; print(resolve_repo_path('$repo'))" 2>/dev/null || echo "")
+
+        if [ -n "$repo_path" ] && [ -d "$repo_path" ]; then
+          repo_names+=("$repo")
+          repo_paths+=("$repo_path")
+          # Fetch latest main for each resolved repo
+          (cd "$repo_path" && git fetch origin main 2>/dev/null) || true
+        else
+          unresolved+=("$repo")
+        fi
+      done
+
+      # Build JSON output using jq from parallel arrays
+      paths_json=$(jq -n \
+        --argjson names "$(printf '%s\n' "${repo_names[@]}" | jq -R . | jq -s .)" \
+        --argjson paths "$(printf '%s\n' "${repo_paths[@]}" | jq -R . | jq -s .)" \
+        '[range($names | length) | {($names[.]): $paths[.]}] | add // {}')
+
+      # Output results
+      jq -n \
+        --argjson paths "$paths_json" \
+        --arg unresolved "$(IFS=,; echo "${unresolved[*]}")" \
+        '{
+          resolved_paths: $paths,
+          unresolved_repos: ($unresolved | split(",") | map(select(length > 0))),
+          resolution_count: ($paths | length)
+        }'
+    output_format: json
+    writes:
+      - resolved_repo_paths
+
+  - id: deploy_gate
+    name: Deployment Gate Check
+    type: bash
+    depends_on:
+      - resolve_paths
+    on_failure: continue
+    trigger_rule: all_done
+    script: |
+      # Phase 2: Deploy gate validation per repo
+      # Routes by deploy-strategy from CLAUDE.md Validation Profile
+      
+      resolved_paths=$(jq -r '.resolved_paths' <<< "$resolved_repo_paths")
+      
+      deploy_results="{"
+      first=true
+      
+      for repo in $(echo "$resolved_paths" | jq -r 'keys[]'); do
+        repo_path=$(echo "$resolved_paths" | jq -r ".[\"$repo\"]")
+        
+        [ "$first" = false ] && deploy_results+=","
+        first=false
+        
+        # Read CLAUDE.md Validation Profile if it exists
+        strategy="concourse"  # default per plan
+        profile_missing=false
+        
+        if [ -f "$repo_path/CLAUDE.md" ]; then
+          strategy=$(grep -A 5 "^deploy-strategy:" "$repo_path/CLAUDE.md" | head -1 | cut -d: -f2 | xargs || echo "concourse")
+        else
+          profile_missing=true
+        fi
+        
+        # Route by strategy
+        case "$strategy" in
+          concourse)
+            # Use list_builds.ts skill to check Concourse
+            build_check=$(npx tsx ~/.claude/skills/concourse/list_builds.ts "{\"pipeline\": \"$repo\", \"limit\": 1}" 2>/dev/null || echo '{"builds":[]}')
+            build_count=$(echo "$build_check" | jq '.builds | length')
+
+            if [ "$build_count" -gt 0 ]; then
+              latest_build=$(echo "$build_check" | jq -r '.builds[0]')
+              build_sha=$(echo "$latest_build" | jq -r '.commit_sha // empty')
+              build_timestamp=$(echo "$latest_build" | jq -r '.end_time // empty')
+              deploy_stale=false
+
+              # Check SHA is ancestor of origin/main
+              if [ -n "$build_sha" ]; then
+                cd "$repo_path"
+                if ! git merge-base --is-ancestor "$build_sha" origin/main 2>/dev/null; then
+                  deploy_stale=true
+                fi
+
+                # Check build timestamp vs latest merged Epic PR
+                if [ -n "$build_timestamp" ]; then
+                  # Get latest merged PR timestamp that references epic
+                  latest_pr_time=$(gh pr list --repo "george661/$repo" --state merged --search "$epic" --limit 1 --json mergedAt --jq '.[0].mergedAt // empty' 2>/dev/null || echo "")
+                  if [ -n "$latest_pr_time" ] && [ "$build_timestamp" "<" "$latest_pr_time" ]; then
+                    deploy_stale=true
+                  fi
+                fi
+              fi
+
+              deploy_results+="\"$repo\":{\"strategy\":\"concourse\",\"result\":\"pass\",\"build\":$latest_build,\"deploy_stale\":$deploy_stale,\"profile_missing\":$profile_missing}"
+            else
+              deploy_results+="\"$repo\":{\"strategy\":\"concourse\",\"result\":\"fail\",\"error\":\"no_builds\",\"profile_missing\":$profile_missing}"
+            fi
+            ;;
+          
+          github-actions)
+            # Check GitHub Actions workflow runs
+            cd "$repo_path"
+            gh_check=$(gh run list --workflow ci.yml --branch main --limit 1 --json conclusion,status,databaseId,createdAt 2>/dev/null || echo '[]')
+            run_count=$(echo "$gh_check" | jq 'length')
+            
+            if [ "$run_count" -gt 0 ]; then
+              latest_run=$(echo "$gh_check" | jq -r '.[0]')
+              deploy_results+="\"$repo\":{\"strategy\":\"github-actions\",\"result\":\"pass\",\"run\":$latest_run,\"profile_missing\":$profile_missing}"
+            else
+              deploy_results+="\"$repo\":{\"strategy\":\"github-actions\",\"result\":\"fail\",\"error\":\"no_runs\",\"profile_missing\":$profile_missing}"
+            fi
+            ;;
+          
+          file-verification|none)
+            deploy_results+="\"$repo\":{\"strategy\":\"$strategy\",\"result\":\"n/a\",\"profile_missing\":$profile_missing}"
+            ;;
+          
+          manual)
+            deploy_results+="\"$repo\":{\"strategy\":\"manual\",\"result\":\"n/a\",\"deploy_manual_verify_needed\":true,\"profile_missing\":$profile_missing}"
+            ;;
+          
+          *)
+            deploy_results+="\"$repo\":{\"strategy\":\"unknown\",\"result\":\"n/a\",\"profile_missing\":true}"
+            ;;
+        esac
+      done
+      
+      deploy_results+="}"
+      
+      # Output
+      jq -n \
+        --argjson gates "$deploy_results" \
+        '{
+          deploy_gates: $gates
+        }'
+    reads:
+      - resolved_repo_paths
+    writes:
+      - deploy_gates
+
+  - id: test_artifacts
+    name: Test Artifacts Gate Check
+    type: bash
+    depends_on:
+      - deploy_gate
+    on_failure: continue
+    trigger_rule: all_done
+    script: |
+      # Phase 3: Test artifacts validation
+      # Check that test-task child issues reference paths that exist on origin/main
+      
+      resolved_paths=$(jq -r '.resolved_paths' <<< "$resolved_repo_paths")
+      
+      # Search for test-task children
+      test_tasks=$(npx tsx ~/.claude/skills/issues/search_issues.ts \
+        "{\"jql\": \"parent = $epic AND labels = test-task\", \"fields\": [\"key\",\"summary\",\"description\"]}" 2>/dev/null || echo '{"issues":[]}')
+      
+      test_count=$(echo "$test_tasks" | jq '.issues | length')
+      
+      if [ "$test_count" -eq 0 ]; then
+        # No test tasks - gate passes
+        echo '{"test_artifact_gates": {"result": "n/a", "test_task_count": 0}}'
+        exit 0
+      fi
+      
+      # For each test task, extract file paths from description and verify
+      missing_paths=()
+
+      # Use process substitution to avoid subshell - mutations must persist
+      while read -r task; do
+        key=$(echo "$task" | jq -r '.key')
+        desc=$(echo "$task" | jq -r '.fields.description.content[].content[]?.text // empty')
+
+        # Extract paths (simple pattern - improve as needed)
+        paths=$(echo "$desc" | grep -oE '[a-zA-Z0-9_/-]+\.(ts|js|py|go|yaml|json|hurl|spec\.ts)' || true)
+
+        for path in $paths; do
+          # Determine which repo this path belongs to
+          for repo in $(echo "$resolved_paths" | jq -r 'keys[]'); do
+            repo_path=$(echo "$resolved_paths" | jq -r ".[\"$repo\"]")
+            if (cd "$repo_path" && git ls-tree -r origin/main --name-only | grep -q "^$path$"); then
+              # Path exists
+              continue 2
+            fi
+          done
+          # Path not found in any repo
+          missing_paths+=("$path")
+        done
+      done < <(echo "$test_tasks" | jq -c '.issues[]')
+      
+      if [ ${#missing_paths[@]} -gt 0 ]; then
+        jq -n \
+          --arg missing "$(IFS=,; echo "${missing_paths[*]}")" \
+          '{
+            test_artifact_gates: {
+              result: "fail",
+              missing_paths: ($missing | split(","))
+            }
+          }'
+      else
+        echo '{"test_artifact_gates": {"result": "pass", "test_task_count": '$test_count'}}'
+      fi
+    reads:
+      - resolved_repo_paths
+    writes:
+      - test_artifact_gates
+
+  - id: smoke_baseline
+    name: Smoke Baseline Gate Check
+    type: bash
+    depends_on:
+      - test_artifacts
+    on_failure: continue
+    trigger_rule: all_done
+    script: |
+      # Phase 4: Smoke baseline validation
+      # Run gw-functions smoke tests if present and compare against baseline
+      
+      resolved_paths=$(jq -r '.resolved_paths' <<< "$resolved_repo_paths")
+      
+      # Check if gw-functions is in the repos list
+      if ! echo "$resolved_paths" | jq -e '.["gw-functions"]' > /dev/null 2>&1; then
+        echo '{"smoke_gate": {"result": "n/a", "reason": "gw-functions not in repos"}}'
+        exit 0
+      fi
+      
+      # Get gw-functions path from resolved paths
+      gw_functions_path=$(echo "$resolved_paths" | jq -r '.["gw-functions"]')
+      smoke_test_path="$gw_functions_path/tests/smoke/smoke-test.js"
+      
+      if [ ! -f "$smoke_test_path" ]; then
+        echo '{"smoke_gate": {"result": "n/a", "reason": "smoke test not found"}}'
+        exit 0
+      fi
+      
+      # Run smoke test
+      cd "$gw_functions_path"
+      smoke_output=$(node tests/smoke/smoke-test.js 2>&1 || true)
+      
+      # Parse test results (simplified - extract pass/fail counts)
+      pass_count=$(echo "$smoke_output" | grep -oE "passed: [0-9]+" | cut -d: -f2 | xargs || echo "0")
+      fail_count=$(echo "$smoke_output" | grep -oE "failed: [0-9]+" | cut -d: -f2 | xargs || echo "0")
+      
+      # Compare against baseline from AgentDB
+      baseline=$(npx tsx ~/.claude/skills/agentdb/pattern_search.ts \
+        '{"task": "smoke-baseline-gw-functions-dev"}' 2>/dev/null || echo '{"results":[]}')
+      
+      baseline_pass=$(echo "$baseline" | jq -r '.results[0].output.passed // 0' 2>/dev/null || echo "0")
+      
+      if [ "$pass_count" -lt "$baseline_pass" ]; then
+        result="regression"
+      else
+        result="pass"
+      fi
+      
+      jq -n \
+        --arg result "$result" \
+        --argjson passed "$pass_count" \
+        --argjson failed "$fail_count" \
+        --argjson baseline "$baseline_pass" \
+        '{
+          smoke_gate: {
+            result: $result,
+            current: { passed: $passed, failed: $failed },
+            baseline: $baseline
+          }
+        }'
+    reads:
+      - resolved_repo_paths
+    writes:
+      - smoke_gate
+
+  - id: migration_check
+    name: Migration Gate Check
+    type: bash
+    depends_on:
+      - smoke_baseline
+    on_failure: continue
+    trigger_rule: all_done
+    script: |
+      # Phase 5: Migration validation
+      # Check gw-migrations repo and DynamoDB table state
+      
+      resolved_paths=$(jq -r '.resolved_paths' <<< "$resolved_repo_paths")
+      
+      # Check if gw-migrations is in repos or if epic mentions schema
+      has_migrations=$(echo "$resolved_paths" | jq -e '.["gw-migrations"]' > /dev/null 2>&1 && echo "true" || echo "false")
+      
+      if [ "$has_migrations" = "false" ]; then
+        # Check if epic description mentions schema/migration keywords
+        epic_info=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
+          "{\"issue_key\": \"$epic\", \"fields\": \"description\"}" 2>/dev/null || echo '{}')
+        epic_text=$(echo "$epic_info" | jq -r '.fields.description.content[].content[]?.text // empty')
+        
+        if echo "$epic_text" | grep -qiE "(schema|migration|dynamodb|table)"; then
+          has_migrations="implied"
+        else
+          echo '{"migration_gate": {"result": "n/a", "reason": "no migration repo"}}'
+          exit 0
+        fi
+      fi
+      
+      # Check recent migrations
+      if [ "$has_migrations" != "false" ]; then
+        migrations_path=$(echo "$resolved_paths" | jq -r '.["gw-migrations"] // empty')
+        
+        if [ -n "$migrations_path" ]; then
+          cd "$migrations_path"
+          recent_migrations=$(git log origin/main --oneline -5)
+          
+          # Check DynamoDB tables (expected tables from PRP)
+          tables_check=$(aws dynamodb list-tables --profile ghostdog-dev --region us-east-1 2>/dev/null || echo '{"TableNames":[]}')
+          table_count=$(echo "$tables_check" | jq '.TableNames | length')
+          
+          jq -n \
+            --arg migrations "$recent_migrations" \
+            --argjson table_count "$table_count" \
+            '{
+              migration_gate: {
+                result: "pass",
+                recent_migrations: $migrations,
+                table_count: $table_count
+              }
+            }'
+        else
+          echo '{"migration_gate": {"result": "n/a", "reason": "migrations path not resolved"}}'
+        fi
+      fi
+    reads:
+      - resolved_repo_paths
+    writes:
+      - migration_gate
+
+  - id: route_check
+    name: API Route Gate Check
+    type: bash
+    depends_on:
+      - migration_check
+    on_failure: continue
+    trigger_rule: all_done
+    script: |
+      # Phase 6: API Gateway route validation
+      # Verify expected API paths exist in API Gateway
+      
+      resolved_paths=$(jq -r '.resolved_paths' <<< "$resolved_repo_paths")
+      
+      # Check if gw-functions in repos
+      if ! echo "$resolved_paths" | jq -e '.["gw-functions"]' > /dev/null 2>&1; then
+        echo '{"route_gate": {"result": "n/a", "reason": "gw-functions not in repos"}}'
+        exit 0
+      fi
+      
+      # Get API Gateway resources
+      rest_api_id=$(aws apigateway get-rest-apis --profile ghostdog-dev --region us-east-1 \
+        --query "items[?name=='gw-api-dev'].id" --output text 2>/dev/null || echo "")
+      
+      if [ -z "$rest_api_id" ]; then
+        echo '{"route_gate": {"result": "fail", "error": "api gateway not found"}}'
+        exit 0
+      fi
+      
+      resources=$(aws apigateway get-resources --rest-api-id "$rest_api_id" \
+        --profile ghostdog-dev --region us-east-1 2>/dev/null || echo '{"items":[]}')
+
+      resource_count=$(echo "$resources" | jq '.items | length')
+
+      # Check for expected paths from input (or skip if not provided)
+      if [ -z "$expected_routes" ]; then
+        # No routes specified - return n/a
+        jq -n \
+          --argjson total "$resource_count" \
+          '{
+            route_gate: {
+              result: "n/a",
+              reason: "no expected routes provided",
+              total_resources: $total
+            }
+          }'
+        exit 0
+      fi
+
+      # Parse expected routes from input
+      missing_paths=()
+      for path in $expected_routes; do
+        if ! echo "$resources" | jq -e ".items[] | select(.path == \"$path\")" > /dev/null 2>&1; then
+          missing_paths+=("$path")
+        fi
+      done
+
+      if [ ${#missing_paths[@]} -gt 0 ]; then
+        jq -n \
+          --arg missing "$(IFS=,; echo "${missing_paths[*]}")" \
+          --argjson total "$resource_count" \
+          '{
+            route_gate: {
+              result: "warning",
+              missing_paths: ($missing | split(",")),
+              total_resources: $total
+            }
+          }'
+      else
+        jq -n \
+          --argjson total "$resource_count" \
+          '{
+            route_gate: {
+              result: "pass",
+              total_resources: $total
+            }
+          }'
+      fi
+    reads:
+      - resolved_repo_paths
+    writes:
+      - route_gate
+
+  - id: aggregate_result
+    name: Aggregate Gate Results
+    type: bash
+    depends_on:
+      - route_check
+    trigger_rule: all_done
+    script: |
+      # Phase 7: Aggregate all gate results and count hard failures
+      
+      hard_failures=0
+      failure_list=()
+      
+      # Check deploy gate
+      deploy_results=$(echo "$deploy_gates" | jq -r '.deploy_gates')
+      for repo in $(echo "$deploy_results" | jq -r 'keys[]'); do
+        result=$(echo "$deploy_results" | jq -r ".[\"$repo\"].result")
+        if [ "$result" = "fail" ]; then
+          hard_failures=$((hard_failures + 1))
+          failure_list+=("deploy_failed:$repo")
+        fi
+      done
+      
+      # Check test artifacts
+      test_result=$(echo "$test_artifact_gates" | jq -r '.test_artifact_gates.result // "n/a"')
+      if [ "$test_result" = "fail" ]; then
+        hard_failures=$((hard_failures + 1))
+        failure_list+=("missing_test_artifacts")
+      fi
+      
+      # Check smoke baseline
+      smoke_result=$(echo "$smoke_gate" | jq -r '.smoke_gate.result // "n/a"')
+      if [ "$smoke_result" = "regression" ]; then
+        hard_failures=$((hard_failures + 1))
+        failure_list+=("smoke_regression")
+      fi
+      
+      # Check migration gate
+      migration_result=$(echo "$migration_gate" | jq -r '.migration_gate.result // "n/a"')
+      if [ "$migration_result" = "fail" ]; then
+        hard_failures=$((hard_failures + 1))
+        failure_list+=("migration_not_applied")
+      fi
+      
+      # Check route gate
+      route_result=$(echo "$route_gate" | jq -r '.route_gate.result // "n/a"')
+      if [ "$route_result" = "fail" ]; then
+        hard_failures=$((hard_failures + 1))
+        failure_list+=("route_missing")
+      fi
+      
+      # Write summary to temp file
+      summary_file="/tmp/validate-epic-$epic-artifacts.json"
+      jq -n \
+        --argjson failures "$hard_failures" \
+        --arg failure_list "$(IFS=,; echo "${failure_list[*]}")" \
+        --argjson deploy "$deploy_gates" \
+        --argjson test "$test_artifact_gates" \
+        --argjson smoke "$smoke_gate" \
+        --argjson migration "$migration_gate" \
+        --argjson route "$route_gate" \
+        '{
+          hard_gate_failures: $failures,
+          failure_list: ($failure_list | split(",") | map(select(length > 0))),
+          gates: {
+            deploy: $deploy,
+            test_artifacts: $test,
+            smoke: $smoke,
+            migration: $migration,
+            route: $route
+          }
+        }' > "$summary_file"
+      
+      # Print ARTIFACT_AUDIT block
+      echo "ARTIFACT_AUDIT_START"
+      cat "$summary_file"
+      echo "ARTIFACT_AUDIT_END"
+      
+      # Output to channel
+      jq -n \
+        --argjson failures "$hard_failures" \
+        '{
+          hard_gate_failures: $failures
+        }'
+    reads:
+      - deploy_gates
+      - test_artifact_gates
+      - smoke_gate
+      - migration_gate
+      - route_gate
+    writes:
+      - hard_gate_failures
