@@ -1,0 +1,276 @@
+---
+name: Validate Epic Audit Children Sub-DAG
+config:
+  checkpoint_prefix: validate-epic-audit-children
+  worktree: false
+
+inputs:
+  epic:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+
+state:
+  children_list:
+    strategy: overwrite
+  audit_results:
+    strategy: overwrite
+  aggregate_summary:
+    strategy: overwrite
+
+outputs:
+  children_total:
+    node: aggregate
+    field: total
+  children_done:
+    node: aggregate
+    field: done
+  hard_gate_failures:
+    node: aggregate
+    field: hard_gate_failures
+  children:
+    node: aggregate
+    field: children
+
+nodes:
+  - id: fetch_children
+    name: Fetch Epic Children
+    type: bash
+    script: |
+      # Phase 1: Fetch children using JQL
+      children=$(npx tsx ~/.claude/skills/issues/search_issues.ts \
+        "{\"jql\": \"parent = $epic\", \"fields\": [\"key\",\"summary\",\"status\",\"labels\",\"priority\",\"issuelinks\",\"issuetype\"]}")
+      
+      # Check if empty
+      total=$(echo "$children" | jq '.issues | length')
+      if [ "$total" -eq 0 ]; then
+        echo '{"error": "EMPTY_EPIC", "total": 0, "issues": []}' | jq -c
+        exit 1
+      fi
+      
+      # Output the children list
+      echo "$children" | jq -c
+    output_format: json
+    writes:
+      - children_list
+
+  - id: audit_gates
+    name: Audit Hard Gates for Each Child
+    type: bash
+    depends_on:
+      - fetch_children
+    script: |
+      # Phase 2: Apply hard gates to each child
+      issues=$(echo "$children_list" | jq -c '.issues[]')
+      audit_results="[]"
+      
+      while IFS= read -r issue; do
+        key=$(echo "$issue" | jq -r '.key')
+        summary=$(echo "$issue" | jq -r '.fields.summary')
+        status=$(echo "$issue" | jq -r '.fields.status.name')
+        labels=$(echo "$issue" | jq -r '.fields.labels | join(" ")')
+        issuetype=$(echo "$issue" | jq -r '.fields.issuetype.name')
+        
+        # Initialize gates and flags
+        gates_status_done="false"
+        gates_outcome_clean="false"
+        gates_pr_merged="true"  # Default true; set false if any PR check fails
+        gates_validation_report="false"
+        gates_labels_clean="false"
+        flags="[]"
+        prs="[]"
+        
+        # Gate A: Status = Done
+        if [ "$status" = "Done" ]; then
+          gates_status_done="true"
+        else
+          flags=$(echo "$flags" | jq '. + ["status_not_done"]')
+        fi
+        
+        # Gate B: No failure-outcome labels
+        outcome_clean="true"
+        for label in outcome:validation-failed outcome:needs-human outcome:validation-skipped needs-human; do
+          if echo "$labels" | grep -q "$label"; then
+            outcome_clean="false"
+            flags=$(echo "$flags" | jq --arg label "$label" '. + [$label]')
+          fi
+        done
+        gates_outcome_clean="$outcome_clean"
+        
+        # Gate C: PR merged
+        pr_labels=$(echo "$labels" | tr ' ' '\n' | grep '^pr:' || true)
+        if [ -n "$pr_labels" ]; then
+          # Check each PR
+          while IFS= read -r pr_label; do
+            if [ -n "$pr_label" ]; then
+              repo=$(echo "$pr_label" | cut -d: -f2 | cut -d/ -f1)
+              pr_num=$(echo "$pr_label" | cut -d: -f2 | cut -d/ -f2)
+              
+              # Fetch PR state
+              pr_data=$(npx tsx ~/.claude/skills/vcs/get_pull_request.ts "{\"repo\": \"$repo\", \"pr_number\": $pr_num}" 2>/dev/null || echo '{"state": "UNKNOWN"}')
+              pr_state=$(echo "$pr_data" | jq -r '.state // "UNKNOWN"')
+              
+              # Add to prs array
+              prs=$(echo "$prs" | jq --arg repo "$repo" --argjson num "$pr_num" --arg state "$pr_state" \
+                '. + [{repo: $repo, number: $num, state: $state}]')
+              
+              # Check if merged
+              if [ "$pr_state" != "MERGED" ]; then
+                gates_pr_merged="false"
+                flags=$(echo "$flags" | jq --arg detail "pr_not_merged:$repo/$pr_num" '. + [$detail]')
+              fi
+            fi
+          done <<< "$pr_labels"
+        else
+          # No PR label - check issuetype
+          case "$issuetype" in
+            "Story"|"Bug")
+              # Warning for Story/Bug without PR
+              gates_pr_merged="\"warning\""
+              flags=$(echo "$flags" | jq '. + ["missing_pr_for_story"]')
+              ;;
+            "Task"|"Sub-task"|"Spike")
+              # Allowed for Task/Sub-task/Spike
+              flags=$(echo "$flags" | jq '. + ["no_pr"]')
+              ;;
+          esac
+        fi
+        
+        # Gate D: Validation Report
+        issue_data=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$key\", \"fields\": \"comment\"}" 2>/dev/null || echo '{}')
+        
+        # Check for validation report in comments
+        has_report=$(echo "$issue_data" | jq -r '.fields.comment.comments[]?.body.content[]?.content[]?.text // empty' 2>/dev/null | grep -c "## Validation Report" || echo "0")
+        
+        if [ "$has_report" -gt 0 ]; then
+          gates_validation_report="true"
+        else
+          # Check for legacy labels
+          if echo "$labels" | grep -qE "(validation-type:file-verification|outcome:validated)"; then
+            gates_validation_report="true"
+            flags=$(echo "$flags" | jq '. + ["validation_report_legacy"]')
+          else
+            flags=$(echo "$flags" | jq '. + ["missing_validation_report"]')
+          fi
+        fi
+        
+        # Gate E: Stale step label
+        if echo "$labels" | grep -q "step:validating" && [ "$status" = "Done" ]; then
+          flags=$(echo "$flags" | jq '. + ["stale_step_label"]')
+        fi
+        
+        # Label consistency gate
+        gates_labels_clean="true"
+        
+        # Build child record
+        child_record=$(jq -n \
+          --arg key "$key" \
+          --arg summary "$summary" \
+          --arg status "$status" \
+          --argjson gates_status_done "$gates_status_done" \
+          --argjson gates_outcome_clean "$gates_outcome_clean" \
+          --arg gates_pr_merged "$gates_pr_merged" \
+          --argjson gates_validation_report "$gates_validation_report" \
+          --argjson gates_labels_clean "$gates_labels_clean" \
+          --argjson flags "$flags" \
+          --argjson prs "$prs" \
+          '{
+            key: $key,
+            summary: $summary,
+            status: $status,
+            gates: {
+              status_done: $gates_status_done,
+              outcome_clean: $gates_outcome_clean,
+              pr_merged: $gates_pr_merged,
+              validation_report: $gates_validation_report,
+              labels_clean: $gates_labels_clean
+            },
+            flags: $flags,
+            prs: $prs
+          }')
+        
+        # Add to audit_results
+        audit_results=$(echo "$audit_results" | jq --argjson record "$child_record" '. + [$record]')
+      done <<< "$issues"
+      
+      # Output audit results
+      echo "$audit_results" | jq -c
+    output_format: json
+    reads:
+      - children_list
+    writes:
+      - audit_results
+
+  - id: aggregate
+    name: Aggregate Results and Generate Output
+    type: bash
+    depends_on:
+      - audit_gates
+    script: |
+      # Phase 3: Aggregate results
+      total=$(echo "$audit_results" | jq 'length')
+      done=$(echo "$audit_results" | jq '[.[] | select(.status == "Done")] | length')
+      not_done=$((total - done))
+      
+      # Count hard gate failures (any gate is false or has critical flags)
+      hard_gate_failures=$(echo "$audit_results" | jq '[.[] | select(
+        .gates.status_done == false or
+        .gates.outcome_clean == false or
+        (.gates.pr_merged == false) or
+        .gates.validation_report == false
+      )] | length')
+      
+      # Gate summaries
+      status_done_pass=$(echo "$audit_results" | jq '[.[] | select(.gates.status_done == true)] | length')
+      outcome_clean_pass=$(echo "$audit_results" | jq '[.[] | select(.gates.outcome_clean == true)] | length')
+      pr_merged_count=$(echo "$audit_results" | jq '[.[] | select(.prs | length > 0)] | length')
+      pr_merged_pass=$(echo "$audit_results" | jq '[.[] | select(.gates.pr_merged == true)] | length')
+      validation_report_pass=$(echo "$audit_results" | jq '[.[] | select(.gates.validation_report == true)] | length')
+      
+      # Write to /tmp file for orchestrator
+      cat > "/tmp/validate-epic-${epic}-children.json" <<TMPEOF
+      {
+        "epic": "$epic",
+        "total": $total,
+        "done": $done,
+        "not_done": $not_done,
+        "hard_gate_failures": $hard_gate_failures,
+        "children": $audit_results
+      }
+      TMPEOF
+      
+      # Output human-readable summary to stderr
+      cat >&2 <<SUMMARY
+      CHILDREN_AUDIT_START
+      EPIC: $epic
+      TOTAL: $total
+      DONE: $done
+      NOT_DONE: $not_done
+      HARD_GATE_FAILURES: $hard_gate_failures
+      CHILDREN_JSON: $audit_results
+      HARD_GATES_SUMMARY:
+        status_done: ${status_done_pass}/${total}
+        outcome_clean: ${outcome_clean_pass}/${total}
+        pr_merged: ${pr_merged_pass}/${pr_merged_count}
+        validation_report: ${validation_report_pass}/${total}
+      CHILDREN_AUDIT_END
+      SUMMARY
+      
+      # Output structured JSON for workflow
+      jq -n \
+        --argjson total "$total" \
+        --argjson done "$done" \
+        --argjson hard_gate_failures "$hard_gate_failures" \
+        --argjson children "$audit_results" \
+        '{
+          total: $total,
+          done: $done,
+          hard_gate_failures: $hard_gate_failures,
+          children: $children
+        }'
+    output_format: json
+    reads:
+      - children_list
+      - audit_results
+    writes:
+      - aggregate_summary
