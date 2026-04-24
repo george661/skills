@@ -104,12 +104,12 @@ test.describe('builder at iPad portrait (768×1024)', () => {
     });
   });
 
-  // SKIP: React Flow's pinch-zoom binds to an internal pane via D3 zoom, and
-  // neither page.mouse.wheel (no ctrlKey support) nor a manually dispatched
-  // WheelEvent on .react-flow reaches the D3 handler reliably under Playwright.
-  // Tracked as a follow-up — this test has never passed in CI (the whole file
-  // failed at parse time on main until this PR).
-  test.skip('pinch-zoom (wheel+ctrlKey) changes canvas transform', async ({ page }) => {
+  // Regression test for GW-5337: Playwright pinch-zoom E2E test skipped - WheelEvent does not reach React Flow D3 handler
+  // This test asserts correct behavior (pinch-zoom should change transform) but FAILS because:
+  // - page.mouse.wheel() lacks ctrlKey support
+  // - WheelEvent dispatched on .react-flow doesn't reach D3 handler on .react-flow__pane
+  // Expected to pass once GW-5337 is resolved.
+  test('pinch-zoom (wheel+ctrlKey) changes canvas transform', async ({ page }) => {
     await openBuilder(page);
 
     // React Flow keeps .react-flow__viewport at visibility:hidden until the
