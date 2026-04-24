@@ -323,6 +323,59 @@ def preflight_providers(routing: Optional[Dict[str, Any]] = None) -> Dict[str, b
     return provider_status
 
 
+def preflight_workflow(
+    prompt_tiers: List[ModelTier],
+    routing: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Health-check only the providers actually referenced by the workflow.
+
+    Walks the tiers used by prompt nodes, resolves each to a provider, dedupes,
+    and probes health. Returns None on success, or a formatted error message
+    suitable for printing + exit if any referenced provider is unreachable.
+
+    The message lists healthy tier alternatives so the operator can re-run
+    with --model-override without hunting through config.
+    """
+    cfg = routing if routing is not None else load_routing()
+    # Resolve each tier once, group by provider name.
+    providers_used: Dict[str, Provider] = {}
+    tiers_by_provider: Dict[str, List[str]] = {}
+    for tier in prompt_tiers:
+        try:
+            endpoint = resolve_alias(tier, cfg)
+        except ValueError:
+            continue
+        providers_used.setdefault(endpoint.provider.name, endpoint.provider)
+        tiers_by_provider.setdefault(endpoint.provider.name, []).append(tier.value)
+
+    unreachable: List[Provider] = []
+    for name, provider in providers_used.items():
+        if not check_provider_health(provider):
+            unreachable.append(provider)
+
+    if not unreachable:
+        return None
+
+    lines: List[str] = [
+        "Pre-flight provider health check failed. Refusing to start execution.",
+        "",
+    ]
+    for provider in unreachable:
+        tiers = ", ".join(sorted(set(tiers_by_provider.get(provider.name, []))))
+        target = provider.health_check_url or provider.base_url or "(no endpoint configured)"
+        lines.append(f"  provider '{provider.name}' ({provider.type}) is unreachable")
+        lines.append(f"    endpoint: {target}")
+        lines.append(f"    used by tiers: {tiers}")
+        alternatives = healthy_alternatives(provider, cfg)
+        if alternatives:
+            lines.append(f"    healthy alternatives: {', '.join(alternatives)}")
+            lines.append(f"    rerun with: --model-override <tier> (e.g. --model-override {alternatives[0]})")
+        else:
+            lines.append("    no healthy alternatives found — check provider config and connectivity")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 __all__ = [
     "Provider",
     "ModelEndpoint",
@@ -334,6 +387,7 @@ __all__ = [
     "build_agent_invocation",
     "build_completion_invocation",
     "preflight_providers",
+    "preflight_workflow",
 ]
 
 

@@ -878,6 +878,35 @@ def main(argv: Optional[List[str]] = None) -> None:
         if args.model_override:
             inputs["__model_override__"] = args.model_override
 
+        # GW-5356 preflight: collect the set of model tiers this workflow's
+        # prompt nodes reference, then health-check their providers. Fails
+        # loud before we execute any node so the operator doesn't pay half a
+        # workflow's runtime to discover Bedrock credentials expired or
+        # Ollama is down. `--model-override` wins — if every prompt is forced
+        # onto one tier, only that tier's provider gets checked.
+        from dag_executor.model_invocation import preflight_workflow
+        from dag_executor.schema import ModelTier as _ModelTier
+
+        prompt_tiers: List[_ModelTier] = []
+        if args.model_override:
+            try:
+                prompt_tiers.append(_ModelTier(args.model_override))
+            except ValueError:
+                pass  # argparse choices guard this; skip preflight on bad value
+        else:
+            workflow_default_tier = workflow_def.default_model
+            for node in workflow_def.nodes:
+                if node.type != "prompt":
+                    continue
+                tier = node.model or workflow_default_tier or _ModelTier.LOCAL
+                prompt_tiers.append(tier)
+
+        if prompt_tiers:
+            preflight_error = preflight_workflow(prompt_tiers)
+            if preflight_error is not None:
+                print(preflight_error, file=sys.stderr)
+                sys.exit(2)
+
         # Resolve events_dir from --events-dir flag or DAG_EVENTS_DIR env var.
         # When set, the executor writes {events_dir}/{run_id}.ndjson and polls
         # {events_dir}/{run_id}.cancel for cancellation markers.
