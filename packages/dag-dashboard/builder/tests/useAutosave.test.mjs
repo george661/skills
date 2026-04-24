@@ -64,8 +64,10 @@ test('bootstrap creates new draft and sets .current when GET /current is 404', a
 
     const ref = { current: null };
     const getDag = () => [];
+    const onLoadCalls = [];
+    const onLoad = (dag) => { onLoadCalls.push(dag); };
     await act(async () => {
-        harnessWith({ workflowName: 'test', getDag, fetch: mockFetch }, ref);
+        harnessWith({ workflowName: 'test', getDag, fetch: mockFetch, onLoad }, ref);
         await new Promise(resolve => setTimeout(resolve, 10));
     });
 
@@ -73,6 +75,9 @@ test('bootstrap creates new draft and sets .current when GET /current is 404', a
     assert.ok(calls.some(c => c.url.endsWith('/drafts') && c.opts?.method === 'POST'));
     assert.ok(calls.some(c => c.url.includes('/drafts/current') && c.opts?.method === 'PUT'));
     assert.equal(ref.current.currentTimestamp, '20260101T120000_000000Z');
+    // onLoad must be called with an empty DAG so the consumer can flip out
+    // of its "Loading..." state. Without this the builder canvas never mounts.
+    assert.deepEqual(onLoadCalls, [[]]);
 });
 
 test('bootstrap loads existing draft when GET /current returns 200', async () => {
