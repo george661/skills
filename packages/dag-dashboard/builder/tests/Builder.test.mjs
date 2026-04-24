@@ -228,10 +228,10 @@ test('Builder renders warning banner when allow_destructive=true', async () => {
 // These tests verify the event bridge between Builder and NodeInspector (via WorkflowCanvas).
 // They test the ACTUAL source code behavior by simulating the integration pattern.
 
-test('Builder: NodeInspector onChange callback dispatches dag-builder:node-update event', async () => {
-    // This test verifies Builder's integration code at src/index.jsx:213-219:
-    // The onChange callback should dispatch a CustomEvent when called.
-    
+test('useNodeInspector: dispatches dag-builder:node-update event via onChange', async () => {
+    // Import and test the actual hook from src/useNodeInspector.js
+    const { useNodeInspector } = await import('../src/useNodeInspector.js');
+
     // Setup mock environment
     const eventListeners = {};
     const originalDocument = global.document;
@@ -250,7 +250,7 @@ test('Builder: NodeInspector onChange callback dispatches dag-builder:node-updat
             handlers.forEach(h => h(customEvent));
         }
     };
-    
+
     const originalCustomEvent = global.CustomEvent;
     global.CustomEvent = function(type, options) {
         this.type = type;
@@ -266,51 +266,18 @@ test('Builder: NodeInspector onChange callback dispatches dag-builder:node-updat
         this.update = () => {};
     };
 
-    // Create a component that mimics Builder's useEffect pattern (src/index.jsx:199-237)
-    // We use useState to hold the ref container since useRef().current becomes null with react-test-renderer
-    function TestBuilderIntegration() {
+    // Component that uses the actual hook
+    function TestComponent() {
         const [selectedNode] = React.useState({ id: 'n1', name: 'node1', node_type: 'bash' });
-        const inspectorInstanceRef = React.useRef(null);
         const [refContainer] = React.useState({ nodeType: 'mock-dom-element' }); // Stable container
+        const containerRef = React.useRef(refContainer);
 
-        React.useEffect(() => {
-            // This mirrors the actual Builder code at src/index.jsx:199-237
-            if (inspectorInstanceRef.current) {
-                inspectorInstanceRef.current.destroy();
-                inspectorInstanceRef.current = null;
-            }
-
-            // The actual code checks inspectorRef.current; we use refContainer (same effect)
-            if (selectedNode && refContainer && typeof window !== 'undefined' && window.NodeInspector) {
-                inspectorInstanceRef.current = new window.NodeInspector({
-                    container: refContainer,
-                    node: selectedNode,
-                    allowDestructive: false,
-                    availableNodeIds: [],
-                    onChange: (updatedNode) => {
-                        if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
-                            document.dispatchEvent(
-                                new CustomEvent('dag-builder:node-update', { detail: updatedNode })
-                            );
-                        }
-                    },
-                    onDelete: (nodeId) => {
-                        if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
-                            document.dispatchEvent(
-                                new CustomEvent('dag-builder:node-delete', { detail: nodeId })
-                            );
-                        }
-                    },
-                });
-            }
-
-            return () => {
-                if (inspectorInstanceRef.current) {
-                    inspectorInstanceRef.current.destroy();
-                    inspectorInstanceRef.current = null;
-                }
-            };
-        }, [selectedNode, refContainer]);
+        useNodeInspector({
+            selectedNode,
+            allowDestructive: false,
+            availableNodeIds: [],
+            containerRef
+        });
 
         return React.createElement('div', null, 'Inspector Container');
     }
@@ -319,7 +286,7 @@ test('Builder: NodeInspector onChange callback dispatches dag-builder:node-updat
     let eventCaptured = null;
 
     await act(async () => {
-        root = create(React.createElement(TestBuilderIntegration));
+        root = create(React.createElement(TestComponent));
         await new Promise(resolve => setTimeout(resolve, 50));
     });
 
@@ -348,9 +315,10 @@ test('Builder: NodeInspector onChange callback dispatches dag-builder:node-updat
     global.CustomEvent = originalCustomEvent;
 });
 
-test('Builder: NodeInspector onDelete callback dispatches dag-builder:node-delete event', async () => {
-    // This test verifies Builder's integration code at src/index.jsx:220-226
-    
+test('useNodeInspector: dispatches dag-builder:node-delete event via onDelete', async () => {
+    // Import and test the actual hook from src/useNodeInspector.js
+    const { useNodeInspector } = await import('../src/useNodeInspector.js');
+
     const eventListeners = {};
     const originalDocument = global.document;
     global.document = {
@@ -368,7 +336,7 @@ test('Builder: NodeInspector onDelete callback dispatches dag-builder:node-delet
             handlers.forEach(h => h(customEvent));
         }
     };
-    
+
     const originalCustomEvent = global.CustomEvent;
     global.CustomEvent = function(type, options) {
         this.type = type;
@@ -384,47 +352,17 @@ test('Builder: NodeInspector onDelete callback dispatches dag-builder:node-delet
         this.update = () => {};
     };
 
-    function TestBuilderIntegration() {
+    function TestComponent() {
         const [selectedNode] = React.useState({ id: 'n1', name: 'node1', node_type: 'bash' });
-        const inspectorInstanceRef = React.useRef(null);
         const [refContainer] = React.useState({ nodeType: 'mock-dom-element' });
+        const containerRef = React.useRef(refContainer);
 
-        React.useEffect(() => {
-            if (inspectorInstanceRef.current) {
-                inspectorInstanceRef.current.destroy();
-                inspectorInstanceRef.current = null;
-            }
-
-            if (selectedNode && refContainer && typeof window !== 'undefined' && window.NodeInspector) {
-                inspectorInstanceRef.current = new window.NodeInspector({
-                    container: refContainer,
-                    node: selectedNode,
-                    allowDestructive: false,
-                    availableNodeIds: [],
-                    onChange: (updatedNode) => {
-                        if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
-                            document.dispatchEvent(
-                                new CustomEvent('dag-builder:node-update', { detail: updatedNode })
-                            );
-                        }
-                    },
-                    onDelete: (nodeId) => {
-                        if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
-                            document.dispatchEvent(
-                                new CustomEvent('dag-builder:node-delete', { detail: nodeId })
-                            );
-                        }
-                    },
-                });
-            }
-
-            return () => {
-                if (inspectorInstanceRef.current) {
-                    inspectorInstanceRef.current.destroy();
-                    inspectorInstanceRef.current = null;
-                }
-            };
-        }, [selectedNode, refContainer]);
+        useNodeInspector({
+            selectedNode,
+            allowDestructive: false,
+            availableNodeIds: [],
+            containerRef
+        });
 
         return React.createElement('div', null, 'Inspector Container');
     }
@@ -433,7 +371,7 @@ test('Builder: NodeInspector onDelete callback dispatches dag-builder:node-delet
     let eventCaptured = null;
 
     await act(async () => {
-        root = create(React.createElement(TestBuilderIntegration));
+        root = create(React.createElement(TestComponent));
         await new Promise(resolve => setTimeout(resolve, 50));
     });
 
@@ -457,9 +395,10 @@ test('Builder: NodeInspector onDelete callback dispatches dag-builder:node-delet
     global.CustomEvent = originalCustomEvent;
 });
 
-test('WorkflowCanvas: listens for dag-builder:node-update event and calls updateNode', async () => {
-    // This test verifies WorkflowCanvas code at src/WorkflowCanvas.jsx:88-96
-    
+test('useCanvasEventBridge: listens for dag-builder:node-update event and calls updateNode', async () => {
+    // Import and test the actual hook from src/useCanvasEventBridge.js
+    const { useCanvasEventBridge } = await import('../src/useCanvasEventBridge.js');
+
     const eventListeners = {};
     const originalDocument = global.document;
     global.document = {
@@ -477,7 +416,7 @@ test('WorkflowCanvas: listens for dag-builder:node-update event and calls update
             handlers.forEach(h => h(customEvent));
         }
     };
-    
+
     const originalCustomEvent = global.CustomEvent;
     global.CustomEvent = function(type, options) {
         this.type = type;
@@ -487,26 +426,18 @@ test('WorkflowCanvas: listens for dag-builder:node-update event and calls update
     let capturedUpdate = null;
     const mockUpdateNode = (nodeData) => { capturedUpdate = nodeData; };
 
-    // Create a component that mimics WorkflowCanvas's useEffect pattern (src/WorkflowCanvas.jsx:88-96)
-    function TestWorkflowCanvasIntegration() {
+    // Component that uses the actual hook
+    function TestComponent() {
         const [updateNode] = React.useState(() => mockUpdateNode);
 
-        React.useEffect(() => {
-            const handler = (e) => {
-                if (e.detail && updateNode) updateNode(e.detail);
-            };
-            if (typeof document !== 'undefined') document.addEventListener('dag-builder:node-update', handler);
-            return () => {
-                if (typeof document !== 'undefined') document.removeEventListener('dag-builder:node-update', handler);
-            };
-        }, [updateNode]);
+        useCanvasEventBridge(updateNode, () => {});
 
         return React.createElement('div', null, 'Canvas');
     }
 
     let root;
     await act(async () => {
-        root = create(React.createElement(TestWorkflowCanvasIntegration));
+        root = create(React.createElement(TestComponent));
         await new Promise(resolve => setTimeout(resolve, 50));
     });
 
@@ -525,9 +456,10 @@ test('WorkflowCanvas: listens for dag-builder:node-update event and calls update
     global.CustomEvent = originalCustomEvent;
 });
 
-test('WorkflowCanvas: listens for dag-builder:node-delete event and calls onNodesDelete', async () => {
-    // This test verifies WorkflowCanvas code at src/WorkflowCanvas.jsx:99-107
-    
+test('useCanvasEventBridge: listens for dag-builder:node-delete event and calls onNodesDelete', async () => {
+    // Import and test the actual hook from src/useCanvasEventBridge.js
+    const { useCanvasEventBridge } = await import('../src/useCanvasEventBridge.js');
+
     const eventListeners = {};
     const originalDocument = global.document;
     global.document = {
@@ -545,7 +477,7 @@ test('WorkflowCanvas: listens for dag-builder:node-delete event and calls onNode
             handlers.forEach(h => h(customEvent));
         }
     };
-    
+
     const originalCustomEvent = global.CustomEvent;
     global.CustomEvent = function(type, options) {
         this.type = type;
@@ -555,26 +487,18 @@ test('WorkflowCanvas: listens for dag-builder:node-delete event and calls onNode
     let capturedDeletes = null;
     const mockOnNodesDelete = (nodes) => { capturedDeletes = nodes; };
 
-    // Create a component that mimics WorkflowCanvas's useEffect pattern (src/WorkflowCanvas.jsx:99-107)
-    function TestWorkflowCanvasIntegration() {
+    // Component that uses the actual hook
+    function TestComponent() {
         const [onNodesDelete] = React.useState(() => mockOnNodesDelete);
 
-        React.useEffect(() => {
-            const handler = (e) => {
-                if (e.detail && onNodesDelete) onNodesDelete([{ id: e.detail }]);
-            };
-            if (typeof document !== 'undefined') document.addEventListener('dag-builder:node-delete', handler);
-            return () => {
-                if (typeof document !== 'undefined') document.removeEventListener('dag-builder:node-delete', handler);
-            };
-        }, [onNodesDelete]);
+        useCanvasEventBridge(() => {}, onNodesDelete);
 
         return React.createElement('div', null, 'Canvas');
     }
 
     let root;
     await act(async () => {
-        root = create(React.createElement(TestWorkflowCanvasIntegration));
+        root = create(React.createElement(TestComponent));
         await new Promise(resolve => setTimeout(resolve, 50));
     });
 

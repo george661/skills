@@ -26,6 +26,7 @@ import {
 import { useCanvasState } from './useCanvasState.js';
 import { useBuilderKeyboard } from './useBuilderKeyboard.js';
 import { makeNodeTypes } from './DagNode.jsx';
+import { useCanvasEventBridge } from './useCanvasEventBridge.js';
 
 function CanvasInner({
     initialDag,
@@ -84,27 +85,8 @@ function CanvasInner({
         };
     }, [undo]);
 
-    // Listen for node-update event from inspector
-    useEffect(() => {
-        const handler = (e) => {
-            if (e.detail && updateNode) updateNode(e.detail);
-        };
-        if (typeof document !== 'undefined') document.addEventListener('dag-builder:node-update', handler);
-        return () => {
-            if (typeof document !== 'undefined') document.removeEventListener('dag-builder:node-update', handler);
-        };
-    }, [updateNode]);
-
-    // Listen for node-delete event from inspector
-    useEffect(() => {
-        const handler = (e) => {
-            if (e.detail && onNodesDelete) onNodesDelete([{ id: e.detail }]);
-        };
-        if (typeof document !== 'undefined') document.addEventListener('dag-builder:node-delete', handler);
-        return () => {
-            if (typeof document !== 'undefined') document.removeEventListener('dag-builder:node-delete', handler);
-        };
-    }, [onNodesDelete]);
+    // Listen for node-update and node-delete events from inspector (GW-5332)
+    useCanvasEventBridge(updateNode, onNodesDelete);
 
     const onDragOver = useCallback((event) => {
         event.preventDefault();

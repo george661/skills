@@ -13,6 +13,7 @@ import { YamlCodeView } from './YamlCodeView.jsx';
 import VersionDrawer from './VersionDrawer.jsx';
 import useVersionDrawer from './useVersionDrawer.js';
 import NodeLibrary from './NodeLibrary.jsx';
+import { useNodeInspector } from './useNodeInspector.js';
 
 function serializeMetadata({ name, description, provider, model }) {
     const lines = [];
@@ -194,47 +195,12 @@ function Builder() {
 
     // Mount NodeInspector when node is selected (GW-5332)
     const inspectorRef = React.useRef(null);
-    const inspectorInstanceRef = React.useRef(null);
-
-    React.useEffect(() => {
-        // Destroy existing instance if any
-        if (inspectorInstanceRef.current) {
-            inspectorInstanceRef.current.destroy();
-            inspectorInstanceRef.current = null;
-        }
-
-        // Create new instance if node selected and container available
-        if (selectedNode && inspectorRef.current && typeof window !== 'undefined' && window.NodeInspector) {
-            inspectorInstanceRef.current = new window.NodeInspector({
-                container: inspectorRef.current,
-                node: selectedNode,
-                allowDestructive: allowDestructiveNodes,
-                availableNodeIds: availableNodeIds,
-                onChange: (updatedNode) => {
-                    if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
-                        document.dispatchEvent(
-                            new CustomEvent('dag-builder:node-update', { detail: updatedNode })
-                        );
-                    }
-                },
-                onDelete: (nodeId) => {
-                    if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
-                        document.dispatchEvent(
-                            new CustomEvent('dag-builder:node-delete', { detail: nodeId })
-                        );
-                    }
-                },
-            });
-        }
-
-        // Cleanup on unmount or when dependencies change
-        return () => {
-            if (inspectorInstanceRef.current) {
-                inspectorInstanceRef.current.destroy();
-                inspectorInstanceRef.current = null;
-            }
-        };
-    }, [selectedNode, allowDestructiveNodes, availableNodeIds]);
+    const inspectorInstanceRef = useNodeInspector({
+        selectedNode,
+        allowDestructive: allowDestructiveNodes,
+        availableNodeIds,
+        containerRef: inspectorRef,
+    });
 
     // Autosave-driven unsaved indicator.
     const hasUnsavedChanges = status === 'unsaved' || status === 'saving';
