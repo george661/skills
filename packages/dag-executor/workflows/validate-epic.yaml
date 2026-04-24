@@ -101,22 +101,28 @@ nodes:
     writes:
       - spec
     prompt: |
-      Load the Product Requirements Process (PRP) specification
-      for epic $epic.
+      Fetch the Jira epic $epic and the PRP document it references, then
+      reply with ONLY a single JSON object inside a ```json code fence —
+      no prose, no markdown tables, no summary outside the fence.
 
-      Fetch the epic details from Jira and identify:
-      1. The PRP document reference (e.g., PRP-PLAT-010)
-      2. Affected repositories (space-separated list)
-      3. Design session reference (or "None" if no design session)
-      4. Acceptance criteria count
+      Use:
+      - `npx tsx ~/.claude/skills/jira/get_issue.ts '{"issue_key": "$epic"}'`
+        to read the epic's description for the PRP reference.
+      - `Read` or `cat` the PRP markdown file to count AC checkboxes.
 
-      Return JSON:
+      Return this exact shape:
+
+      ```json
       {
         "prp_reference": "PRP-XXX-NNN",
         "affected_repos": "repo1 repo2",
-        "design_session": "SESS-456 or None",
-        "ac_count": 5
+        "design_session": "<session-id> or None",
+        "ac_count": <integer>
       }
+      ```
+
+      Do not include any other text. The workflow parses this response and
+      will fail if extra keys or prose leak in.
 
   # ══════════════════════════════════════════════════════════════════
   # Phase 1: Audit Children
@@ -319,6 +325,10 @@ nodes:
     type: prompt
     depends_on:
       - produce_verdict
+    # Dry-run mode: skip the actual Jira mutation. produce_verdict still
+    # ran, and the verdict is available in the channel for downstream
+    # bookkeeping / print_summary.
+    when: "not audit_only"
     model: opus
     mode: agent          # drives Jira: transitions, label updates, comment posting
     context: shared
@@ -326,19 +336,26 @@ nodes:
     writes:
       - transition_result
     prompt: |
-      Determine the Jira transition based on verdict.
+      Apply the Jira transition for epic $epic based on the validation
+      verdict below, then reply with ONLY a single JSON object inside a
+      ```json code fence — no prose outside the fence.
 
       Verdict: $produce_verdict.verdict
 
-      If APPROVED: transition to "Done"
-      If INCOMPLETE: add label "outcome:epic-incomplete"
-      If BLOCKED: add label "needs-human"
+      Action rules:
+      - APPROVED: transition the epic to Done using
+        `~/.claude/skills/jira/list_transitions.ts` then
+        `~/.claude/skills/jira/transition_issue.ts`.
+      - INCOMPLETE: add label "outcome:epic-incomplete" via
+        `~/.claude/skills/jira/update_issue.ts`.
+      - BLOCKED: add label "needs-human" via the same skill.
 
-      Return JSON:
+      ```json
       {
-        "transition": "Done | None",
-        "labels_added": ["label1"]
+        "transition": "Done" | "None",
+        "labels_added": ["<label>", ...]
       }
+      ```
 
   # ══════════════════════════════════════════════════════════════════
   # Phase 8: Store Episode
@@ -349,6 +366,9 @@ nodes:
     type: bash
     depends_on:
       - transition_epic
+    # Run after transition_epic regardless of whether it ran or was skipped
+    # (audit_only mode skips the Jira mutation via when: on that node).
+    trigger_rule: all_done
     # Episode storage is bookkeeping — a failure here should not block
     # the print_summary tail or fail the whole workflow.
     on_failure: continue
