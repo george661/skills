@@ -1,0 +1,371 @@
+---
+name: Validate Epic Workflow
+config:
+  checkpoint_prefix: vale
+  worktree: false
+  labels:
+    on_failure: "outcome:epic-incomplete"
+  on_exit:
+    - id: cost_capture
+      type: bash
+      script: "python3 scripts/capture_session_cost.py --command validate-epic"
+      run_on: [completed, failed]
+
+inputs:
+  epic:
+    type: string
+    required: true
+    pattern: "^[A-Z]+-\\d+$"
+  audit_only:
+    type: boolean
+    required: false
+    default: false
+
+state:
+  spec:
+    strategy: overwrite
+  children_audit:
+    strategy: overwrite
+  artifact_audit:
+    strategy: overwrite
+  ac_coverage:
+    strategy: overwrite
+  seam_findings:
+    strategy: overwrite
+  invariants:
+    strategy: overwrite
+  verdict:
+    strategy: overwrite
+  transition_result:
+    strategy: overwrite
+
+outputs:
+  verdict: {node: produce_verdict, field: verdict}
+  report_path: {node: produce_verdict, field: report_path}
+
+# ────────────────────────────────────────────────────────────────────
+# Routing overview:
+#
+#   Phase 0:    resume_check (checkpoint load)
+#   Phase 0.5:  load_spec (PRP + repo resolution) [context:shared]
+#   Phase 1:    audit_children (command → stub workflow)
+#               ├─ failures + not audit_only → produce_verdict
+#               ├─ failures + audit_only → audit_artifacts
+#               └─ no failures → audit_artifacts (continue)
+#   Phase 2:    audit_artifacts (command → stub workflow)
+#   Phase 3:    ac_reconciliation [context:shared]
+#   Phase 4:    integration_check [context:shared]
+#               ├─ design_session != 'None' → invariants_audit
+#               └─ design_session == 'None' → produce_verdict
+#   Phase 5:    invariants_audit [context:shared, conditional]
+#   Phase 6:    produce_verdict [context:shared,
+#                                trigger_rule:one_success]
+#   Phase 7:    transition_epic [context:shared]
+#   Phase 8:    store_episode
+#   Phase 9:    print_summary
+#
+# Key v3 fixes:
+# - NO $ prefix in edge conditions (use bare names like
+#   audit_children.hard_gate_failures)
+# - Python boolean operators (and, or, not)
+# - trigger_rule:one_success on produce_verdict accepts multiple paths
+# ────────────────────────────────────────────────────────────────────
+
+nodes:
+
+  # ══════════════════════════════════════════════════════════════════
+  # Phase 0: Resume Check
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: resume_check
+    name: Resume Check
+    type: bash
+    script: |
+      python3 ~/.claude/hooks/checkpoint.py load $epic 2>/dev/null ||
+        echo '{"found":false}'
+    output_format: json
+
+  # ══════════════════════════════════════════════════════════════════
+  # Phase 0.5: Load Spec (PRP + Repo Resolution)
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: load_spec
+    name: Load Epic Spec
+    type: prompt
+    depends_on:
+      - resume_check
+    model: opus
+    dispatch: inline
+    context: shared
+    output_format: json
+    writes:
+      - spec
+    prompt: |
+      Load the Product Requirements Process (PRP) specification
+      for epic $epic.
+
+      Fetch the epic details from Jira and identify:
+      1. The PRP document reference (e.g., PRP-PLAT-010)
+      2. Affected repositories (space-separated list)
+      3. Design session reference (or "None" if no design session)
+      4. Acceptance criteria count
+
+      Return JSON:
+      {
+        "prp_reference": "PRP-XXX-NNN",
+        "affected_repos": "repo1 repo2",
+        "design_session": "SESS-456 or None",
+        "ac_count": 5
+      }
+
+  # ══════════════════════════════════════════════════════════════════
+  # Phase 1: Audit Children
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: audit_children
+    name: Audit Epic Children
+    type: command
+    depends_on:
+      - load_spec
+    command: validate-epic-audit-children
+    dispatch: local
+    inputs_map:
+      epic: "$epic"
+    writes:
+      - children_audit
+    edges:
+      - target: produce_verdict
+        condition: >-
+          audit_children.hard_gate_failures > 0 and not audit_only
+      - target: audit_artifacts
+        condition: >-
+          audit_children.hard_gate_failures > 0 and audit_only
+      - target: audit_artifacts
+        default: true
+
+  # ══════════════════════════════════════════════════════════════════
+  # Phase 2: Audit Artifacts
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: audit_artifacts
+    name: Audit Epic Artifacts
+    type: command
+    depends_on:
+      - audit_children
+    command: validate-epic-audit-artifacts
+    dispatch: local
+    inputs_map:
+      epic: "$epic"
+      repos: "$load_spec.affected_repos"
+    writes:
+      - artifact_audit
+
+  # ══════════════════════════════════════════════════════════════════
+  # Phase 3: AC Reconciliation
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: ac_reconciliation
+    name: AC Reconciliation
+    type: prompt
+    depends_on:
+      - audit_artifacts
+    model: opus
+    dispatch: inline
+    context: shared
+    output_format: json
+    writes:
+      - ac_coverage
+    prompt: |
+      Reconcile the acceptance criteria from the PRP with the
+      implementation status from children audit.
+
+      Epic: $epic
+      PRP: $load_spec.prp_reference
+      AC Count: $load_spec.ac_count
+      Children Done: $audit_children.children_done /
+        $audit_children.children_total
+
+      Return JSON:
+      {
+        "ac_coverage_percent": 80,
+        "uncovered_acs": ["AC-1", "AC-3"],
+        "findings": "Description of coverage gaps"
+      }
+
+  # ══════════════════════════════════════════════════════════════════
+  # Phase 4: Integration Seams Check
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: integration_check
+    name: Integration Seams Check
+    type: prompt
+    depends_on:
+      - ac_reconciliation
+    model: opus
+    dispatch: inline
+    context: shared
+    output_format: json
+    writes:
+      - seam_findings
+    prompt: |
+      Analyze integration seams across affected repositories.
+
+      Epic: $epic
+      Affected Repos: $load_spec.affected_repos
+
+      Check for:
+      - Cross-repo API contract consistency
+      - Shared type definitions
+      - Event schema compatibility
+
+      Return JSON:
+      {
+        "seam_issues": [],
+        "recommendations": "None or description"
+      }
+    edges:
+      - target: invariants_audit
+        condition: "load_spec.design_session != 'None'"
+      - target: produce_verdict
+        default: true
+
+  # ══════════════════════════════════════════════════════════════════
+  # Phase 5: Invariants Audit (Conditional)
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: invariants_audit
+    name: Design Invariants Audit
+    type: prompt
+    depends_on:
+      - integration_check
+    model: opus
+    dispatch: inline
+    context: shared
+    output_format: json
+    writes:
+      - invariants
+    prompt: |
+      Audit the design invariants from design session
+      $load_spec.design_session.
+
+      Epic: $epic
+      Design Session: $load_spec.design_session
+
+      Verify that the implementation respects:
+      - Architectural constraints
+      - Performance requirements
+      - Security boundaries
+
+      Return JSON:
+      {
+        "invariants_violated": [],
+        "invariants_satisfied": ["INV-1", "INV-2"]
+      }
+
+  # ══════════════════════════════════════════════════════════════════
+  # Phase 6: Produce Verdict
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: produce_verdict
+    name: Produce Validation Verdict
+    type: prompt
+    depends_on:
+      - audit_children
+      - invariants_audit
+    trigger_rule: one_success
+    model: opus
+    dispatch: inline
+    context: shared
+    output_format: json
+    writes:
+      - verdict
+    prompt: |
+      Synthesize all audit findings and produce a validation verdict.
+
+      Epic: $epic
+      Children Audit: $audit_children.hard_gate_failures failures
+      Artifact Audit: $audit_artifacts.hard_gate_failures failures
+      AC Coverage: $ac_reconciliation.ac_coverage_percent%
+
+      Return JSON:
+      {
+        "verdict": "APPROVED | INCOMPLETE | BLOCKED",
+        "report_path": "/tmp/validate-epic-report.md",
+        "summary": "One-line summary of findings"
+      }
+
+  # ══════════════════════════════════════════════════════════════════
+  # Phase 7: Transition Epic
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: transition_epic
+    name: Transition Epic in Jira
+    type: prompt
+    depends_on:
+      - produce_verdict
+    model: opus
+    dispatch: inline
+    context: shared
+    output_format: json
+    writes:
+      - transition_result
+    prompt: |
+      Determine the Jira transition based on verdict.
+
+      Verdict: $produce_verdict.verdict
+
+      If APPROVED: transition to "Done"
+      If INCOMPLETE: add label "outcome:epic-incomplete"
+      If BLOCKED: add label "needs-human"
+
+      Return JSON:
+      {
+        "transition": "Done | None",
+        "labels_added": ["label1"]
+      }
+
+  # ══════════════════════════════════════════════════════════════════
+  # Phase 8: Store Episode
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: store_episode
+    name: Store Episode in AgentDB
+    type: bash
+    depends_on:
+      - transition_epic
+    script: |
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
+        \"session_id\": \"${TENANT_NAMESPACE}\",
+        \"task\": \"validate-epic-$epic\",
+        \"input\": {\"epic\": \"$epic\",
+          \"verdict\": \"$produce_verdict.verdict\"},
+        \"output\": \"$produce_verdict.summary\",
+        \"reward\": 1,
+        \"success\": true,
+        \"critique\": \"Validation complete\"
+      }"
+
+  # ══════════════════════════════════════════════════════════════════
+  # Phase 9: Print Summary
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: print_summary
+    name: Print Summary
+    type: prompt
+    depends_on:
+      - store_episode
+    model: opus
+    dispatch: inline
+    prompt: |
+      Print a human-readable summary of the validation results.
+
+      Epic: $epic
+      Verdict: $produce_verdict.verdict
+      Report: $produce_verdict.report_path
+
+      Format as markdown with sections for:
+      - Executive Summary
+      - Children Audit Results
+      - Artifacts Audit Results
+      - AC Coverage
+      - Final Verdict
