@@ -59,10 +59,32 @@ class SkillRunner(BaseRunner):
 
         timeout = ctx.node_def.timeout or 300  # Default 5 min timeout
 
+        # Build the subprocess command based on skill file extension.
+        # Historically SkillRunner only invoked python3 with params on stdin.
+        # That silently broke every TypeScript skill (which needs `npx tsx`
+        # and reads params from argv[2]), and those are the overwhelming
+        # majority of skills in ~/.claude/skills. GW-5356 follow-up #4:
+        # detect the language by suffix and route appropriately.
+        params_json = json.dumps(params)
+        suffix = resolved_path.suffix.lower()
+        if suffix == ".ts":
+            # TS skills: `npx tsx <path> '<json>'`. Params via argv[2].
+            cmd = ["npx", "tsx", str(resolved_path), params_json]
+            send_params_on_stdin = False
+        elif suffix == ".sh":
+            # Bash skills: `bash <path> '<json>'`. argv[1] is the JSON.
+            cmd = ["bash", str(resolved_path), params_json]
+            send_params_on_stdin = False
+        else:
+            # Python (and anything else with a shebang) keeps the
+            # stdin-JSON convention.
+            cmd = ["python3", str(resolved_path)]
+            send_params_on_stdin = True
+
         try:
             # Create async subprocess with pipes for stdin/stdout/stderr
             process = await asyncio.create_subprocess_exec(
-                "python3", str(resolved_path),
+                *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -78,19 +100,21 @@ class SkillRunner(BaseRunner):
                 assert process.stdout is not None
                 assert process.stderr is not None
 
-                # Send params as JSON on stdin and close
-                try:
-                    process.stdin.write(json.dumps(params).encode("utf-8"))
-                    await process.stdin.drain()
-                except (BrokenPipeError, ConnectionResetError):
-                    # Skill may exit before reading stdin; that's fine — we'll
-                    # see returncode/stderr below.
-                    pass
-                finally:
+                # Send params on stdin only for the python path — TS/bash
+                # skills received params as argv. Always close stdin so the
+                # skill doesn't hang waiting for input.
+                if send_params_on_stdin:
                     try:
-                        process.stdin.close()
-                    except Exception:
+                        process.stdin.write(params_json.encode("utf-8"))
+                        await process.stdin.drain()
+                    except (BrokenPipeError, ConnectionResetError):
+                        # Skill may exit before reading stdin; that's fine —
+                        # we'll see returncode/stderr below.
                         pass
+                try:
+                    process.stdin.close()
+                except Exception:
+                    pass
 
                 # Track cumulative output and sequence number
                 stdout_lines: List[str] = []
