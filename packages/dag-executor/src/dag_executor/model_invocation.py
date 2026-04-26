@@ -107,6 +107,53 @@ def load_routing(path: Path = ROUTING_PATH) -> Dict[str, Any]:
         return dict(_FALLBACK_ROUTING)
 
 
+# Roles a local-model entry may expose, in the order we prefer when
+# synthesizing a flat {provider, model} from an operator's role map.
+# `fast` first because completion-mode calls typically want low latency;
+# `coding` is the common alternative; `reasoning` is last because those
+# models are slower.
+_LOCAL_ROLE_PREFERENCE = ("fast", "coding", "reasoning")
+
+
+def _flatten_role_map_entry(
+    entry: Dict[str, Any],
+    providers_cfg: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Normalize a role-keyed local-model entry to the flat {provider, model} shape.
+
+    The operator's live `~/.claude/config/model-routing.json` stores
+    `models.local` as a map of role → model-id-or-alias (plus a sidecar
+    `base_url`). The `resolve_alias` contract expects flat entries. Pick
+    a role by preference and synthesize a flat entry so downstream code
+    is provider-agnostic.
+
+    Returns None when the entry doesn't look like a role map (caller falls
+    through to the bundled fallback).
+    """
+    role_keys = [k for k in _LOCAL_ROLE_PREFERENCE if isinstance(entry.get(k), str)]
+    if not role_keys:
+        return None
+
+    chosen_role = role_keys[0]
+    model_ref = entry[chosen_role]
+
+    # Try to look up model_ref as an alias first (e.g. "qwen3-coder-30b"),
+    # then treat it as a concrete model id if no alias matches.
+    provider_name = "ollama"  # role maps are Ollama-only in practice
+    resolved_model_id = model_ref
+
+    # Inherit base_url from the entry's sidecar or the provider config.
+    base_url = entry.get("base_url") or providers_cfg.get(provider_name, {}).get("base_url")
+
+    flat: Dict[str, Any] = {
+        "provider": provider_name,
+        "model": resolved_model_id,
+    }
+    if base_url:
+        flat["base_url"] = base_url
+    return flat
+
+
 def resolve_alias(tier: ModelTier, routing: Optional[Dict[str, Any]] = None) -> ModelEndpoint:
     """Resolve a ModelTier to a concrete provider + model endpoint.
 
@@ -118,6 +165,16 @@ def resolve_alias(tier: ModelTier, routing: Optional[Dict[str, Any]] = None) -> 
     providers_cfg = cfg.get("providers", {})
 
     entry = models.get(tier.value)
+
+    # Role-map shape normalization (GW-5356 follow-up #5). `models.local`
+    # in the live config is stored as {coding, fast, reasoning, embedding,
+    # base_url} rather than {provider, model}. Flatten before falling
+    # through to the fallback.
+    if isinstance(entry, dict) and ("provider" not in entry or "model" not in entry):
+        flattened = _flatten_role_map_entry(entry, providers_cfg)
+        if flattened is not None:
+            entry = flattened
+
     if not isinstance(entry, dict) or "provider" not in entry or "model" not in entry:
         # Try fallback routing — covers the case where ~/.claude/config has an
         # older schema or the tier was never added there.
@@ -296,9 +353,19 @@ def _build_openai_compatible_completion(
             f"Provider '{endpoint.provider.name}' has no base_url; cannot build "
             f"OpenAI-compatible completion invocation."
         )
+    # Normalize: OpenAI-compat endpoints live under /v1. Some operator
+    # configs (notably Ollama) write the provider base_url as
+    # http://localhost:11434 and expect the /v1 suffix to come from the
+    # caller. The shim appends /chat/completions, so we need to land at
+    # /v1/chat/completions. Append /v1 iff the base_url doesn't already
+    # have a version segment.
+    base_url = endpoint.provider.base_url.rstrip("/")
+    if not base_url.endswith("/v1") and "/v" not in base_url.rsplit("/", 2)[-1]:
+        base_url = f"{base_url}/v1"
+
     env = {k: v for k, v in os.environ.items()}
     env["DAG_COMPLETION_MODEL"] = endpoint.model
-    env["DAG_COMPLETION_BASE_URL"] = endpoint.provider.base_url
+    env["DAG_COMPLETION_BASE_URL"] = base_url
     if endpoint.provider.api_key_env:
         env["DAG_COMPLETION_API_KEY_ENV"] = endpoint.provider.api_key_env
     cmd: List[str] = ["python3", "-c", _OPENAI_SHIM]
