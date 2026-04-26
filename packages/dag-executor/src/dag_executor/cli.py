@@ -335,6 +335,31 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _resolve_checkpoint_dir(
+    explicit_dir: Optional[str],
+    workflow_prefix: Optional[str],
+) -> Optional[str]:
+    """Compute the on-disk checkpoint directory for a workflow.
+
+    `checkpoint_prefix` in a workflow YAML is a bare name (e.g. "vale",
+    "ladder-01-hello"). Without anchoring, the CheckpointStore treats it
+    as a path relative to CWD and every run drops a top-level directory
+    into the operator's working tree. Anchor bare names under
+    `.dag-checkpoints/` so artifacts stay in one gitignored location.
+
+    An explicit --checkpoint-dir or a path-shaped prefix wins as-is.
+    Returns None only when both inputs are None — callers that need a
+    non-None dir should substitute the bare `.dag-checkpoints/` root.
+    """
+    if explicit_dir:
+        return explicit_dir
+    if not workflow_prefix:
+        return None
+    if "/" in workflow_prefix or os.sep in workflow_prefix:
+        return workflow_prefix
+    return str(Path(".dag-checkpoints") / workflow_prefix)
+
+
 def parse_inputs(input_args: List[str]) -> Dict[str, Any]:
     """Parse input arguments into a dictionary.
 
@@ -506,7 +531,9 @@ def run_history(argv: List[str]) -> None:
     args = parser.parse_args(argv)
 
     workflow_def = load_workflow(args.workflow)
-    checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
+    checkpoint_dir = _resolve_checkpoint_dir(
+        args.checkpoint_dir, workflow_def.config.checkpoint_prefix
+    ) or ".dag-checkpoints"
     store = CheckpointStore(checkpoint_dir)
 
     if args.run_id:
@@ -551,7 +578,9 @@ def run_inspect(argv: List[str]) -> None:
     args = parser.parse_args(argv)
 
     workflow_def = load_workflow(args.workflow)
-    checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
+    checkpoint_dir = _resolve_checkpoint_dir(
+        args.checkpoint_dir, workflow_def.config.checkpoint_prefix
+    ) or ".dag-checkpoints"
     store = CheckpointStore(checkpoint_dir)
 
     meta = store.load_metadata(workflow_def.name, args.run_id)
@@ -707,7 +736,9 @@ def run_replay(argv: List[str]) -> None:
     args = parser.parse_args(argv)
 
     workflow_def = load_workflow(args.workflow)
-    checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
+    checkpoint_dir = _resolve_checkpoint_dir(
+        args.checkpoint_dir, workflow_def.config.checkpoint_prefix
+    ) or ".dag-checkpoints"
     store = CheckpointStore(checkpoint_dir)
 
     # Parse overrides from CLI arguments
@@ -975,9 +1006,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                 progress_bar = ProgressBar(total_nodes=len(workflow_def.nodes))
                 progress_bar.attach(event_emitter)
 
-        # Setup checkpoint store if needed
+        # Setup checkpoint store if needed. See _resolve_checkpoint_dir for
+        # the anchoring rule — bare names go under .dag-checkpoints/.
         checkpoint_store = None
-        checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
+        checkpoint_dir = _resolve_checkpoint_dir(
+            args.checkpoint_dir, workflow_def.config.checkpoint_prefix
+        )
         if checkpoint_dir:
             checkpoint_store = CheckpointStore(checkpoint_dir)
 
