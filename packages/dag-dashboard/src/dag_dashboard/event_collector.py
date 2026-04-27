@@ -74,13 +74,14 @@ class EventCollector:
 
     def _process_file(self, file_path: Path) -> None:
         """
-        Process NDJSON file: tail from last position, persist, and broadcast.
-        
+        Process NDJSON/JSONL file: tail from last position, persist, and broadcast.
+
         Called from watchdog thread (synchronous).
         """
-        if not file_path.name.endswith(".ndjson"):
+        # Accept both .ndjson and .jsonl for back-compat
+        if not (file_path.name.endswith(".ndjson") or file_path.name.endswith(".jsonl")):
             return
-        
+
         run_id = file_path.stem
         
         # Handle file deletion or recreation
@@ -618,7 +619,7 @@ class EventCollector:
             card = slack_formatter.format_workflow_failed(
                 workflow_name, run_id, error, self.dashboard_url
             )
-        elif event_type == "gate_pending":
+        elif event_type == "node_interrupted":
             node_name = str(payload.get("node_name", "") or "")
             condition = str(payload.get("condition", "") or "")
             card = slack_formatter.format_gate_pending(

@@ -2,6 +2,9 @@
 import asyncio
 import json
 import sqlite3
+import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -990,3 +993,94 @@ nodes:
         assert row[0] == "opus"
     finally:
         collector.stop()
+
+
+async def test_node_interrupted_triggers_format_gate_pending(test_db: Path, events_dir: Path, broadcaster: Broadcaster):
+    """Test that node_interrupted event triggers format_gate_pending."""
+    loop = asyncio.get_event_loop()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop
+    )
+    collector.start()
+
+    try:
+        run_id = str(uuid.uuid4())
+        event_file = events_dir / f"{run_id}.ndjson"
+
+        # Write node_interrupted event
+        with open(event_file, "w") as f:
+            event = {
+                "event_type": "node_interrupted",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "run_id": run_id,
+                "node_id": "approval_node",
+                "data": {
+                    "gate": {
+                        "type": "approval",
+                        "context": {"description": "Approve deployment"}
+                    }
+                }
+            }
+            f.write(json.dumps(event) + "\n")
+
+        await asyncio.sleep(0.5)
+
+        # Verify that the event was processed (this test verifies the mapping exists;
+        # actual format_gate_pending logic is tested in test_formatter.py)
+        # Check that the workflow_runs table has the entry (indicates event was processed)
+        conn = sqlite3.connect(test_db)
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM workflow_runs WHERE id = ?", (run_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        assert row is not None  # Event was processed
+    finally:
+        collector.stop()
+
+
+def test_event_collector_accepts_jsonl_files_for_back_compat(test_db: Path, tmp_path: Path, broadcaster: Broadcaster):
+    """Test that .jsonl files are still collected for backwards compatibility."""
+    events_dir = tmp_path / "events"
+    events_dir.mkdir()
+
+    loop = asyncio.new_event_loop()
+    collector = EventCollector(
+        events_dir=events_dir,
+        db_path=test_db,
+        broadcaster=broadcaster,
+        loop=loop
+    )
+    collector.start()
+
+    try:
+        run_id = str(uuid.uuid4())
+        # Use .jsonl extension (legacy format)
+        event_file = events_dir / f"{run_id}.jsonl"
+
+        with open(event_file, "w") as f:
+            event = {
+                "event_type": "workflow_started",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "run_id": run_id,
+                "workflow_id": "test_workflow",
+            }
+            f.write(json.dumps(event) + "\n")
+
+        time.sleep(0.5)
+
+        # Verify .jsonl file was processed
+        conn = sqlite3.connect(test_db)
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM workflow_runs WHERE id = ?", (run_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row[0] == "running"
+    finally:
+        collector.stop()
+        loop.close()

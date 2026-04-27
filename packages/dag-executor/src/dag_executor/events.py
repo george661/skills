@@ -81,16 +81,20 @@ class EventEmitter:
         self,
         log_file: Optional[str] = None,
         workflow_name: Optional[str] = None,
-        run_id: Optional[str] = None
+        run_id: Optional[str] = None,
+        events_dir: Optional[str] = None
     ) -> None:
         """Initialize event emitter.
 
         Args:
-            log_file: Optional path to JSONL log file for event persistence.
-                     If not provided, defaults to .dag-checkpoints/{workflow_name}-{run_id}/events.jsonl
-                     when workflow_name and run_id are specified.
+            log_file: Optional path to NDJSON log file for event persistence.
+                     Takes precedence over events_dir.
             workflow_name: Workflow name for default checkpoint path
             run_id: Run ID for default checkpoint path
+            events_dir: Optional directory for flat event files. If provided,
+                       writes to {events_dir}/{run_id}.ndjson (discoverable by
+                       dag-dashboard's default *.ndjson glob).
+                       If not provided, defaults to .dag-checkpoints/{workflow_name}-{run_id}/{run_id}.ndjson
         """
         self._listeners: List[Callable[[WorkflowEvent], None]] = []
         self._lock = threading.Lock()
@@ -99,9 +103,12 @@ class EventEmitter:
         self._log_file: Optional[Path]
         if log_file:
             self._log_file = Path(log_file)
+        elif events_dir and run_id:
+            # Flat event file pattern for dashboard discovery
+            self._log_file = Path(events_dir) / f"{run_id}.ndjson"
         elif workflow_name and run_id:
-            # Use standard checkpoint directory convention
-            self._log_file = Path(f".dag-checkpoints/{workflow_name}-{run_id}/events.jsonl")
+            # Nested checkpoint directory convention (with .ndjson extension)
+            self._log_file = Path(f".dag-checkpoints/{workflow_name}-{run_id}/{run_id}.ndjson")
         else:
             self._log_file = None
 

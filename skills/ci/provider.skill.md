@@ -1,6 +1,6 @@
 # Unified CI/CD Skills
 
-Unified interface for CI/CD operations across Concourse, GitHub Actions, and CircleCI. Each skill resolves the provider, translates parameters to provider-native format, and delegates to the corresponding backend skill.
+Unified interface for CI/CD operations across Concourse and GitHub Actions. Each skill resolves the provider, translates parameters to provider-native format, and delegates to the corresponding backend skill.
 
 ## How It Works
 
@@ -27,7 +27,6 @@ Resolution order (first match wins):
 ```bash
 export CI_PROVIDER=concourse       # Concourse CI (default)
 export CI_PROVIDER=github_actions  # GitHub Actions
-export CI_PROVIDER=circleci        # CircleCI (stub)
 ```
 
 ## Skill Mapping
@@ -38,7 +37,7 @@ export CI_PROVIDER=circleci        # CircleCI (stub)
 | `trigger_build` | `fly/trigger_job` | `github-actions/trigger_workflow` |
 | `get_build_logs` | `fly/watch_build` | `github-actions/get_run_logs` |
 | `list_builds` | `concourse/list_builds` | `github-actions/list_workflow_runs` |
-| `wait_for_ci` | `fly/wait-for-ci` | `github-actions/wait_for_workflow_run` |
+| `wait_for_ci` | `fly/wait_for_ci` | `github-actions/wait_for_workflow_run` |
 
 ## Parameter Translation
 

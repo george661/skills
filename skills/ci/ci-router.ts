@@ -1,12 +1,15 @@
 #!/usr/bin/env npx tsx
 /**
- * CI Router — resolves CI/CD provider (concourse/github_actions/circleci) and
+ * CI Router — resolves CI/CD provider (concourse/github_actions) and
  * delegates to the right backend skill.
  *
  * Provider resolution order:
  * 1. Explicit `provider` argument
  * 2. CI_PROVIDER environment variable
  * 3. Default: concourse
+ *
+ * Note: Only concourse and github_actions are currently supported. To add new providers
+ * (e.g., circleci), create the skills/{provider}/ directory and add mappings to SKILL_MAP below.
  *
  * Usage from other ci/ skills:
  *   import { resolveCIProvider, translateParams, delegateCI } from './ci-router.js';
@@ -32,7 +35,7 @@ function debug(...args: unknown[]) {
 // Types
 // ---------------------------------------------------------------------------
 
-export type CIProvider = 'concourse' | 'github_actions' | 'circleci';
+export type CIProvider = 'concourse' | 'github_actions';
 
 // ---------------------------------------------------------------------------
 // Skill name mapping — unified name → provider-specific skill path
@@ -64,7 +67,7 @@ const SKILL_MAP: Record<string, Partial<Record<CIProvider, SkillMapping>>> = {
     github_actions: { dir: 'github-actions', name: 'list_workflow_runs' },
   },
   wait_for_ci: {
-    concourse:      { dir: 'fly', name: 'wait-for-ci' },
+    concourse:      { dir: 'fly', name: 'wait_for_ci' },
     github_actions: { dir: 'github-actions', name: 'wait_for_workflow_run' },
   },
 };
@@ -79,7 +82,6 @@ export const WAIT_FOR_CI_SKILL_MAP: Partial<Record<CIProvider, SkillMapping>> = 
 const PROVIDER_DEFAULT_DIR: Record<CIProvider, string> = {
   concourse: 'concourse',
   github_actions: 'github-actions',
-  circleci: 'circleci',
 };
 
 // ---------------------------------------------------------------------------
@@ -97,16 +99,22 @@ export function resolveCIProvider(explicit?: string): CIProvider {
   debug('resolveCIProvider called, explicit:', explicit);
 
   // 1. Explicit override
-  if (explicit && isValidProvider(explicit)) {
-    debug('resolved via explicit arg:', explicit);
-    return explicit;
+  if (explicit) {
+    if (isValidProvider(explicit)) {
+      debug('resolved via explicit arg:', explicit);
+      return explicit;
+    }
+    throw new Error(`Invalid CI provider: "${explicit}". Valid providers: concourse, github_actions`);
   }
 
   // 2. Environment variable
   const envVal = process.env.CI_PROVIDER;
-  if (envVal && isValidProvider(envVal)) {
-    debug('resolved via CI_PROVIDER env:', envVal);
-    return envVal;
+  if (envVal) {
+    if (isValidProvider(envVal)) {
+      debug('resolved via CI_PROVIDER env:', envVal);
+      return envVal;
+    }
+    throw new Error(`Invalid CI provider in CI_PROVIDER env: "${envVal}". Valid providers: concourse, github_actions`);
   }
 
   // 3. Default
@@ -115,7 +123,7 @@ export function resolveCIProvider(explicit?: string): CIProvider {
 }
 
 function isValidProvider(value: string): value is CIProvider {
-  return value === 'concourse' || value === 'github_actions' || value === 'circleci';
+  return value === 'concourse' || value === 'github_actions';
 }
 
 // ---------------------------------------------------------------------------

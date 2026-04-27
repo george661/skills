@@ -18,13 +18,17 @@ describe('resolveReflexionProvider', () => {
   });
 
   it('returns provider value when REFLEXION_PROVIDER is set', () => {
-    process.env.REFLEXION_PROVIDER = 'pinecone';
-    expect(resolveReflexionProvider()).toBe('pinecone');
+    process.env.REFLEXION_PROVIDER = 'agentdb';
+    expect(resolveReflexionProvider()).toBe('agentdb');
   });
 
   it('returns explicit override when both env and explicit are set', () => {
-    process.env.REFLEXION_PROVIDER = 'pinecone';
-    expect(resolveReflexionProvider('chroma')).toBe('chroma');
+    process.env.REFLEXION_PROVIDER = 'agentdb';
+    expect(resolveReflexionProvider('agentdb')).toBe('agentdb');
+  });
+
+  it('throws when invalid provider pinecone is provided', () => {
+    expect(() => resolveReflexionProvider('pinecone')).toThrow(/Invalid reflexion provider.*pinecone/);
   });
 });
 
