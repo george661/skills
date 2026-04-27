@@ -1,12 +1,15 @@
 #!/usr/bin/env npx tsx
 /**
- * Reflexion Router — resolves reflexion/knowledge-store provider (agentdb/pinecone/chroma)
+ * Reflexion Router — resolves reflexion/knowledge-store provider (agentdb)
  * and delegates to the right backend skill.
  *
  * Provider resolution order:
  * 1. Explicit `provider` argument
  * 2. REFLEXION_PROVIDER environment variable
  * 3. Default: agentdb
+ *
+ * Note: Only agentdb is currently supported. To add new providers (e.g., pinecone, chroma),
+ * create the skills/{provider}/ directory and add mappings to SKILL_MAP below.
  *
  * Usage from other reflexion/ skills:
  *   import { resolveReflexionProvider, translateParams, delegateReflexion } from './reflexion-router.js';
@@ -32,7 +35,7 @@ function debug(...args: unknown[]) {
 // Types
 // ---------------------------------------------------------------------------
 
-export type ReflexionProvider = 'agentdb' | 'pinecone' | 'chroma';
+export type ReflexionProvider = 'agentdb';
 
 // ---------------------------------------------------------------------------
 // Skill name mapping — unified name → provider-specific skill path
@@ -61,8 +64,6 @@ const SKILL_MAP: Record<string, Partial<Record<ReflexionProvider, SkillMapping>>
 
 const PROVIDER_DEFAULT_DIR: Record<ReflexionProvider, string> = {
   agentdb: 'agentdb',
-  pinecone: 'pinecone',
-  chroma: 'chroma',
 };
 
 // ---------------------------------------------------------------------------
@@ -98,7 +99,7 @@ export function resolveReflexionProvider(explicit?: string): ReflexionProvider {
 }
 
 function isValidProvider(value: string): value is ReflexionProvider {
-  return value === 'agentdb' || value === 'pinecone' || value === 'chroma';
+  return value === 'agentdb';
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +110,6 @@ function isValidProvider(value: string): value is ReflexionProvider {
  * Translate unified reflexion params to provider-specific params.
  *
  * - AgentDB: passthrough (no translation needed)
- * - Pinecone/Chroma: future implementations may require param mapping
  */
 export function translateParams(
   provider: ReflexionProvider,

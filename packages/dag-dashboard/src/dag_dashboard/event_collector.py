@@ -618,7 +618,7 @@ class EventCollector:
             card = slack_formatter.format_workflow_failed(
                 workflow_name, run_id, error, self.dashboard_url
             )
-        elif event_type == "gate_pending":
+        elif event_type == "node_interrupted":
             node_name = str(payload.get("node_name", "") or "")
             condition = str(payload.get("condition", "") or "")
             card = slack_formatter.format_gate_pending(
