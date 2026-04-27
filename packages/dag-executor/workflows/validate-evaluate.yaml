@@ -64,7 +64,7 @@ nodes:
       fi
       
       # Fetch criteria from Jira
-      criteria=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"description\"}")
+      criteria=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$issue_key\", \"fields\": \"description\"}")
       
       jq -n \
         --arg test_results "$test_results" \

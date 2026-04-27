@@ -103,20 +103,18 @@ class TestDispatchMode:
                 )
 
 
-class TestUnifiedRouterUsage:
-    """Test 5: All skill invocations use unified routers."""
+class TestSkillPaths:
+    """Test 5: Skill invocations reference real skill directories.
 
-    def test_uses_unified_routers(self, workflow: WorkflowDef) -> None:
-        """All skill calls go to ~/.claude/skills/issues/ or ~/.claude/skills/vcs/."""
-        # Read the raw YAML to check for router paths
+    GW-5356: the prior TestUnifiedRouterUsage enshrined an aspirational
+    `skills/issues/` alias that was never implemented. The live skills live at
+    `skills/jira/` and `skills/vcs/` directly. Tests now assert the real paths.
+    """
+
+    def test_uses_real_skill_paths(self, workflow: WorkflowDef) -> None:
         with open(WORKFLOW_PATH, 'r') as f:
             content = f.read()
-        
-        # Should use unified routers
-        assert "~/.claude/skills/issues/" in content or "skills/issues/" in content
-        assert "~/.claude/skills/vcs/" in content or "skills/vcs/" in content
-        
-        # Should NOT use provider-specific paths
-        assert "skills/jira/" not in content, "Should use unified issues/ router, not jira/"
-        assert "skills/bitbucket/" not in content, "Should use unified vcs/ router, not bitbucket/"
-        assert "skills/github/" not in content, "Should use unified vcs/ router, not github/"
+        assert "~/.claude/skills/jira/" in content
+        assert "~/.claude/skills/vcs/" in content
+        # The aspirational unified-router alias was never implemented
+        assert "skills/issues/" not in content

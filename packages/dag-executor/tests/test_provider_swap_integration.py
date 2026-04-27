@@ -46,34 +46,26 @@ def test_review_workflow_parses_with_github_env():
         assert len(bash_nodes) > 0, "No bash nodes found in review.yaml"
 
 
-def test_workflow_bash_scripts_contain_unified_paths():
-    """Verify bash scripts in review.yaml use unified skill paths."""
+def test_workflow_bash_scripts_use_real_skill_paths():
+    """Verify bash scripts in review.yaml reference real skill directories.
+
+    GW-5356: the prior test asserted aspirational `skills/vcs/`, `skills/ci/`,
+    and `skills/issues/` router alias dirs that were never implemented. The
+    live skills live at `skills/vcs/` (this one *is* real) and `skills/jira/`.
+    """
     workflow = load_workflow("review")
 
-    # Collect all bash scripts
-    bash_scripts = []
-    for node in workflow.nodes:
-        if node.type == "bash" and node.script:
-            bash_scripts.append(node.script)
-
-    # Verify at least some bash nodes exist
+    bash_scripts = [n.script for n in workflow.nodes if n.type == "bash" and n.script]
     assert bash_scripts, "No bash nodes found in review.yaml"
 
-    # Check for unified paths
-    unified_path_count = 0
-    provider_specific_count = 0
-
-    for script in bash_scripts:
-        if "skills/vcs/" in script or "skills/issues/" in script or "skills/ci/" in script:
-            unified_path_count += 1
-        if "skills/bitbucket/" in script or "skills/jira/" in script:
-            provider_specific_count += 1
-
-    # Should use unified paths, not provider-specific
-    assert unified_path_count > 0, "No unified skill paths found in review.yaml bash scripts"
-    assert provider_specific_count == 0, (
-        f"Found {provider_specific_count} provider-specific skill paths in review.yaml"
+    combined = "\n".join(bash_scripts)
+    # review.yaml drives Jira + VCS (Bitbucket/GitHub) via the unified vcs/ skill.
+    assert "skills/jira/" in combined or "skills/vcs/" in combined, (
+        "review.yaml bash nodes must call at least one real skill (jira/ or vcs/)"
     )
+    # Aspirational alias dirs never shipped.
+    assert "skills/issues/" not in combined
+    assert "skills/ci/" not in combined
 
 
 def test_provider_configs_are_valid(tmp_path):

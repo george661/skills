@@ -109,10 +109,15 @@ async def test_skill_runner_valid_execution(skills_dir, valid_skill_node):
     assert result.output == mock_output
     assert result.error is None
 
-    # Verify subprocess was invoked with python3 and the resolved skill path
+    # GW-5356 follow-up #4: TypeScript skills route through `npx tsx` with
+    # params as argv[2], not `python3` with params on stdin. The fixture
+    # skill is a .ts file; the assertion now reflects the fix.
     args, _ = mock_subprocess.call_args
-    assert args[0] == "python3"
-    assert args[1].endswith("get_issue.ts")
+    assert args[0] == "npx"
+    assert args[1] == "tsx"
+    assert args[2].endswith("get_issue.ts")
+    # argv[3] is the JSON-encoded params from the fixture's node.params
+    assert json.loads(args[3]) == valid_skill_node.params
 
 
 def test_skill_path_traversal_rejected(skills_dir, valid_skill_node):

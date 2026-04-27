@@ -1,10 +1,55 @@
 """Prompt runner for LLM invocation nodes."""
 import json
 import logging
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
+
+
+_JSON_FENCE_RE = re.compile(
+    r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _extract_json_object(text: str) -> Any:
+    """Try to pull a JSON object / array out of an LLM response.
+
+    Strategy:
+      1. Direct parse — works when the model returns pure JSON.
+      2. Markdown code-fence — `​```json ... ``​`` wrapping (agent harness
+         commonly adds prose before and the fenced JSON after).
+      3. Brace-to-brace scan — last resort for unfenced `{...}` at the end
+         of the response.
+
+    Returns the parsed object, or None if nothing resolved.
+    """
+    if not text:
+        return None
+    stripped = text.strip()
+    try:
+        return json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Try fenced code blocks; prefer the last one (agents often narrate, then
+    # produce the final answer).
+    matches = list(_JSON_FENCE_RE.finditer(text))
+    for match in reversed(matches):
+        try:
+            return json.loads(match.group(1))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    # Brace-scan: last balanced {...} in the text.
+    start = text.rfind("{")
+    end = text.rfind("}")
+    if 0 <= start < end:
+        try:
+            return json.loads(text[start : end + 1])
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return None
 
 from dag_executor.artifacts import detect_artifacts
 from dag_executor.conversations import (
@@ -15,8 +60,21 @@ from dag_executor.conversations import (
     build_conversation_message_appended_event,
 )
 from dag_executor.events import EventType, WorkflowEvent
+from dag_executor.model_invocation import (
+    Invocation,
+    build_agent_invocation,
+    build_completion_invocation,
+    resolve_alias,
+)
 from dag_executor.model_resolver import resolve_model
-from dag_executor.schema import ContextMode, ModelTier, NodeResult, NodeStatus, OutputFormat
+from dag_executor.schema import (
+    ContextMode,
+    ModelTier,
+    NodeMode,
+    NodeResult,
+    NodeStatus,
+    OutputFormat,
+)
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 
 logger = logging.getLogger(__name__)
@@ -103,47 +161,54 @@ class PromptRunner(BaseRunner):
         # Resolve session for conversation continuity
         session_id, transition_reason, parent_session_id = _resolve_session(ctx)
 
-        # Dispatcher is installed by scripts/install.sh into ~/.claude/hooks/.
-        dispatch_script = Path.home() / ".claude" / "hooks" / "dispatch-local.sh"
-        cmd = [str(dispatch_script), "--model", resolved_model.value]
-
-        # Add session ID if conversation context is present
-        if session_id is not None:
-            cmd.extend(["--session-id", session_id])
-
-        # Handle prompt vs prompt_file. Inline prompts go via stdin (avoids arg
-        # length limits); prompt_file is passed through --file.
-        prompt_input = None
-
-        # prompt_file takes precedence (never resolved, always direct file reference)
+        # Resolve the prompt text. prompt_file takes precedence over inline
+        # prompt (schema enforces they're mutually exclusive). Both paths end
+        # up as a single string fed to the subprocess on stdin.
         if node.prompt_file is not None:
-            cmd.extend(["--file", node.prompt_file])
-        elif node.prompt is not None:
+            try:
+                prompt_input: str = Path(node.prompt_file).read_text()
+            except OSError as exc:
+                return NodeResult(
+                    status=NodeStatus.FAILED,
+                    error=f"prompt_file read failed: {exc}",
+                )
+        else:
             # Use resolved prompt from executor if available, else fall back to node.prompt
             resolved_prompt = ctx.resolved_inputs.get("prompt") if ctx.resolved_inputs else None
-            effective_prompt = resolved_prompt if resolved_prompt is not None else node.prompt
-            cmd.append("--prompt-stdin")
-            prompt_input = effective_prompt
+            prompt_input = resolved_prompt if resolved_prompt is not None else (node.prompt or "")
+
+        # GW-5356: branch on node.mode. Missing mode falls back to AGENT with
+        # a deprecation warning already emitted at dry-run (see validator).
+        mode = node.mode or NodeMode.AGENT
+
+        invocation: Invocation
+        if mode is NodeMode.AGENT:
+            invocation = build_agent_invocation(resolved_model, prompt_input, session_id=session_id)
+        else:
+            endpoint = resolve_alias(resolved_model)
+            invocation = build_completion_invocation(endpoint, prompt_input, session_id=session_id)
 
         # Execute CLI with streaming support
         process = None
         try:
             # Use Popen for line-by-line streaming
             process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE if prompt_input else None,
+                invocation.cmd,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                env=invocation.env,
+                text=True,
             )
 
             # Register with subprocess registry so cancel can SIGTERM it
             if ctx.subprocess_registry is not None:
                 ctx.subprocess_registry.register(process)
 
-            # Write input if provided
-            if prompt_input and process.stdin:
-                process.stdin.write(prompt_input)
+            # Always close stdin after writing; both invocation shapes read
+            # the prompt from stdin (empty string is a valid no-op payload).
+            if process.stdin:
+                process.stdin.write(invocation.stdin_text)
                 process.stdin.close()
 
             # Stream output line by line
@@ -277,18 +342,15 @@ class PromptRunner(BaseRunner):
                     # Log but don't fail the node - session data is secondary to LLM response
                     logger.warning(f"Failed to append conversation message: {e}")
 
-            # GW-5308: If output_format is JSON, spread parsed fields into output dict
-            # while preserving the raw text in "response" for backward compatibility
+            # GW-5308 / GW-5356: If output_format is JSON, spread parsed fields
+            # into output dict. Agent-mode output typically wraps the JSON in
+            # prose + markdown fences (e.g. ```json ... ```); try those paths
+            # in order before giving up.
             output_dict = {}
             if node.output_format == OutputFormat.JSON:
-                try:
-                    parsed = json.loads(full_output)
-                    if isinstance(parsed, dict):
-                        # Spread parsed fields first
-                        output_dict.update(parsed)
-                except (json.JSONDecodeError, ValueError) as e:
-                    # Invalid JSON - log and fall back to text-only behavior
-                    logger.debug(f"Failed to parse JSON output: {e}")
+                parsed = _extract_json_object(full_output)
+                if isinstance(parsed, dict):
+                    output_dict.update(parsed)
 
             # Always set response last to guarantee backward compat
             # (raw text wins if parsed JSON contains a "response" key)

@@ -16,6 +16,7 @@ inputs:
   expected_routes:
     type: string
     required: false
+    default: ""
 
 state:
   resolved_repo_paths:
@@ -222,7 +223,7 @@ nodes:
       resolved_paths=$(jq -r '.resolved_paths' <<< "$resolved_repo_paths")
       
       # Search for test-task children
-      test_tasks=$(npx tsx ~/.claude/skills/issues/search_issues.ts \
+      test_tasks=$(npx tsx ~/.claude/skills/jira/search_issues.ts \
         "{\"jql\": \"parent = $epic AND labels = test-task\", \"fields\": [\"key\",\"summary\",\"description\"]}" 2>/dev/null || echo '{"issues":[]}')
       
       test_count=$(echo "$test_tasks" | jq '.issues | length')

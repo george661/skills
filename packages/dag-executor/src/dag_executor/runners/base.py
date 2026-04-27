@@ -45,6 +45,7 @@ class RunnerContext:
     parent_run_id: Optional[str] = None
     conversation_id: Optional[str] = None
     db_path: Optional[Path] = None
+    channel_store: Optional[Any] = None
     _recursion_depth: int = 0
 
 

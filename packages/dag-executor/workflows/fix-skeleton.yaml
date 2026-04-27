@@ -166,7 +166,7 @@ nodes:
       
       comment="## Skeleton Fixes Applied\n\n**Fixed:** $fixed\n**Failed:** $failed"
       
-      npx tsx ~/.claude/skills/issues/add_comment.ts \
+      npx tsx ~/.claude/skills/jira/add_comment.ts \
         "{\"issue_key\": \"$epic_key\", \"body\": \"$comment\"}"
       
       echo '{"posted": true}'

@@ -1,0 +1,37 @@
+---
+name: Ladder 03 — Prompt Node
+# One prompt node. Proves:
+#   - $input substitutes into the prompt body (AC-1)
+#   - writes: [response] captures the LLM's full reply (AC-14)
+#   - context: shared opens a resumable session (AC-10)
+
+config:
+  checkpoint_prefix: ladder-03-prompt
+  worktree: false
+
+inputs:
+  topic:
+    type: string
+    required: false
+    default: the ocean
+
+state:
+  reply:
+    strategy: overwrite
+
+outputs:
+  reply:
+    node: ask_model
+    field: response
+
+nodes:
+  - id: ask_model
+    name: Ask Model for a One-Liner
+    type: prompt
+    mode: completion       # bare LLM call, no tools, no Claude Code harness
+    model: sonnet          # tier resolved via ~/.claude/config/model-routing.json
+    context: shared
+    prompt: |
+      Give me a single short sentence about $topic. Just the sentence, nothing else.
+    writes:
+      - reply

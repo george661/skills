@@ -224,7 +224,7 @@ nodes:
       - target: ci_gate
         default: true
     script: |
-      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
         "{\"issue_key\": \"$issue_key\", \"fields\": \"comment\"}")
       echo "$issue" | jq -r '
         .fields.comment.comments | reverse | .[] |
@@ -320,7 +320,7 @@ nodes:
     depends_on:
       - merge
     script: |
-      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
         "{\"issue_key\": \"$issue_key\", \"fields\": \"status\"}")
       status=$(echo "$issue" | jq -r '.fields.status.name')
       echo "{\"status\": \"$status\"}"

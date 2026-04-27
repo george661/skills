@@ -36,6 +36,16 @@ env/
 htmlcov/
 .agent-context.json
 .dag-checkpoints/
+# dag-executor creates checkpoint_prefix dirs at CWD; these are run artifacts,
+# not source. Canonical location is .dag-checkpoints/; leakage is tracked as
+# a follow-up on GW-5356.
+/ladder-*/
+/test-*/
+/vale/
+/validate-run-tests/
+/validate-epic-audit-children/
+/validate-epic-audit-artifacts/
+/Validate*/
 implementation-plan.md
 
 # Playwright

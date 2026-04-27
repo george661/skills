@@ -1,6 +1,7 @@
 """Pydantic v2 models for DAG executor workflow definitions."""
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
@@ -84,6 +85,26 @@ class ContextMode(str, Enum):
     """Context mode for prompt nodes - shared or fresh session."""
     SHARED = "shared"  # Resume existing conversation session (default)
     FRESH = "fresh"  # Mint new session chained to prior
+
+
+class NodeMode(str, Enum):
+    """Invocation mode for prompt nodes.
+
+    - AGENT: full Claude Code harness (tools, CLAUDE.md, hooks, skills). Routes
+      through dispatch-local.sh. Use for nodes that read/edit files, call skills,
+      drive tool-using loops. This is where dumb local models punch above their
+      weight by borrowing the harness.
+    - COMPLETION: bare LLM call, no tools, no harness. Routes directly to the
+      provider (Bedrock via `claude --print --bare --allowedTools ""`, Ollama
+      via HTTP). Use for pure reasoning, JSON judgment, formatting nodes where
+      the harness is dead weight.
+
+    No silent default. Missing `mode:` on a prompt node emits a deprecation
+    warning at dry-run; the runner falls back to AGENT for unconverted
+    workflows until all in-tree YAMLs declare `mode` explicitly.
+    """
+    AGENT = "agent"
+    COMPLETION = "completion"
 
 
 class DispatchMode(str, Enum):
@@ -372,6 +393,14 @@ class NodeDef(BaseModel):
     model: Optional[ModelTier] = Field(default=None, description="Model tier (for type=prompt)")
     strict_model: bool = Field(default=False, description="Block model_override (for type=prompt)")
     context: ContextMode = Field(default=ContextMode.SHARED, description="Session context mode (for type=prompt)")
+    mode: Optional[NodeMode] = Field(
+        default=None,
+        description=(
+            "Invocation mode for prompt nodes: agent (full harness) or completion "
+            "(bare LLM call). Required on new prompt nodes — missing emits a "
+            "deprecation warning and falls back to agent."
+        ),
+    )
 
     # Bash node
     script: Optional[str] = Field(default=None, description="Bash script (for type=bash)")
@@ -393,6 +422,10 @@ class NodeDef(BaseModel):
         # Validate context field is only used on prompt nodes
         if self.type != "prompt" and self.context != ContextMode.SHARED:
             raise ValueError("context field is only allowed on type=prompt nodes")
+
+        # mode field is only valid on prompt nodes
+        if self.type != "prompt" and self.mode is not None:
+            raise ValueError("mode field is only allowed on type=prompt nodes")
 
         if self.type == "skill":
             if self.skill is None:
@@ -588,6 +621,11 @@ class WorkflowDef(BaseModel):
     # Private attribute to store YAML line numbers (not part of the schema)
     # Avoids memory leak from id()-based dict keys (id() recycles after GC)
     _node_lines: Dict[str, int] = PrivateAttr(default_factory=dict)
+
+    # Private: path the workflow was loaded from (None when built in-memory or
+    # parsed from string). Used by the command runner to resolve sub-workflow
+    # references relative to the parent's directory.
+    _source_path: Optional[Path] = PrivateAttr(default=None)
 
 
 # Rebuild models to resolve forward references

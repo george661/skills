@@ -38,18 +38,21 @@ nodes:
     type: bash
     script: |
       # Phase 1: Fetch children using JQL
-      children=$(npx tsx ~/.claude/skills/issues/search_issues.ts \
+      children=$(npx tsx ~/.claude/skills/jira/search_issues.ts \
         "{\"jql\": \"parent = $epic\", \"fields\": [\"key\",\"summary\",\"status\",\"labels\",\"priority\",\"issuelinks\",\"issuetype\"]}")
-      
+
       # Check if empty
       total=$(echo "$children" | jq '.issues | length')
       if [ "$total" -eq 0 ]; then
-        echo '{"error": "EMPTY_EPIC", "total": 0, "issues": []}' | jq -c
+        echo '{"children_list": {"error": "EMPTY_EPIC", "total": 0, "issues": []}}' | jq -c
         exit 1
       fi
-      
-      # Output the children list
-      echo "$children" | jq -c
+
+      # GW-5356: wrap payload under the `writes:` key so the executor routes
+      # it into the children_list channel. The executor writes dict entries
+      # to state by key match — unwrapped Jira responses would stream
+      # `issues` / `isLast` into undeclared channels and vanish.
+      echo "$children" | jq -c '{children_list: .}'
     output_format: json
     writes:
       - children_list
@@ -137,7 +140,7 @@ nodes:
         fi
         
         # Gate D: Validation Report
-        issue_data=$(npx tsx ~/.claude/skills/issues/get_issue.ts "{\"issue_key\": \"$key\", \"fields\": \"comment\"}" 2>/dev/null || echo '{}')
+        issue_data=$(npx tsx ~/.claude/skills/jira/get_issue.ts "{\"issue_key\": \"$key\", \"fields\": \"comment\"}" 2>/dev/null || echo '{}')
         
         # Check for validation report in comments (recursive search catches nested ADF)
         has_report=$(echo "$issue_data" | jq -r '.. | .text? // empty' | grep -c "## Validation Report" || echo "0")
@@ -193,8 +196,9 @@ nodes:
         audit_results=$(echo "$audit_results" | jq --argjson record "$child_record" '. + [$record]')
       done <<< "$issues"
       
-      # Output audit results
-      echo "$audit_results" | jq -c
+      # GW-5356: wrap the array under `audit_results` so the executor routes
+      # it to the declared state channel (dict-key match).
+      echo "$audit_results" | jq -c '{audit_results: .}'
     output_format: json
     reads:
       - children_list

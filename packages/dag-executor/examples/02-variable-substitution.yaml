@@ -1,0 +1,48 @@
+---
+name: Ladder 02 — Variable Substitution
+# Two nodes; variables flow through inputs and state.
+# Proves:
+#   - `$input_var` substitutes in a bash script body (AC-2)
+#   - a node's `writes:` populates state, and the next node reads it via `$state_key`
+#   - DAG_-prefixed env vars are also exposed (belt-and-suspenders)
+
+config:
+  checkpoint_prefix: ladder-02-subst
+  worktree: false
+
+inputs:
+  name:
+    type: string
+    required: false
+    default: world
+
+state:
+  greeting:
+    strategy: overwrite
+
+outputs:
+  greeting:
+    node: build_greeting
+    field: greeting
+
+nodes:
+  - id: build_greeting
+    name: Build Greeting from Input
+    type: bash
+    script: |
+      # $name is the workflow input; substituted into the script body before exec.
+      echo "{\"greeting\": \"hello, $name\"}"
+    output_format: json
+    writes:
+      - greeting
+
+  - id: echo_greeting
+    name: Echo Greeting from State
+    type: bash
+    depends_on:
+      - build_greeting
+    reads:
+      - greeting
+    script: |
+      # $greeting is read from state (populated by build_greeting.writes).
+      echo "read from state: $greeting"

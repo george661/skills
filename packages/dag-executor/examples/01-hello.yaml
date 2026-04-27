@@ -1,0 +1,15 @@
+---
+name: Ladder 01 — Hello
+# Smallest runnable DAG: one bash node, no inputs, no state.
+# Proves the runner harness loads a YAML, schedules a single node, and captures stdout.
+
+config:
+  checkpoint_prefix: ladder-01-hello
+  worktree: false
+
+nodes:
+  - id: say_hello
+    name: Say Hello
+    type: bash
+    script: |
+      echo "hello from dag-exec"

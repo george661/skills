@@ -6,4 +6,4 @@ nodes:
   - id: test-node
     type: bash
     script: |
-      npx tsx ~/.claude/skills/issues/get_issue.ts '{"issue_key": "TEST-123"}'
+      npx tsx ~/.claude/skills/jira/get_issue.ts '{"issue_key": "TEST-123"}'

@@ -155,7 +155,7 @@ nodes:
         echo "{\"found\": false, \"issue_key\": null, \"issue\": null}"
         exit 0
       fi
-      cd $PROJECT_ROOT && issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
+      cd $PROJECT_ROOT && issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
         "{\"issue_key\": \"$issue_key\", \"fields\": \"summary,status,labels,description\"}" 2>/dev/null) || true
       if [ -z "$issue" ] || echo "$issue" | jq -e '.errors' >/dev/null 2>&1; then
         echo "{\"found\": false, \"issue_key\": \"$issue_key\", \"issue\": null}"
@@ -511,7 +511,7 @@ nodes:
 
       See PR for full review details."
 
-      npx tsx ~/.claude/skills/issues/add_comment.ts \
+      npx tsx ~/.claude/skills/jira/add_comment.ts \
         "{\"issue_key\": \"$issue_key\", \"body\": $(echo "$comment" | jq -Rs .)}" 2>/dev/null || true
 
       echo "{\"posted\": true, \"issue_key\": \"$issue_key\", \"verdict\": \"$verdict\"}"

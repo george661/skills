@@ -23,23 +23,7 @@ from dag_executor.schema import (
 
 # Explicit whitelist of known environment variables that appear in workflows
 # Unknown ALL_CAPS names will produce lint errors
-ENV_VAR_WHITELIST = {
-    "PROJECT_ROOT",
-    "TENANT_NAMESPACE",
-    "TENANT_PROJECT",
-    "TENANT_DOMAIN_PATH",
-    "TENANT_DOCS_REPO",
-    "TENANT_SMOKE_TEST_PATH",
-    "DAG_EVENTS_DIR",
-    "DAG_CREATE_ISSUES_BATCH",
-    "DAG_DEPENDENCY_GRAPH",
-    "DAG_ISSUE_LIST",
-    "HOME",
-    "PATH",
-    "PWD",
-    "USER",
-    "SHELL",
-}
+from dag_executor.variables import ENV_VAR_WHITELIST
 
 
 @dataclass
@@ -479,6 +463,23 @@ class WorkflowValidator:
                         "currently informational — execution semantics arrive with "
                         "PRP-PLAT-006. Model routing is controlled by the `model:` "
                         "field + model-routing.json."
+                    ),
+                ))
+
+            # GW-5356: mode is required on prompt nodes. Missing falls back to
+            # agent for backward compat, but emits a deprecation warning so
+            # authors migrate. Once all in-tree workflows declare mode, flip
+            # this to an error and drop the runner fallback.
+            if node.type == "prompt" and node.mode is None:
+                result.issues.append(ValidationIssue(
+                    severity="warning",
+                    node_id=node.id,
+                    code="prompt_mode_missing",
+                    message=(
+                        "prompt node is missing `mode:` — falling back to "
+                        "`mode: agent` (full Claude Code harness). Declare "
+                        "`mode: agent` for harness/tool use or `mode: completion` "
+                        "for bare LLM calls (no tools, no CLAUDE.md)."
                     ),
                 ))
 

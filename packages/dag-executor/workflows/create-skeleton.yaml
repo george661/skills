@@ -40,10 +40,10 @@ nodes:
     on_failure: stop
     script: |
       # Fetch epic and child issues from Jira
-      epic=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
+      epic=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
         '{"issue_key": "$epic_key", "fields": "summary,description,issuelinks,labels,status"}')
       
-      children=$(npx tsx ~/.claude/skills/issues/search_issues.ts \
+      children=$(npx tsx ~/.claude/skills/jira/search_issues.ts \
         '{"jql": "parent = $epic_key", "fields": "key,summary,description,status,labels"}')
       
       # Try to recall PRP from AgentDB
@@ -155,7 +155,7 @@ nodes:
       created_issues='[]'
       
       for repo in $(echo '$affected_repos' | jq -r '.[]'); do
-        issue=$(npx tsx ~/.claude/skills/issues/create_issue.ts \
+        issue=$(npx tsx ~/.claude/skills/jira/create_issue.ts \
           "{\"project\": \"GW\", \"summary\": \"[Skeleton] $epic_key: $repo\", \
           \"issue_type\": \"Task\", \"parent_key\": \"$epic_key\", \
           \"labels\": [\"skeleton\", \"repo-$repo\"]}")
@@ -184,14 +184,14 @@ nodes:
       
       for child in $children; do
         # Check if child has skeleton label
-        has_skeleton=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
+        has_skeleton=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
           "{\"issue_key\": \"$child\", \"fields\": \"labels\"}" | \
           jq -r '.fields.labels[]? | select(. == "skeleton")')
         
         if [ -z "$has_skeleton" ]; then
           # Link to first skeleton issue
           first_skeleton=$(echo "$skeleton_keys" | head -1)
-          npx tsx ~/.claude/skills/issues/add_issue_link.ts \
+          npx tsx ~/.claude/skills/jira/add_issue_link.ts \
             "{\"inward_issue_key\": \"$child\", \"outward_issue_key\": \"$first_skeleton\", \"link_type\": \"Blocks\"}" \
             2>/dev/null || true
         fi

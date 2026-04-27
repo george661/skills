@@ -50,7 +50,7 @@ nodes:
     type: bash
     script: |
       # Check AgentDB connectivity
-      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/reflexion/reflexion_retrieve.ts \
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts \
         '{"session_id": "gw", "task": "health-check", "k": 1}' > /dev/null 2>&1
       echo '{"status": "healthy"}'
     output_format: json
@@ -67,7 +67,7 @@ nodes:
       request=$(jq -n \
         --arg session_id "$TENANT_NAMESPACE" \
         '{session_id: $session_id, task: "implementation-patterns", k: 5}')
-      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/reflexion/reflexion_retrieve.ts "$request"
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts "$request"
     output_format: json
 
   - id: fetch_issue
@@ -79,7 +79,7 @@ nodes:
       - issue_data
     on_failure: stop
     script: |
-      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts \
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
         '{"issue_key": "$issue_key", "fields": "summary,description,labels,status,issuelinks"}')
       echo "{\"issue_data\": $issue}"
     output_format: json
@@ -157,7 +157,7 @@ nodes:
     depends_on:
       - already_impl_gate
     script: |
-      npx tsx ~/.claude/skills/issues/transition_issue.ts \
+      npx tsx ~/.claude/skills/jira/transition_issue.ts \
         '{"issue_key": "$issue_key", "transition": "In Progress"}'
 
   # ──────────────────────────────────────────────────────────
@@ -262,7 +262,7 @@ nodes:
     script: |
       # Post implementation plan as Jira comment
       plan_text=$(echo "$plan" | jq -r '.plan_markdown // .markdown // "Plan created"')
-      npx tsx ~/.claude/skills/issues/add_comment.ts \
+      npx tsx ~/.claude/skills/jira/add_comment.ts \
         "{\"issue_key\": \"$issue_key\", \"body\": \"## Implementation Plan\\n\\n$plan_text\"}"
 
   # ──────────────────────────────────────────────────────────
@@ -278,7 +278,7 @@ nodes:
       - validation_criteria
     script: |
       # Store validation criteria in AgentDB
-      npx tsx ~/.claude/skills/reflexion/reflexion_store.ts \
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts \
         "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"validation-$issue_key\", \"input\": $validation_criteria, \"output\": \"stored\", \"reward\": 0.5, \"success\": true}"
 
   # ──────────────────────────────────────────────────────────
@@ -294,7 +294,7 @@ nodes:
       - worktree_info
     script: |
       # Store full implementation plan in AgentDB
-      npx tsx ~/.claude/skills/reflexion/reflexion_store.ts \
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts \
         "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"impl-plan-$issue_key\", \"input\": {\"issue_key\": \"$issue_key\", \"worktree_path\": \"${worktree_info.worktree_path}\", \"branch\": \"${worktree_info.branch}\"}, \"output\": $plan, \"reward\": 0.8, \"success\": true}"
 
   # ──────────────────────────────────────────────────────────
@@ -322,9 +322,9 @@ nodes:
     depends_on:
       - write_agent_context
     script: |
-      issue=$(npx tsx ~/.claude/skills/issues/get_issue.ts '{"issue_key": "$issue_key", "fields": "labels"}')
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts '{"issue_key": "$issue_key", "fields": "labels"}')
       labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("outcome:") | not)) + ["outcome:success-plan-created"] | @json')
-      npx tsx ~/.claude/skills/issues/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
+      npx tsx ~/.claude/skills/jira/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
 
 outputs:
   worktree_path:

@@ -462,7 +462,7 @@ nodes:
       #   0.6 — NEEDS_DEPLOY (code correct but not deployed)
       #   0.4 — failed validation, sent back to dev
       #   0.2 — escalated to human or contradiction detected
-      npx tsx ~/.claude/skills/reflexion/reflexion_store.ts \
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts \
         "{\"session_id\": \"${TENANT_NAMESPACE}\", \
           \"task\": \"/validate $issue_key\", \
           \"input\": {}, \

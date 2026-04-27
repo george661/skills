@@ -36,7 +36,7 @@ nodes:
     on_failure: stop
     script: |
       # Search for skeleton issues
-      skeleton=$(npx tsx ~/.claude/skills/issues/search_issues.ts \
+      skeleton=$(npx tsx ~/.claude/skills/jira/search_issues.ts \
         "{\"jql\": \"parent = $epic_key AND labels = skeleton\", \
         \"fields\": \"key,summary,description,status,labels,issuelinks\"}")
       
@@ -185,7 +185,7 @@ nodes:
       
       comment="## Skeleton Review: $verdict_text\n\n### Checks:\n$checks_summary"
       
-      npx tsx ~/.claude/skills/issues/add_comment.ts \
+      npx tsx ~/.claude/skills/jira/add_comment.ts \
         "{\"issue_key\": \"$epic_key\", \"body\": \"$comment\"}"
       
       echo '{"posted": true}'

@@ -1123,7 +1123,7 @@ def test_accepts_existing_skill_file_in_bash_script():
                 id="test-node",
                 type="bash",
                 name="Test",
-                script='npx tsx ~/.claude/skills/issues/get_issue.ts \'{"issue_key": "TEST-123"}\''
+                script='npx tsx ~/.claude/skills/jira/get_issue.ts \'{"issue_key": "TEST-123"}\''
             ),
         ],
         config=WorkflowConfig(checkpoint_prefix="test"),
@@ -1191,7 +1191,7 @@ def test_multiple_refs_in_one_script():
                 type="bash",
                 name="Test",
                 script='''
-                    npx tsx ~/.claude/skills/issues/get_issue.ts '{"issue_key": "TEST-123"}'
+                    npx tsx ~/.claude/skills/jira/get_issue.ts '{"issue_key": "TEST-123"}'
                     npx tsx ~/.claude/skills/bogus/fake.ts '{"test": "value"}'
                     npx tsx ~/.claude/skills/jira/get_issue.ts '{"issue_key": "TEST-456"}'
                 '''

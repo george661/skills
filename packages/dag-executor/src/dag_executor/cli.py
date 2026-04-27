@@ -335,6 +335,31 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _resolve_checkpoint_dir(
+    explicit_dir: Optional[str],
+    workflow_prefix: Optional[str],
+) -> Optional[str]:
+    """Compute the on-disk checkpoint directory for a workflow.
+
+    `checkpoint_prefix` in a workflow YAML is a bare name (e.g. "vale",
+    "ladder-01-hello"). Without anchoring, the CheckpointStore treats it
+    as a path relative to CWD and every run drops a top-level directory
+    into the operator's working tree. Anchor bare names under
+    `.dag-checkpoints/` so artifacts stay in one gitignored location.
+
+    An explicit --checkpoint-dir or a path-shaped prefix wins as-is.
+    Returns None only when both inputs are None — callers that need a
+    non-None dir should substitute the bare `.dag-checkpoints/` root.
+    """
+    if explicit_dir:
+        return explicit_dir
+    if not workflow_prefix:
+        return None
+    if "/" in workflow_prefix or os.sep in workflow_prefix:
+        return workflow_prefix
+    return str(Path(".dag-checkpoints") / workflow_prefix)
+
+
 def parse_inputs(input_args: List[str]) -> Dict[str, Any]:
     """Parse input arguments into a dictionary.
 
@@ -506,7 +531,9 @@ def run_history(argv: List[str]) -> None:
     args = parser.parse_args(argv)
 
     workflow_def = load_workflow(args.workflow)
-    checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
+    checkpoint_dir = _resolve_checkpoint_dir(
+        args.checkpoint_dir, workflow_def.config.checkpoint_prefix
+    ) or ".dag-checkpoints"
     store = CheckpointStore(checkpoint_dir)
 
     if args.run_id:
@@ -551,7 +578,9 @@ def run_inspect(argv: List[str]) -> None:
     args = parser.parse_args(argv)
 
     workflow_def = load_workflow(args.workflow)
-    checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
+    checkpoint_dir = _resolve_checkpoint_dir(
+        args.checkpoint_dir, workflow_def.config.checkpoint_prefix
+    ) or ".dag-checkpoints"
     store = CheckpointStore(checkpoint_dir)
 
     meta = store.load_metadata(workflow_def.name, args.run_id)
@@ -707,7 +736,9 @@ def run_replay(argv: List[str]) -> None:
     args = parser.parse_args(argv)
 
     workflow_def = load_workflow(args.workflow)
-    checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
+    checkpoint_dir = _resolve_checkpoint_dir(
+        args.checkpoint_dir, workflow_def.config.checkpoint_prefix
+    ) or ".dag-checkpoints"
     store = CheckpointStore(checkpoint_dir)
 
     # Parse overrides from CLI arguments
@@ -867,9 +898,45 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Parse inputs
         inputs = parse_inputs(args.inputs)
 
+        # Apply schema defaults for any declared input the caller didn't supply.
+        # Without this, a workflow with `default: world` on an optional input
+        # would still blow up at runtime when the input is referenced but not passed.
+        for input_name, input_def in workflow_def.inputs.items():
+            if input_name not in inputs and input_def.default is not None:
+                inputs[input_name] = input_def.default
+
         # Inject model override if provided
         if args.model_override:
             inputs["__model_override__"] = args.model_override
+
+        # GW-5356 preflight: collect the set of model tiers this workflow's
+        # prompt nodes reference, then health-check their providers. Fails
+        # loud before we execute any node so the operator doesn't pay half a
+        # workflow's runtime to discover Bedrock credentials expired or
+        # Ollama is down. `--model-override` wins — if every prompt is forced
+        # onto one tier, only that tier's provider gets checked.
+        from dag_executor.model_invocation import preflight_workflow
+        from dag_executor.schema import ModelTier as _ModelTier
+
+        prompt_tiers: List[_ModelTier] = []
+        if args.model_override:
+            try:
+                prompt_tiers.append(_ModelTier(args.model_override))
+            except ValueError:
+                pass  # argparse choices guard this; skip preflight on bad value
+        else:
+            workflow_default_tier = workflow_def.default_model
+            for node in workflow_def.nodes:
+                if node.type != "prompt":
+                    continue
+                tier = node.model or workflow_default_tier or _ModelTier.LOCAL
+                prompt_tiers.append(tier)
+
+        if prompt_tiers:
+            preflight_error = preflight_workflow(prompt_tiers)
+            if preflight_error is not None:
+                print(preflight_error, file=sys.stderr)
+                sys.exit(2)
 
         # Resolve events_dir from --events-dir flag or DAG_EVENTS_DIR env var.
         # When set, the executor writes {events_dir}/{run_id}.ndjson and polls
@@ -939,9 +1006,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                 progress_bar = ProgressBar(total_nodes=len(workflow_def.nodes))
                 progress_bar.attach(event_emitter)
 
-        # Setup checkpoint store if needed
+        # Setup checkpoint store if needed. See _resolve_checkpoint_dir for
+        # the anchoring rule — bare names go under .dag-checkpoints/.
         checkpoint_store = None
-        checkpoint_dir = args.checkpoint_dir or workflow_def.config.checkpoint_prefix
+        checkpoint_dir = _resolve_checkpoint_dir(
+            args.checkpoint_dir, workflow_def.config.checkpoint_prefix
+        )
         if checkpoint_dir:
             checkpoint_store = CheckpointStore(checkpoint_dir)
 
