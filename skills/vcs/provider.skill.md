@@ -67,14 +67,14 @@ npx tsx ~/.claude/skills/vcs/list_pull_request_comments.ts '{"repo": "my-repo", 
 
 ### CI Operations
 
-CI is also unified — routes to Concourse (fly) or GitHub Actions automatically:
+CI operations are available via the unified CI router (not VCS). See `skills/ci/provider.skill.md` for details:
 
 ```bash
 # Wait for CI to complete
-npx tsx ~/.claude/skills/vcs/wait_for_ci.ts '{"repo": "my-repo", "branch": "agent/PROJ-123", "timeout_seconds": 600}'
+npx tsx ~/.claude/skills/ci/wait_for_ci.ts '{"repo": "my-repo", "timeout_seconds": 600}'
 
 # Get CI logs (for debugging failures)
-npx tsx ~/.claude/skills/vcs/get_ci_logs.ts '{"repo": "my-repo", "run_id": 12345}'
+npx tsx ~/.claude/skills/ci/get_build_logs.ts '{"repo": "my-repo", "build_id": 12345}'
 ```
 
 ## Provider Configuration

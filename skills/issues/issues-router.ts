@@ -161,7 +161,7 @@ function translateGitHubParams(
 }
 
 function translateLinearParams(
-  _skill: string,
+  skill: string,
   params: Record<string, unknown>,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...params };
@@ -178,7 +178,63 @@ function translateLinearParams(
     delete out.project_key;
   }
 
+  // For transition_issue: map transition_id → stateId, issue_key → identifier
+  if (skill === 'transition_issue') {
+    if (typeof out.transition_id === 'string') {
+      out.stateId = out.transition_id;
+      delete out.transition_id;
+    }
+    // If issue_key already mapped to identifier, also provide as issue_id for Linear's update_issue_state
+    if (typeof out.identifier === 'string' && !out.id) {
+      // Linear's update_issue_state will resolve identifier → id internally
+    }
+  }
+
+  // For search_issues: translate JQL to Linear IssueFilter if jql is provided
+  if (skill === 'search_issues' && typeof out.jql === 'string') {
+    const filter = translateJQLToLinearFilter(out.jql);
+    out.filter = filter;
+    delete out.jql;
+  }
+
   return out;
+}
+
+/**
+ * Translate a subset of JQL to Linear IssueFilter.
+ * Supports:
+ * - project = KEY
+ * - status = "Status Name"
+ * - Combined with AND
+ *
+ * Throws on unsupported JQL syntax.
+ */
+function translateJQLToLinearFilter(jql: string): Record<string, unknown> {
+  const filter: Record<string, unknown> = {};
+  const parts = jql.split(/\s+AND\s+/i);
+
+  for (const part of parts) {
+    const trimmed = part.trim();
+
+    // Match: project = KEY or project = "KEY"
+    const projectMatch = trimmed.match(/^project\s*=\s*"?([A-Z0-9-]+)"?$/i);
+    if (projectMatch) {
+      filter.team = { key: { eq: projectMatch[1] } };
+      continue;
+    }
+
+    // Match: status = "Status Name" or status = StatusName
+    const statusMatch = trimmed.match(/^status\s*=\s*"([^"]+)"$/i) || trimmed.match(/^status\s*=\s*([A-Za-z0-9\s]+)$/i);
+    if (statusMatch) {
+      filter.state = { name: { eq: statusMatch[1].trim() } };
+      continue;
+    }
+
+    // Unsupported syntax
+    throw new Error(`Unsupported JQL syntax in Linear translator: "${trimmed}". Supported: project = KEY, status = "Name", combined with AND.`);
+  }
+
+  return filter;
 }
 
 // ---------------------------------------------------------------------------

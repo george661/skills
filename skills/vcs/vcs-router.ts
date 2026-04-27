@@ -8,6 +8,11 @@
  * 3. Git remote URL detection at $WORKSPACE_ROOT/<repo>/
  * 4. Default: bitbucket
  *
+ * Path resolution:
+ * Skills are resolved under $SKILLS_ROOT/{provider}/ (if SKILLS_ROOT env is set)
+ * or ~/.claude/skills/{provider}/ (default). This allows SkillRunner to execute
+ * vcs/* skills when skills_dir is configured to match SKILLS_ROOT.
+ *
  * Usage from other vcs/ skills:
  *   import { resolve, delegate } from './vcs-router.js';
  *   const ctx = resolve(input.repo);
@@ -168,9 +173,11 @@ export async function delegate(
   skill: string,
   params: Record<string, unknown>
 ): Promise<unknown> {
-  const skillDir = ctx.provider === 'github'
-    ? join(homedir(), '.claude', 'skills', 'github-mcp')
-    : join(homedir(), '.claude', 'skills', 'bitbucket');
+  // Resolve skills root: $SKILLS_ROOT env (for SkillRunner path containment) or ~/.claude/skills (default)
+  const skillsRoot = process.env.SKILLS_ROOT || join(homedir(), '.claude', 'skills');
+
+  const providerDir = ctx.provider === 'github' ? 'github-mcp' : 'bitbucket';
+  const skillDir = join(skillsRoot, providerDir);
 
   const translatedParams = translateParams(ctx, skill, params);
 
