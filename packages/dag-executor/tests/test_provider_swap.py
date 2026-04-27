@@ -21,7 +21,9 @@ import pytest
 KNOWN_SKILL_DIRS = {
     "skills/jira/",
     "skills/bitbucket/",
-    "skills/github/",
+    "skills/github-issues/",
+    "skills/github-actions/",
+    "skills/github-mcp/",
     "skills/concourse/",
     "skills/fly/",
     "skills/vcs/",        # real hybrid router (PR ops)
