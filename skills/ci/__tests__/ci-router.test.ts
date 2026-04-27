@@ -59,23 +59,22 @@ describe('CI Router', () => {
       expect(resolveCIProvider()).toBe('github_actions');
     });
 
-    it('returns circleci when CI_PROVIDER=circleci', () => {
-      process.env.CI_PROVIDER = 'circleci';
-      expect(resolveCIProvider()).toBe('circleci');
+    it('throws when invalid provider circleci is provided', () => {
+      expect(() => resolveCIProvider('circleci')).toThrow(/Invalid CI provider.*circleci/);
     });
 
     it('returns explicit provider over env var', () => {
-      process.env.CI_PROVIDER = 'circleci';
-      expect(resolveCIProvider('github_actions')).toBe('github_actions');
+      process.env.CI_PROVIDER = 'github_actions';
+      expect(resolveCIProvider('concourse')).toBe('concourse');
     });
 
-    it('returns concourse for invalid explicit provider', () => {
-      expect(resolveCIProvider('invalid')).toBe('concourse');
+    it('throws for invalid explicit provider', () => {
+      expect(() => resolveCIProvider('invalid')).toThrow(/Invalid CI provider.*invalid/);
     });
 
-    it('returns concourse for invalid env var', () => {
+    it('throws for invalid env var', () => {
       process.env.CI_PROVIDER = 'invalid';
-      expect(resolveCIProvider()).toBe('concourse');
+      expect(() => resolveCIProvider()).toThrow(/Invalid CI provider.*invalid/);
     });
   });
 
@@ -245,10 +244,23 @@ describe('CI Router', () => {
       const call = vi.mocked(spawnSync).mock.calls[0];
       const jsonArg = call[1][2];
       const params = JSON.parse(jsonArg);
-      
+
       expect(params.pipeline).toBe('my-api');
       expect(params.build_id).toBe('123');
       expect(params.repo).toBeUndefined();
+    });
+
+    it('maps wait_for_ci to fly/wait_for_ci with underscore', () => {
+      delegateCI('concourse', 'wait_for_ci', { pipeline: 'test' });
+
+      expect(vi.mocked(spawnSync)).toHaveBeenCalledWith(
+        'npx',
+        expect.arrayContaining([
+          'tsx',
+          expect.stringContaining('fly/wait_for_ci.ts'),
+        ]),
+        expect.any(Object)
+      );
     });
   });
 });

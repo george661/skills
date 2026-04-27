@@ -160,7 +160,7 @@ function translateGitHubParams(
   return out;
 }
 
-function translateLinearParams(
+export function translateLinearParams(
   skill: string,
   params: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -184,10 +184,7 @@ function translateLinearParams(
       out.stateId = out.transition_id;
       delete out.transition_id;
     }
-    // If issue_key already mapped to identifier, also provide as issue_id for Linear's update_issue_state
-    if (typeof out.identifier === 'string' && !out.id) {
-      // Linear's update_issue_state will resolve identifier → id internally
-    }
+    // Linear's update_issue_state will resolve identifier → id internally
   }
 
   // For search_issues: translate JQL to Linear IssueFilter if jql is provided

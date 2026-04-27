@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { resolveIssueProvider, translateParams } from '../issues-router.js';
+import { resolveIssueProvider, translateParams, translateLinearParams } from '../issues-router.js';
 
 describe('resolveIssueProvider', () => {
   const origEnv = process.env.ISSUE_TRACKER;
@@ -59,5 +59,59 @@ describe('translateParams', () => {
       owner: 'org',
       repo: 'repo',
     });
+  });
+});
+
+describe('translateLinearParams', () => {
+  it('transition_issue maps transition_id to stateId', () => {
+    const params = { issue_key: 'PROJ-1', transition_id: 'state-uuid-123' };
+    const result = translateLinearParams('transition_issue', params);
+    expect(result).toEqual({
+      identifier: 'PROJ-1',
+      stateId: 'state-uuid-123',
+    });
+    expect(result.transition_id).toBeUndefined();
+  });
+
+  it('search_issues with JQL project=KEY translates to Linear filter', () => {
+    const params = { jql: 'project = PROJ' };
+    const result = translateLinearParams('search_issues', params);
+    expect(result.filter).toEqual({ team: { key: { eq: 'PROJ' } } });
+    expect(result.jql).toBeUndefined();
+  });
+
+  it('search_issues with JQL status="Name" translates to Linear filter', () => {
+    const params = { jql: 'status = "In Progress"' };
+    const result = translateLinearParams('search_issues', params);
+    expect(result.filter).toEqual({ state: { name: { eq: 'In Progress' } } });
+  });
+
+  it('search_issues with JQL AND combination translates correctly', () => {
+    const params = { jql: 'project = PROJ AND status = "Done"' };
+    const result = translateLinearParams('search_issues', params);
+    expect(result.filter).toEqual({
+      team: { key: { eq: 'PROJ' } },
+      state: { name: { eq: 'Done' } },
+    });
+  });
+
+  it('search_issues with native filter passes through unchanged', () => {
+    const params = { filter: { team: { key: { eq: 'KEY' } } } };
+    const result = translateLinearParams('search_issues', params);
+    expect(result.filter).toEqual({ team: { key: { eq: 'KEY' } } });
+  });
+
+  it('search_issues with unsupported JQL currentUser() throws', () => {
+    const params = { jql: 'assignee = currentUser()' };
+    expect(() => translateLinearParams('search_issues', params)).toThrow(
+      /Unsupported JQL syntax.*currentUser/
+    );
+  });
+
+  it('search_issues with unsupported JQL ORDER BY throws', () => {
+    const params = { jql: 'project = PROJ ORDER BY created DESC' };
+    expect(() => translateLinearParams('search_issues', params)).toThrow(
+      /Unsupported JQL syntax.*ORDER BY/
+    );
   });
 });

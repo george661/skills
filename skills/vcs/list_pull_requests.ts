@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 // list_pull_requests - List pull requests from a repository (delegates to VCS provider).
-import { resolveVCSProvider, delegateVCS } from './vcs-router.js';
+import { resolve, delegate } from './vcs-router.js';
 
 interface Input {
   repo: string;
@@ -8,8 +8,8 @@ interface Input {
   provider?: string;
 }
 
-const params = JSON.parse(process.argv[2] || '{}') as Input;
-const provider = resolveVCSProvider(params.provider, params.repo);
-const result = delegateVCS(provider, 'list_pull_requests', params);
-
-console.log(JSON.stringify(result, null, 2));
+const input = JSON.parse(process.argv[2] || '{}') as Input;
+const ctx = resolve(input.repo, input.provider);
+delegate(ctx, 'list_pull_requests', input)
+  .then((r) => console.log(typeof r === 'string' ? r : JSON.stringify(r, null, 2)))
+  .catch((e) => { console.error(e.message); process.exit(1); });

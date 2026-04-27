@@ -287,5 +287,35 @@ describe('VCS Router', () => {
         delegate(ctx, 'get_pull_request', { pr_number: 42 })
       ).rejects.toThrow(/something went wrong/);
     });
+
+    it('SKILLS_ROOT env takes precedence over ~/.claude/skills', async () => {
+      process.env.SKILLS_ROOT = '/custom/skills/path';
+
+      const ctx: VcsContext = {
+        provider: 'github',
+        owner: 'test-org',
+        remoteRepo: 'test-repo',
+        ci: 'github-actions' as const,
+        localRepo: 'test-repo',
+      };
+
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(spawnSync).mockReturnValue({
+        status: 0,
+        stdout: '{"result": "success"}',
+        stderr: '',
+        error: undefined,
+      } as any);
+
+      await delegate(ctx, 'get_pull_request', { pr_number: 42 });
+
+      expect(vi.mocked(spawnSync)).toHaveBeenCalledWith(
+        'npx',
+        ['tsx', '/custom/skills/path/github-mcp/get_pull_request.ts', expect.any(String)],
+        expect.any(Object)
+      );
+
+      delete process.env.SKILLS_ROOT;
+    });
   });
 });

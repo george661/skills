@@ -81,16 +81,22 @@ export function resolveReflexionProvider(explicit?: string): ReflexionProvider {
   debug('resolveReflexionProvider called, explicit:', explicit);
 
   // 1. Explicit override
-  if (explicit && isValidProvider(explicit)) {
-    debug('resolved via explicit arg:', explicit);
-    return explicit;
+  if (explicit) {
+    if (isValidProvider(explicit)) {
+      debug('resolved via explicit arg:', explicit);
+      return explicit;
+    }
+    throw new Error(`Invalid reflexion provider: "${explicit}". Valid providers: agentdb`);
   }
 
   // 2. Environment variable
   const envVal = process.env.REFLEXION_PROVIDER;
-  if (envVal && isValidProvider(envVal)) {
-    debug('resolved via REFLEXION_PROVIDER env:', envVal);
-    return envVal;
+  if (envVal) {
+    if (isValidProvider(envVal)) {
+      debug('resolved via REFLEXION_PROVIDER env:', envVal);
+      return envVal;
+    }
+    throw new Error(`Invalid reflexion provider in REFLEXION_PROVIDER env: "${envVal}". Valid providers: agentdb`);
   }
 
   // 3. Default

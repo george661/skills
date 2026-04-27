@@ -1,6 +1,7 @@
 """Tests for workflow event system."""
 import json
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -492,3 +493,68 @@ class TestEventEmitter:
         assert parsed.metadata["sequence"] == 0
         assert parsed.metadata["stream"] == "stdout"
         assert parsed.metadata["line"] == "Hello from bash script"
+
+
+def test_event_emitter_with_events_dir_param_writes_to_custom_directory(tmp_path: Path) -> None:
+    """Test that EventEmitter with events_dir param writes to {events_dir}/{run_id}.ndjson."""
+    custom_events_dir = tmp_path / "custom_events"
+    custom_events_dir.mkdir()
+
+    run_id = str(uuid.uuid4())
+    emitter = EventEmitter(
+        run_id=run_id,
+        workflow_name="test_workflow",
+        events_dir=str(custom_events_dir),
+    )
+
+    # Emit an event
+    emitter.emit(WorkflowEvent(
+        event_type=EventType.WORKFLOW_STARTED,
+        workflow_id="test_workflow",
+        run_id=run_id,
+        timestamp=datetime.now(),
+    ))
+
+    # Verify file was written to custom directory with .ndjson extension
+    expected_file = custom_events_dir / f"{run_id}.ndjson"
+    assert expected_file.exists()
+
+    with open(expected_file) as f:
+        event = json.loads(f.readline())
+        assert event["event_type"] == "workflow_started"
+        assert event["workflow_id"] == "test_workflow"
+
+
+def test_event_emitter_nested_default_uses_ndjson_extension(tmp_path: Path) -> None:
+    """Test that nested default checkpoint directory uses .ndjson extension."""
+    run_id = str(uuid.uuid4())
+    workflow_name = "test_workflow"
+
+    # Change to tmp_path so .dag-checkpoints is created there
+    import os
+    original_cwd = os.getcwd()
+    os.chdir(tmp_path)
+
+    try:
+        emitter = EventEmitter(
+            run_id=run_id,
+            workflow_name=workflow_name,
+            # No events_dir provided → uses nested default
+        )
+
+        emitter.emit(WorkflowEvent(
+            event_type=EventType.WORKFLOW_STARTED,
+            workflow_id=workflow_name,
+            run_id=run_id,
+            timestamp=datetime.now(),
+        ))
+
+        # Verify nested file uses .ndjson extension
+        expected_file = tmp_path / ".dag-checkpoints" / f"{workflow_name}-{run_id}" / f"{run_id}.ndjson"
+        assert expected_file.exists()
+
+        with open(expected_file) as f:
+            event = json.loads(f.readline())
+            assert event["event_type"] == "workflow_started"
+    finally:
+        os.chdir(original_cwd)

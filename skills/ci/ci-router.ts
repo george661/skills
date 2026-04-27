@@ -99,16 +99,22 @@ export function resolveCIProvider(explicit?: string): CIProvider {
   debug('resolveCIProvider called, explicit:', explicit);
 
   // 1. Explicit override
-  if (explicit && isValidProvider(explicit)) {
-    debug('resolved via explicit arg:', explicit);
-    return explicit;
+  if (explicit) {
+    if (isValidProvider(explicit)) {
+      debug('resolved via explicit arg:', explicit);
+      return explicit;
+    }
+    throw new Error(`Invalid CI provider: "${explicit}". Valid providers: concourse, github_actions`);
   }
 
   // 2. Environment variable
   const envVal = process.env.CI_PROVIDER;
-  if (envVal && isValidProvider(envVal)) {
-    debug('resolved via CI_PROVIDER env:', envVal);
-    return envVal;
+  if (envVal) {
+    if (isValidProvider(envVal)) {
+      debug('resolved via CI_PROVIDER env:', envVal);
+      return envVal;
+    }
+    throw new Error(`Invalid CI provider in CI_PROVIDER env: "${envVal}". Valid providers: concourse, github_actions`);
   }
 
   // 3. Default
