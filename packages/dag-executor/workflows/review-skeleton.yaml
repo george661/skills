@@ -38,7 +38,7 @@ nodes:
       # Search for skeleton issues
       skeleton=$(npx tsx ~/.claude/skills/jira/search_issues.ts \
         "{\"jql\": \"parent = $epic_key AND labels = skeleton\", \
-        \"fields\": \"key,summary,description,status,labels,issuelinks\"}")
+        \"fields\": [\"key\", \"summary\", \"description\", \"status\", \"labels\", \"issuelinks\"]}")
       
       count=$(echo "$skeleton" | jq '.issues | length')
       
