@@ -20,10 +20,41 @@ class NodeDetailPanel {
     async show(node) {
         this.currentNode = node;
 
-        // Fetch full node details
-        const response = await fetch(`/api/workflows/${node.id.split(':')[0]}/nodes/${node.id}`);
-        const nodeDetails = await response.json();
+        // Resolve (run_id, node_name) from whatever shape was dispatched. The
+        // old contract was `node.id = "run_id:node_name"`; DAGRenderer now
+        // emits just `{ node_name, status, ... }`, so fall back to parsing the
+        // run_id out of the current hash route (#/workflow/{runId}).
+        const runId = node.run_id
+            || (node.id && node.id.includes(':') && node.id.split(':')[0])
+            || (function () {
+                const m = (window.location.hash || '').match(/#\/workflow\/([^/?]+)/);
+                return m ? decodeURIComponent(m[1]) : null;
+            })();
+        const nodeName = node.node_name
+            || (node.id && node.id.includes(':') ? node.id.split(':').slice(1).join(':') : node.id);
 
+        if (!runId || !nodeName) {
+            console.warn('NodeDetailPanel: could not resolve runId/nodeName from', node);
+            return;
+        }
+
+        // Fetch full node details. The server's /nodes/{node_id} endpoint
+        // accepts either the bare name or the composite "{run_id}:{name}".
+        let nodeDetails;
+        try {
+            const response = await fetch(`/api/workflows/${runId}/nodes/${encodeURIComponent(nodeName)}`);
+            if (!response.ok) {
+                console.warn(`NodeDetailPanel: ${response.status} for ${runId}/${nodeName}`);
+                return;
+            }
+            nodeDetails = await response.json();
+        } catch (err) {
+            console.warn('NodeDetailPanel: fetch failed:', err);
+            return;
+        }
+
+        // Stash run_id on the detail so renderLogs and friends can use it.
+        nodeDetails.run_id = runId;
         this.render(nodeDetails);
     }
 
@@ -112,12 +143,15 @@ class NodeDetailPanel {
             this.panel.classList.add('visible');
         }, 10);
 
-        // Initialize StepLogs component
+        // Initialize StepLogs component. StepLogs hits
+        // /api/workflows/{runId}/nodes/{nodeId}/logs — the endpoint expects
+        // the bare node_name (node_logs.node_id stores bare names), not the
+        // composite "{run_id}:{name}".
         const stepLogsContainer = document.getElementById(`step-logs-container-${node.id}`);
         if (stepLogsContainer) {
             this.stepLogsInstance = new StepLogs(stepLogsContainer, {
                 runId: node.run_id,
-                nodeId: node.id,
+                nodeId: node.node_name,
                 nodeStatus: node.status
             });
             this.stepLogsInstance.render();

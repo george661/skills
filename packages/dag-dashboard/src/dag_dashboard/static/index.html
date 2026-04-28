@@ -6,6 +6,24 @@
     <title>DAG Dashboard</title>
     <link rel="stylesheet" href="/css/styles.css">
     <link rel="stylesheet" href="/js/builder/node-library.css">
+    <!-- React Flow + builder styles. Linked up front so the Builder canvas
+         renders correctly even if the bundle arrives before the async CSS
+         loader fires. 15KB, harmless on non-builder pages. -->
+    <link rel="stylesheet" href="/js/builder/builder.css">
+    <script>
+        // Apply theme BEFORE first paint to avoid a flash of the wrong palette.
+        // Precedence: localStorage override > OS prefers-color-scheme > light.
+        (function () {
+            try {
+                var stored = localStorage.getItem('dag-dashboard-theme');
+                var theme = stored
+                    || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+                document.documentElement.setAttribute('data-theme', theme);
+            } catch (e) {
+                /* localStorage unavailable (privacy mode) — fall back to light */
+            }
+        })();
+    </script>
 </head>
 <body>
     <div id="app">
@@ -13,6 +31,9 @@
             <div class="header-content">
                 <h1 class="header-title">DAG Dashboard</h1>
                 <span id="gate-indicator" class="gate-indicator hidden"></span>
+                <button id="theme-toggle" class="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">
+                    <span class="theme-toggle-icon">🌙</span>
+                </button>
                 <button id="mobile-menu-toggle" class="mobile-menu-toggle" aria-label="Toggle menu">
                     <span class="hamburger"></span>
                 </button>
@@ -34,6 +55,10 @@
                     <a href="#/history" class="nav-link" data-route="/history">
                         <span class="nav-icon">📜</span>
                         <span class="nav-text">History</span>
+                    </a>
+                    <a href="#/conversations" class="nav-link" data-route="/conversations">
+                        <span class="nav-icon">💬</span>
+                        <span class="nav-text">Conversations</span>
                     </a>
                     <a href="#/checkpoints" class="nav-link" data-route="/checkpoints">
                         <span class="nav-icon">💾</span>
@@ -68,6 +93,10 @@
             <a href="#/workflows" class="mobile-nav-link" data-route="/workflows">
                 <span class="nav-icon">⚙️</span>
                 <span class="nav-text">Workflows</span>
+            </a>
+            <a href="#/conversations" class="mobile-nav-link" data-route="/conversations">
+                <span class="nav-icon">💬</span>
+                <span class="nav-text">Conversations</span>
             </a>
             <a href="#/checkpoints" class="mobile-nav-link" data-route="/checkpoints">
                 <span class="nav-icon">💾</span>

@@ -225,12 +225,24 @@ async function renderDashboard() {
     let activeWorkflowsHTML = '';
     if (runningWorkflows.length > 0) {
         const workflowCards = runningWorkflows.map(wf => `
-            <div class="workflow-card">
-                <div class="workflow-title">${escapeHtml(wf.workflow_name)}</div>
-                <span class="workflow-status ${escapeHtml(wf.status)}">${escapeHtml(wf.status)}</span>
-                <div style="margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.875rem;">
-                    ${wf.started_at ? new Date(wf.started_at).toLocaleString() : 'No start time'}
-                </div>
+            <div class="workflow-card workflow-card-link" style="position: relative;">
+                <a href="#/workflow/${escapeHtml(wf.id)}" style="text-decoration: none; color: inherit; display: block;">
+                    <div class="workflow-title">${escapeHtml(wf.workflow_name)}</div>
+                    <span class="workflow-status ${escapeHtml(wf.status)}">${escapeHtml(wf.status)}</span>
+                    <div style="margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.875rem;">
+                        ${wf.started_at ? new Date(wf.started_at).toLocaleString() : 'No start time'}
+                    </div>
+                    <div style="margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.75rem; font-family: monospace;">
+                        ${escapeHtml(wf.id.slice(0, 8))}…
+                    </div>
+                </a>
+                <button
+                    class="card-cancel-button"
+                    data-run-id="${escapeHtml(wf.id)}"
+                    title="Cancel this run"
+                    style="position: absolute; top: 0.5rem; right: 0.5rem; background: transparent; border: 1px solid var(--border); color: var(--text-secondary); border-radius: 0.25rem; padding: 0.15rem 0.5rem; font-size: 0.75rem; cursor: pointer;">
+                    Cancel
+                </button>
             </div>
         `).join('');
 
@@ -255,6 +267,38 @@ async function renderDashboard() {
         ${summaryCards}
         ${activeWorkflowsHTML}
     `;
+
+    // Wire inline Cancel buttons on active-workflow cards (bypass navigating
+    // into the run detail page for a one-off stuck run).
+    document.querySelectorAll('.card-cancel-button').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const runId = btn.dataset.runId;
+            if (!runId) return;
+            if (!window.confirm(`Cancel run ${runId.slice(0, 8)}…? The running process will be terminated.`)) {
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Cancelling…';
+            try {
+                const resp = await fetch(`/api/workflows/${runId}/cancel`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                });
+                if (!resp.ok) {
+                    const body = await resp.text();
+                    throw new Error(`HTTP ${resp.status}: ${body.slice(0, 200)}`);
+                }
+                // Re-render the dashboard to drop this card from Active Workflows
+                renderDashboard();
+            } catch (err) {
+                btn.disabled = false;
+                btn.textContent = 'Cancel';
+                alert(`Failed to cancel run: ${err.message}`);
+            }
+        });
+    });
 
     // Add click handlers to status cards
     document.querySelectorAll('.status-card').forEach(card => {
@@ -520,6 +564,16 @@ async function renderHistory() {
         });
     });
 
+    // Row click navigates to the run-detail page. Rendering already stamps
+    // data-run-id on every <tr>; just wire the handler once.
+    document.querySelectorAll('tr.history-row[data-run-id]').forEach(row => {
+        row.style.cursor = 'pointer';
+        row.addEventListener('click', () => {
+            const runId = row.dataset.runId;
+            if (runId) window.location.hash = `/workflow/${runId}`;
+        });
+    });
+
     // Pagination handlers
     document.getElementById('prev-page')?.addEventListener('click', () => {
         if (hasPrev) {
@@ -618,45 +672,116 @@ function renderFailureBanner(run, nodes) {
     container.parentNode.insertBefore(banner, container);
 }
 
-async function renderWorkflowDetail(runId) {
+async function renderRunDetail(runId) {
     const container = document.getElementById('route-container');
 
+    // Tab state lives in the hash query string so it survives reload and
+    // deep-link. Valid values: 'graph' | 'logs' | 'chat'. Default 'graph'.
+    const hashFragment = window.location.hash.slice(1);
+    const tabParams = new URLSearchParams(hashFragment.split('?')[1] || '');
+    const initialTab = ['graph', 'logs', 'chat'].includes(tabParams.get('tab'))
+        ? tabParams.get('tab')
+        : 'graph';
+
     container.innerHTML = `
-        <div>
-            <a href="#/" style="color: var(--primary); text-decoration: none; display: inline-block; margin-bottom: 1rem;">
-                ← Back to Dashboard
-            </a>
-            <div id="cancel-button-container" class="cancel-button-container"></div>
-            <div id="retry-button-container" class="retry-button-container"></div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
-                <h2 style="margin: 0;">Workflow Detail</h2>
-                <button id="rerun-button" class="btn btn-secondary" style="display: none;">
-                    Re-run
-                </button>
+        <div class="run-detail">
+            <!-- Header -->
+            <div class="run-detail-header">
+                <a href="#/" class="run-detail-back" title="Back">
+                    &larr;
+                </a>
+                <h2 id="run-detail-title" class="run-detail-title">Workflow Run</h2>
+                <span id="run-detail-status" class="run-detail-status-badge"></span>
+                <div class="run-detail-header-spacer"></div>
+                <span id="run-detail-elapsed" class="run-detail-elapsed"></span>
+                <div id="cancel-button-container" class="cancel-button-container"></div>
+                <div id="retry-button-container" class="retry-button-container"></div>
+                <button id="rerun-button" class="btn btn-secondary" style="display: none;">Re-run</button>
             </div>
-            <div id="executing-banner" class="executing-banner" style="display: none;">
-                <div class="executing-content">
-                    <span class="executing-label">Currently Executing:</span>
-                    <span id="executing-node-name"></span>
-                    <span id="executing-model" class="executing-model"></span>
-                    <span id="executing-timer" class="executing-timer">0s</span>
+
+            <!-- Tabs -->
+            <div class="run-detail-tabs">
+                <button class="run-tab" data-tab="graph">Graph</button>
+                <button class="run-tab" data-tab="logs">Logs</button>
+                <button class="run-tab" data-tab="chat">💬 Chat</button>
+            </div>
+
+            <!-- Graph tab: DAG + side-logs split; run context lives here too -->
+            <div class="run-tab-pane" data-pane="graph">
+                <div id="executing-banner" class="executing-banner" style="display: none;">
+                    <div class="executing-content">
+                        <span class="executing-label">Currently Executing:</span>
+                        <span id="executing-node-name"></span>
+                        <span id="executing-model" class="executing-model"></span>
+                        <span id="executing-timer" class="executing-timer">0s</span>
+                    </div>
+                </div>
+                <div id="totals-container"></div>
+                <div class="run-graph-split">
+                    <div class="run-graph-canvas">
+                        <div id="dag-container"></div>
+                    </div>
+                    <div class="run-graph-side">
+                        <h3 class="run-side-heading">State Channels</h3>
+                        <div id="channel-state-container"></div>
+                        <h3 class="run-side-heading">State Changes Timeline</h3>
+                        <div id="state-diff-timeline-container"></div>
+                        <h3 class="run-side-heading">Artifacts</h3>
+                        <div id="run-artifacts-container"></div>
+                    </div>
+                </div>
+                <div class="run-detail-id-strip">
+                    <span class="run-detail-id-label">Run ID:</span>
+                    <code>${escapeHtml(runId)}</code>
                 </div>
             </div>
-            <div id="totals-container"></div>
-            <div id="dag-container"></div>
-            <div id="channel-state-container" style="margin-top: 1rem;"></div>
-            <div style="margin-top: 1.5rem; padding: 1rem; background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border);">
-                <h3 style="margin-bottom: 1rem;">State Changes Timeline</h3>
-                <div id="state-diff-timeline-container"></div>
+
+            <!-- Logs tab: left sidebar of nodes, right pane streams StepLogs
+                 for the selected node. Populated once layoutData loads. -->
+            <div class="run-tab-pane" data-pane="logs">
+                <div class="run-logs-split">
+                    <aside id="run-logs-node-list" class="run-logs-node-list"></aside>
+                    <div id="run-logs-viewer" class="run-logs-viewer">
+                        <div class="empty-state-text" style="padding: 2rem;">
+                            Select a node on the left to stream its stdout/stderr.
+                        </div>
+                    </div>
+                </div>
             </div>
-            <section id="chat-container" class="chat-section"></section>
-            <div id="run-artifacts-container" style="margin-top: 1rem;"></div>
-            <div style="margin-top: 1rem; padding: 1rem; background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border);">
-                <h3 style="margin-bottom: 0.5rem;">Run ID:</h3>
-                <code style="color: var(--text-secondary);">${escapeHtml(runId)}</code>
+
+            <!-- Chat tab: full-body conversation view. ChatPanel will mount
+                 into #chat-container which lives inside this pane. -->
+            <div class="run-tab-pane" data-pane="chat">
+                <section id="chat-container" class="chat-section chat-section-tab"></section>
             </div>
         </div>
     `;
+
+    // Wire tab clicks. Switching the active tab updates the URL fragment's
+    // ?tab= query so deep-link + refresh preserve state.
+    const applyTab = (tab) => {
+        document.querySelectorAll('.run-tab').forEach(b => {
+            b.classList.toggle('active', b.dataset.tab === tab);
+        });
+        document.querySelectorAll('.run-tab-pane').forEach(pane => {
+            pane.classList.toggle('active', pane.dataset.pane === tab);
+        });
+        const [pathPart] = hashFragment.split('?');
+        const params = new URLSearchParams(hashFragment.split('?')[1] || '');
+        if (tab === 'graph') {
+            params.delete('tab');
+        } else {
+            params.set('tab', tab);
+        }
+        const qs = params.toString();
+        const nextHash = qs ? `${pathPart}?${qs}` : pathPart;
+        // Use replaceState so tab changes don't pollute browser history.
+        window.history.replaceState(null, '', `#${nextHash}`);
+    };
+    document.querySelectorAll('.run-tab').forEach(btn => {
+        btn.addEventListener('click', () => applyTab(btn.dataset.tab));
+    });
+    applyTab(initialTab);
 
     // Fetch workflow data (includes totals) and layout data
     try {
@@ -671,6 +796,16 @@ async function renderWorkflowDetail(runId) {
 
         const workflowData = await workflowResp.json();
         const layoutData = await layoutResp.json();
+
+        // Normalize layoutData so the rest of the code (DAGRenderer, setupLogsTab)
+        // doesn't need to guard against an empty run whose snapshot hasn't been
+        // persisted yet (trigger→spawn races, fresh fixtures).
+        if (!layoutData.nodes) layoutData.nodes = [];
+        if (!layoutData.edges) layoutData.edges = [];
+
+        // Populate the Logs tab from node_executions. Runs *before* the DAG
+        // render so transient DAG errors don't block log inspection.
+        setupLogsTab(runId, workflowData.nodes || layoutData.nodes, applyTab);
 
         // Show Re-run button for terminal states
         if (workflowData.run && ['completed', 'failed', 'cancelled'].includes(workflowData.run.status)) {
@@ -697,9 +832,70 @@ async function renderWorkflowDetail(runId) {
             window.renderRetryButton(retryButtonContainer, runId, workflowData.run?.status);
         }
 
+        // Populate tabbed-layout header bits (title / status badge / elapsed).
+        const run = workflowData.run || {};
+        const titleEl = document.getElementById('run-detail-title');
+        if (titleEl) titleEl.textContent = run.workflow_name || 'Workflow Run';
+        const statusEl = document.getElementById('run-detail-status');
+        if (statusEl && run.status) {
+            statusEl.textContent = run.status;
+            statusEl.classList.add(run.status);
+        }
+        const elapsedEl = document.getElementById('run-detail-elapsed');
+        if (elapsedEl && run.started_at) {
+            const start = new Date(run.started_at).getTime();
+            const end = run.finished_at ? new Date(run.finished_at).getTime() : Date.now();
+            const secs = Math.max(0, Math.round((end - start) / 1000));
+            const mm = Math.floor(secs / 60);
+            const ss = secs % 60;
+            elapsedEl.textContent = mm > 0 ? `${mm}m ${ss}s` : `${ss}s`;
+        }
+
         // Render totals strip
         if (workflowData.totals) {
             renderTotals(workflowData.totals);
+        }
+
+        // Surface conversation context — link to conversation view + sibling runs
+        if (workflowData.run && workflowData.run.conversation_id) {
+            const convId = workflowData.run.conversation_id;
+            let siblingRuns = [];
+            try {
+                const convResp = await fetch(`/api/conversations/${convId}`);
+                if (convResp.ok) {
+                    const data = await convResp.json();
+                    siblingRuns = (data.runs || []).filter(r => r.id !== runId);
+                }
+            } catch (_) {
+                /* non-fatal */
+            }
+            const siblingMarkup = siblingRuns.length > 0
+                ? `<div style="margin-top: 0.5rem; font-size: 0.875rem;">
+                     <span style="color: var(--text-secondary);">Other runs in this conversation: </span>
+                     ${siblingRuns.slice(0, 5).map(r =>
+                        `<a href="#/workflow/${escapeHtml(r.id)}" style="color: var(--primary); text-decoration: none; margin-right: 0.75rem;">
+                            ${escapeHtml(r.workflow_name)} <small>(${escapeHtml(r.status)})</small>
+                         </a>`
+                     ).join('')}
+                   </div>`
+                : '';
+            const banner = document.createElement('div');
+            banner.className = 'conversation-context-banner';
+            banner.style.cssText = 'margin-bottom: 1rem; padding: 0.75rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);';
+            banner.innerHTML = `
+                <div>
+                    <strong>💬 Conversation:</strong>
+                    <a href="#/conversations/${escapeHtml(convId)}" style="color: var(--primary); text-decoration: none; margin-left: 0.5rem;">
+                        view full conversation →
+                    </a>
+                    <code style="margin-left: 0.75rem; font-size: 0.75rem; color: var(--text-secondary);">${escapeHtml(convId.slice(0, 12))}…</code>
+                </div>
+                ${siblingMarkup}
+            `;
+            const dagContainer = document.getElementById('dag-container');
+            if (dagContainer && dagContainer.parentNode) {
+                dagContainer.parentNode.insertBefore(banner, dagContainer);
+            }
         }
 
         // Render failure banner if workflow failed
@@ -765,12 +961,83 @@ async function renderWorkflowDetail(runId) {
 
     } catch (error) {
         console.error('Error loading workflow detail:', error);
-        container.innerHTML += `
+        // Use insertAdjacentHTML — re-serializing innerHTML would destroy the
+        // click listeners already attached to the tab buttons.
+        container.insertAdjacentHTML('beforeend', `
             <div style="padding: 1rem; background: var(--error); color: white; border-radius: var(--radius); margin-top: 1rem;">
                 Error loading workflow: ${escapeHtml(error.message)}
             </div>
-        `;
+        `);
     }
+}
+
+async function renderConversationsList() {
+    const container = document.getElementById('route-container');
+    container.innerHTML = `
+        <h2 style="margin-bottom: 1.5rem;">Conversations</h2>
+        <div id="conversations-content">
+            <div class="loading-spinner">Loading conversations…</div>
+        </div>
+    `;
+
+    let conversations = [];
+    try {
+        const resp = await fetch('/api/conversations');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        conversations = await resp.json();
+    } catch (err) {
+        document.getElementById('conversations-content').innerHTML =
+            `<div class="error-message">Failed to load conversations: ${escapeHtml(err.message)}</div>`;
+        return;
+    }
+
+    const content = document.getElementById('conversations-content');
+    if (!conversations || conversations.length === 0) {
+        content.innerHTML = `
+            <div class="empty-state" style="padding: 2rem 1rem;">
+                <div class="empty-state-icon">💬</div>
+                <div class="empty-state-text">
+                    No conversations yet. Run a workflow that emits chat messages to start one.
+                </div>
+            </div>`;
+        return;
+    }
+
+    const fmt = (ts) => ts ? new Date(ts).toLocaleString() : '—';
+    const rows = conversations.map(c => {
+        const latest = c.latest_message_at || c.latest_started_at || c.created_at;
+        return `
+            <tr class="history-row" data-conversation-id="${escapeHtml(c.id)}" style="cursor: pointer;">
+                <td class="history-cell">${escapeHtml(c.latest_workflow_name || '—')}</td>
+                <td class="history-cell"><span class="workflow-status ${c.closed_at ? 'completed' : 'running'}">${c.closed_at ? 'closed' : 'open'}</span></td>
+                <td class="history-cell">${fmt(latest)}</td>
+                <td class="history-cell">${c.run_count}</td>
+                <td class="history-cell">${c.message_count}</td>
+                <td class="history-cell"><code style="font-size: 0.75rem; color: var(--text-secondary);">${escapeHtml(c.id.slice(0, 8))}…</code></td>
+            </tr>`;
+    }).join('');
+
+    content.innerHTML = `
+        <table class="history-table">
+            <thead>
+                <tr>
+                    <th class="history-header">Workflow</th>
+                    <th class="history-header">State</th>
+                    <th class="history-header">Last Activity</th>
+                    <th class="history-header">Runs</th>
+                    <th class="history-header">Messages</th>
+                    <th class="history-header">ID</th>
+                </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+        </table>`;
+
+    document.querySelectorAll('tr.history-row[data-conversation-id]').forEach(row => {
+        row.addEventListener('click', () => {
+            const id = row.dataset.conversationId;
+            if (id) window.location.hash = `/conversations/${id}`;
+        });
+    });
 }
 
 async function renderConversationDetail(conversationId) {
@@ -808,6 +1075,77 @@ async function renderConversationDetail(conversationId) {
             </div>
         `;
     }
+}
+
+/**
+ * Populate the Logs tab with a node sidebar + StepLogs viewer.
+ *
+ * Left: list of nodes (node_name, status badge). Click → mount StepLogs.
+ * Right: #run-logs-viewer host for StepLogs instance.
+ *
+ * Also installs a window-level 'node-click' listener so clicking a node in
+ * the Graph tab's DAG swings to the Logs tab with that node pre-selected.
+ */
+function setupLogsTab(runId, nodes, applyTab) {
+    const listEl = document.getElementById('run-logs-node-list');
+    const viewerEl = document.getElementById('run-logs-viewer');
+    if (!listEl || !viewerEl || !Array.isArray(nodes)) return;
+
+    let currentStepLogs = null;
+    const mountLogs = (node) => {
+        if (currentStepLogs && typeof currentStepLogs.destroy === 'function') {
+            try { currentStepLogs.destroy(); } catch (_) { /* ignore */ }
+        }
+        viewerEl.innerHTML = '';
+        if (!window.StepLogs) {
+            viewerEl.textContent = 'StepLogs not loaded.';
+            return;
+        }
+        currentStepLogs = new window.StepLogs(viewerEl, {
+            runId,
+            nodeId: node.node_name,
+            nodeStatus: node.status || 'pending',
+        });
+        currentStepLogs.render();
+
+        // Update active highlight in the sidebar.
+        listEl.querySelectorAll('.run-logs-node-item').forEach(it => {
+            it.classList.toggle('active', it.dataset.nodeName === node.node_name);
+        });
+    };
+
+    // Render the sidebar once.
+    listEl.innerHTML = nodes.map(n => `
+        <button class="run-logs-node-item" data-node-name="${escapeHtml(n.node_name)}">
+            <span class="run-logs-node-name">${escapeHtml(n.node_name)}</span>
+            <span class="workflow-status ${escapeHtml(n.status || 'pending')}">${escapeHtml(n.status || 'pending')}</span>
+        </button>
+    `).join('');
+
+    listEl.querySelectorAll('.run-logs-node-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const name = item.dataset.nodeName;
+            const node = nodes.find(n => n.node_name === name);
+            if (node) mountLogs(node);
+        });
+    });
+
+    // Clicking a node on the DAG canvas → switch to Logs tab with that node.
+    const onNodeClick = (ev) => {
+        const node = ev.detail;
+        if (!node || !node.node_name) return;
+        if (typeof applyTab === 'function') applyTab('logs');
+        mountLogs(node);
+    };
+    window.addEventListener('node-click', onNodeClick);
+    // Clean up the listener if the user navigates away from this run.
+    window.addEventListener('hashchange', function cleanup() {
+        window.removeEventListener('node-click', onNodeClick);
+        if (currentStepLogs && typeof currentStepLogs.destroy === 'function') {
+            try { currentStepLogs.destroy(); } catch (_) { /* ignore */ }
+        }
+        window.removeEventListener('hashchange', cleanup);
+    });
 }
 
 function setupExecutingBanner(nodes) {
@@ -1056,7 +1394,8 @@ router.register('/history', renderHistory);
 router.register('/workflows', window.renderWorkflowsList);
 router.register('/workflows/:name', window.renderWorkflowDetail);
 router.register('/workflow-trigger/:name', window.renderWorkflowTriggerForm);
-router.register('/workflow/:runId', renderWorkflowDetail);
+router.register('/workflow/:runId', renderRunDetail);
+router.register('/conversations', renderConversationsList);
 router.register('/conversations/:id', renderConversationDetail);
 router.register('/checkpoints', renderCheckpointWorkflows);
 router.register('/checkpoints/:wf', renderCheckpointRuns);
@@ -1067,6 +1406,12 @@ router.register('/settings', function () {
         window.renderSettings();
     }
 });
+
+// Note: the Router constructor calls handleRoute() before any routes are
+// registered, so a deep-link like /#/workflows or /#/builder/demo initially
+// matches no handler. A single redispatch at the bottom of this file (after
+// *all* routes — including the feature-flagged builder route — register)
+// handles every deep-link uniformly.
 
 // Inspector demo route (off-nav, for testing until canvas lands)
 router.register('/inspector-demo', async function () {
@@ -1123,15 +1468,26 @@ if (window.DAG_DASHBOARD_BUILDER_ENABLED) {
         link.classList.remove('hidden');
     });
 
-    // Register builder route with lazy loading. The router's constructor already
-    // ran handleRoute() before this point, so if the page loaded at #/builder
-    // the initial dispatch found no handler and silently no-opped. Re-dispatch
-    // after registration so deep links work on first load.
-    const needsRedispatch = (window.location.hash.slice(1) || '/').split('?')[0] === '/builder';
+    // Register builder route with lazy loading. Deep-link redispatch is handled
+    // by a single handleRoute() call at the bottom of this file, after every
+    // route (including this one) is registered.
 
     router.register('/builder', function () {
         const container = document.getElementById('route-container');
         if (!container) return;
+
+        // Bare /#/builder has no workflow to edit — send the user to the
+        // workflow picker so they can choose one to open in the builder.
+        const hashPath = (window.location.hash.slice(1) || '/').split('?')[0];
+        if (hashPath === '/builder') {
+            container.innerHTML = `
+                <div style="padding: 2rem;">
+                    <h2>Open a workflow in the builder</h2>
+                    <p>Pick a workflow from the <a href="#/workflows">Workflows</a> list and
+                    click <strong>Edit in Builder</strong> to open it here.</p>
+                </div>`;
+            return;
+        }
 
         // Check if builder bundle is already loaded
         if (window.DAGDashboardBuilder) {
@@ -1139,68 +1495,78 @@ if (window.DAG_DASHBOARD_BUILDER_ENABLED) {
             return;
         }
 
-        // Load validation scripts first, then builder bundle
-        // This ensures window.DAGDashboardValidation is available when toolbar mounts
-        function loadValidationScripts(callback) {
-            const scripts = [
-                '/js/builder/validation-rules.js',
-                '/js/builder/use-builder-validation.js',
-                '/js/builder/validation-panel.js'
-            ];
-
-            let loadedCount = 0;
-
-            function loadNext() {
-                if (loadedCount >= scripts.length) {
-                    callback();
-                    return;
-                }
-
-                const script = document.createElement('script');
-                script.src = scripts[loadedCount];
-                script.onload = () => {
-                    loadedCount++;
-                    loadNext();
+        // Load scripts sequentially: builder bundle first (ships React + exposes it on window),
+        // THEN the classical-React validation scripts which need window.React to register
+        // window.DAGDashboardValidation.useBuilderValidation and .ValidationPanel. Finally,
+        // mount the builder.
+        function loadScriptSeq(srcs, onDone) {
+            let i = 0;
+            function next() {
+                if (i >= srcs.length) { onDone(); return; }
+                const s = document.createElement('script');
+                s.src = srcs[i];
+                s.onload = () => { i++; next(); };
+                s.onerror = () => {
+                    console.warn('Failed to load script:', srcs[i]);
+                    i++; next();
                 };
-                script.onerror = () => {
-                    console.warn('Failed to load validation script:', scripts[loadedCount]);
-                    loadedCount++;
-                    loadNext();
-                };
-                document.head.appendChild(script);
+                document.head.appendChild(s);
             }
-
-            loadNext();
+            next();
         }
 
-        // Load validation scripts, then builder bundle
-        loadValidationScripts(() => {
-            const script = document.createElement('script');
-            script.src = '/js/builder/builder.js';
-            script.onload = () => {
+        loadScriptSeq(
+            [
+                '/js/builder/builder.js',
+                '/js/builder/validation-rules.js',
+                '/js/builder/use-builder-validation.js',
+                '/js/builder/validation-panel.js',
+            ],
+            () => {
                 if (window.DAGDashboardBuilder) {
                     window.DAGDashboardBuilder.mount(container);
                 } else {
                     container.innerHTML = '<div class="error">Builder bundle loaded but not initialized</div>';
                 }
-            };
-            script.onerror = () => {
-                container.innerHTML = '<div class="error">Failed to load builder bundle</div>';
-            };
-            document.head.appendChild(script);
-        });
+            }
+        );
     });
 
-    if (needsRedispatch) {
-        router.handleRoute();
-    }
 }
+
+// The Router constructor calls handleRoute() before any routes are registered.
+// Now that all routes — including the feature-flagged /builder route — are
+// registered, redispatch once so deep links like /#/workflows or /#/builder/demo
+// run their proper handler on first load instead of silently falling back.
+router.handleRoute();
 
 // Mobile menu toggle
 document.getElementById('mobile-menu-toggle')?.addEventListener('click', () => {
     const mobileNav = document.getElementById('mobile-nav');
     mobileNav?.classList.toggle('hidden');
 });
+
+// Theme toggle — inline head-script applied the initial theme to avoid FOUC.
+// This just wires the header button and persists the user's choice.
+(function setupThemeToggle() {
+    const btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+    const iconSpan = btn.querySelector('.theme-toggle-icon');
+    const renderIcon = () => {
+        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        if (iconSpan) iconSpan.textContent = isDark ? '☀️' : '🌙';
+        btn.setAttribute('aria-pressed', isDark ? 'true' : 'false');
+    };
+    renderIcon();
+    btn.addEventListener('click', () => {
+        const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        try {
+            localStorage.setItem('dag-dashboard-theme', next);
+        } catch (_) { /* ignore */ }
+        renderIcon();
+    });
+})();
 
 // Subscribe to state changes
 store.subscribe((state) => {

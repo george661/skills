@@ -25,8 +25,11 @@ async function renderStateDiffTimeline(container, runId) {
         }
 
         const timeline = await response.json();
-        
-        if (!timeline || timeline.length === 0) {
+
+        // Defensive: the endpoint returns a JSON array, but older servers or
+        // partial responses may hand back an object or null. Bail cleanly in
+        // those cases instead of throwing ".map is not a function".
+        if (!Array.isArray(timeline) || timeline.length === 0) {
             container.innerHTML = '<p class="timeline-empty">No state changes yet</p>';
             return;
         }

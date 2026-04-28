@@ -4,7 +4,7 @@
 
 async function renderWorkflowsList() {
     document.title = 'Workflows | DAG Dashboard';
-    const mainContent = document.getElementById('main-content');
+    const mainContent = document.getElementById('route-container');
     
     mainContent.innerHTML = `
         <div class="workflows-list-container">
@@ -66,6 +66,10 @@ async function renderWorkflowsList() {
                             <p class="workflow-meta">${inputsSummary}</p>
                             ${lastRunBadge}
                             <p class="workflow-path">${escapeHtml(wf.path)}</p>
+                            <div class="workflow-card-actions">
+                                <a class="card-action" href="#/workflows/${escapeHtml(wf.name)}">Details</a>
+                                <a class="card-action card-action-primary" href="#/builder/${escapeHtml(wf.name)}">Edit in Builder</a>
+                            </div>
                         </div>`;
                 });
                 
@@ -85,7 +89,7 @@ async function renderWorkflowsList() {
 
 async function renderWorkflowDetail(name) {
     document.title = `${name} | DAG Dashboard`;
-    const mainContent = document.getElementById('main-content');
+    const mainContent = document.getElementById('route-container');
     
     mainContent.innerHTML = `
         <div class="workflow-detail-container">
@@ -101,7 +105,25 @@ async function renderWorkflowDetail(name) {
         }
         
         const definition = await response.json();
-        
+
+        // Only expose Run Workflow when the server has the trigger endpoint mounted
+        // (DAG_DASHBOARD_TRIGGER_ENABLED=true). Otherwise the button would POST to a
+        // 404.
+        let triggerEnabled = false;
+        try {
+            const cfgResp = await fetch('/api/config');
+            if (cfgResp.ok) {
+                const cfg = await cfgResp.json();
+                triggerEnabled = !!cfg.trigger_enabled;
+            }
+        } catch (_) {
+            /* keep triggerEnabled=false on failure */
+        }
+
+        const runButton = triggerEnabled
+            ? `<button onclick="triggerWorkflow('${escapeHtml(name)}')" class="button-secondary">Run Workflow</button>`
+            : `<button disabled title="Set DAG_DASHBOARD_TRIGGER_ENABLED=true to enable" class="button-secondary" style="opacity:0.6;cursor:not-allowed;">Run Workflow (disabled)</button>`;
+
         let html = `
             <div class="workflow-detail-header">
                 <h1>${escapeHtml(definition.name)}</h1>
@@ -114,7 +136,8 @@ async function renderWorkflowDetail(name) {
             </section>
 
             <section class="workflow-actions">
-                <button onclick="triggerWorkflow('${escapeHtml(name)}')" class="button-primary">Run Workflow</button>
+                <a href="#/builder/${escapeHtml(name)}" class="button-primary">Edit in Builder</a>
+                ${runButton}
             </section>
         `;
 
@@ -221,19 +244,18 @@ async function renderWorkflowDetail(name) {
 }
 
 function renderDAGPreview(layout) {
-    // Use existing DAGRenderer to show the graph
+    // DAGRenderer takes a container id (not an element) and render(layoutData) where
+    // layoutData = {nodes, edges}.
     const container = document.getElementById('dag-preview-container');
     if (!container || typeof DAGRenderer === 'undefined') return;
 
-    // Layout is already computed server-side
     if (!layout || !layout.nodes || !layout.edges) {
         container.innerHTML = '<p>No DAG preview available</p>';
         return;
     }
 
-    // Render with DAGRenderer
-    const renderer = new DAGRenderer(container, { interactive: false });
-    renderer.render(layout.nodes, layout.edges);
+    const renderer = new DAGRenderer('dag-preview-container');
+    renderer.render(layout);
 }
 
 
@@ -243,7 +265,7 @@ function triggerWorkflow(name) {
 
 async function renderWorkflowTriggerForm(name) {
     document.title = `Run ${name} | DAG Dashboard`;
-    const mainContent = document.getElementById('main-content');
+    const mainContent = document.getElementById('route-container');
 
     mainContent.innerHTML = `
         <div class="workflow-trigger-container">

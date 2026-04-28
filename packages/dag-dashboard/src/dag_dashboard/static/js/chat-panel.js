@@ -306,3 +306,9 @@ class ChatPanel {
     this.messages.clear();
   }
 }
+
+// Expose on window so renderRunDetail (`new window.ChatPanel(...)`) + the
+// conversation view can instantiate without a module import.
+if (typeof window !== 'undefined') {
+    window.ChatPanel = ChatPanel;
+}

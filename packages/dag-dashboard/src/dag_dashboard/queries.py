@@ -1367,6 +1367,114 @@ def get_conversation_row(db_path: Path, conversation_id: str) -> Optional[Dict[s
         conn.close()
 
 
+def list_conversations(
+    db_path: Path, limit: int = 50, offset: int = 0
+) -> List[Dict[str, Any]]:
+    """List conversations with rollups of run/message counts and last activity.
+
+    Ordered by most-recent activity (last chat message or run started_at).
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT
+                c.id,
+                c.created_at,
+                c.closed_at,
+                c.origin,
+                COALESCE(mc.message_count, 0) AS message_count,
+                COALESCE(rc.run_count, 0) AS run_count,
+                rc.latest_workflow_name AS latest_workflow_name,
+                rc.latest_started_at AS latest_started_at,
+                mc.latest_message_at AS latest_message_at
+            FROM conversations c
+            LEFT JOIN (
+                SELECT conversation_id,
+                       COUNT(*) AS message_count,
+                       MAX(created_at) AS latest_message_at
+                FROM chat_messages
+                WHERE conversation_id IS NOT NULL
+                GROUP BY conversation_id
+            ) mc ON mc.conversation_id = c.id
+            LEFT JOIN (
+                SELECT conversation_id,
+                       COUNT(*) AS run_count,
+                       MAX(started_at) AS latest_started_at,
+                       (
+                         SELECT workflow_name FROM workflow_runs r2
+                         WHERE r2.conversation_id = workflow_runs.conversation_id
+                         ORDER BY r2.started_at DESC LIMIT 1
+                       ) AS latest_workflow_name
+                FROM workflow_runs
+                WHERE conversation_id IS NOT NULL
+                GROUP BY conversation_id
+            ) rc ON rc.conversation_id = c.id
+            ORDER BY COALESCE(mc.latest_message_at, rc.latest_started_at, c.created_at) DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        rows = cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "created_at": r[1],
+                "closed_at": r[2],
+                "origin": r[3],
+                "message_count": r[4],
+                "run_count": r[5],
+                "latest_workflow_name": r[6],
+                "latest_started_at": r[7],
+                "latest_message_at": r[8],
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def list_runs_in_conversation(db_path: Path, conversation_id: str) -> List[Dict[str, Any]]:
+    """Return (id, workflow_name, status, started_at, finished_at) for all runs in a conversation."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT id, workflow_name, status, started_at, finished_at
+            FROM workflow_runs
+            WHERE conversation_id = ?
+            ORDER BY started_at DESC
+            """,
+            (conversation_id,),
+        )
+        return [
+            {
+                "id": r[0],
+                "workflow_name": r[1],
+                "status": r[2],
+                "started_at": r[3],
+                "finished_at": r[4],
+            }
+            for r in cursor.fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def get_run_conversation_id(db_path: Path, run_id: str) -> Optional[str]:
+    """Return the conversation_id for a given run_id, or None."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT conversation_id FROM workflow_runs WHERE id = ?",
+            (run_id,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row and row[0] else None
+    finally:
+        conn.close()
+
+
 def update_conversation_closed_at(db_path: Path, conversation_id: str, closed_at: str) -> None:
     """Update conversation closed_at timestamp."""
     conn = get_connection(db_path)

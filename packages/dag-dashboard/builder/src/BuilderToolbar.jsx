@@ -58,6 +58,7 @@ export default function BuilderToolbar({
   hasUnsavedChanges,
   hasClientErrors,
   hasPublishableDraft,
+  triggerEnabled = false,
   isMobile = false,
   onChangeWorkflowName,
   onChangeDescription,
@@ -71,8 +72,16 @@ export default function BuilderToolbar({
   onViewModeChange,
   onOpenVersions,
 }) {
-  // Run button is disabled when there are unsaved changes OR client errors
-  const isRunDisabled = hasUnsavedChanges || hasClientErrors;
+  // Run button is disabled when there are unsaved changes, client errors, or the
+  // server doesn't have /api/trigger mounted (DAG_DASHBOARD_TRIGGER_ENABLED=false).
+  const isRunDisabled = hasUnsavedChanges || hasClientErrors || !triggerEnabled;
+  const runDisabledReason = !triggerEnabled
+    ? 'Trigger endpoint disabled — set DAG_DASHBOARD_TRIGGER_ENABLED=true to enable.'
+    : hasClientErrors
+    ? 'Fix validation errors before running.'
+    : hasUnsavedChanges
+    ? 'Save changes before running.'
+    : '';
   // Publish button is disabled when there's no saved draft
   const isPublishDisabled = !hasPublishableDraft;
 
@@ -209,6 +218,7 @@ export default function BuilderToolbar({
           <button
             onClick={onRun}
             disabled={isRunDisabled}
+            title={runDisabledReason || 'Run workflow'}
             style={{
               ...BUTTON_BASE_STYLE,
               cursor: isRunDisabled ? 'not-allowed' : 'pointer',
