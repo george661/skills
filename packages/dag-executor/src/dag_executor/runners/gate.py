@@ -21,18 +21,27 @@ class GateRunner(BaseRunner):
         Returns:
             NodeResult with COMPLETED if condition is truthy, FAILED if falsy
         """
-        condition = ctx.node_def.condition
-        
+        # Prefer the resolved condition (with $variable references replaced by
+        # their concrete values via variables.resolve_variables) when the
+        # executor placed it under resolved_inputs["condition"]. Fall back to
+        # the raw field only when nothing was resolved — some test paths
+        # construct a RunnerContext directly with `condition` already inlined.
+        resolved_condition = ctx.resolved_inputs.get("condition") if ctx.resolved_inputs else None
+        condition = resolved_condition if isinstance(resolved_condition, str) and resolved_condition else ctx.node_def.condition
+
         try:
             # Create safe evaluator with restricted features
             evaluator = SimpleEval()
-            
-            # Set available names from resolved inputs
-            evaluator.names = ctx.resolved_inputs.copy()
-            
+
+            # Set available names from resolved inputs. Drop "condition" from
+            # the names dict — it's the expression text itself, not a value
+            # the expression should reference.
+            names = {k: v for k, v in (ctx.resolved_inputs or {}).items() if k != "condition"}
+            evaluator.names = names
+
             # Explicitly disable dangerous functions
             evaluator.functions = {}  # No function calls allowed
-            
+
             # Evaluate condition
             result = evaluator.eval(condition)
             

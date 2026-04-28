@@ -422,6 +422,41 @@ class EventCollector:
                     ("cancelled", finished_at, run_id)
                 )
 
+            # Handle workflow_completed / workflow_failed: transition the run
+            # row so the dashboard no longer shows it as running. The Slack
+            # notification path below uses the same event; persistence was a
+            # missing partner that caused completed runs to linger as "running"
+            # on the Active Workflows card.
+            if event_type in ("workflow_completed", "workflow_failed"):
+                terminal_status = "completed" if event_type == "workflow_completed" else "failed"
+                finished_at = created_at
+                error_msg = None
+                if event_type == "workflow_failed":
+                    metadata = event_data.get("metadata", {})
+                    error_msg = (
+                        metadata.get("error")
+                        or event_data.get("error")
+                        or metadata.get("reason")
+                    )
+                cursor.execute(
+                    """
+                    UPDATE workflow_runs
+                    SET status = ?, finished_at = ?, error = COALESCE(?, error)
+                    WHERE id = ? AND status IN ('running', 'resuming', 'pending')
+                    """,
+                    (terminal_status, finished_at, error_msg, run_id),
+                )
+                # Stamp any still-pending nodes as skipped so the UI doesn't
+                # show them hanging forever.
+                cursor.execute(
+                    """
+                    UPDATE node_executions
+                    SET status = 'skipped', finished_at = ?
+                    WHERE run_id = ? AND status IN ('pending', 'running')
+                    """,
+                    (finished_at, run_id),
+                )
+
             # Insert event
             cursor.execute(
                 """
@@ -431,23 +466,46 @@ class EventCollector:
                 (run_id, event_type, payload, created_at)
             )
 
-            # Handle node_started event: update node_executions with resolved model
+            # Handle node_started event: ensure a node_executions row exists
+            # (the trigger endpoint sometimes skips workflow_definition in the
+            # started-event metadata, so the workflow_started handler doesn't
+            # get a chance to pre-seed node rows), then stamp its running
+            # status + resolved model.
             if event_type == "node_started":
                 try:
                     node_id_raw = event_data.get("node_id")
                     model = event_data.get("model")
-                    if node_id_raw and model:
+                    if node_id_raw:
                         execution_id = f"{run_id}:{node_id_raw}"
                         cursor.execute(
                             """
-                            UPDATE node_executions
-                            SET model = ?, status = 'running', started_at = ?
-                            WHERE id = ?
+                            INSERT OR IGNORE INTO node_executions
+                            (id, run_id, node_name, status, started_at, depends_on)
+                            VALUES (?, ?, ?, 'running', ?, '[]')
                             """,
-                            (model, created_at, execution_id)
+                            (execution_id, run_id, node_id_raw, created_at),
                         )
+                        # Always transition to running + update model if given.
+                        if model:
+                            cursor.execute(
+                                """
+                                UPDATE node_executions
+                                SET model = ?, status = 'running', started_at = ?
+                                WHERE id = ?
+                                """,
+                                (model, created_at, execution_id),
+                            )
+                        else:
+                            cursor.execute(
+                                """
+                                UPDATE node_executions
+                                SET status = 'running', started_at = COALESCE(started_at, ?)
+                                WHERE id = ?
+                                """,
+                                (created_at, execution_id),
+                            )
                 except Exception as e:
-                    logger.warning(f"Failed to update node_executions.model for node_started event: {e}")
+                    logger.warning(f"Failed to upsert node_executions for node_started event: {e}")
 
             # Handle channel events
             if event_type == "channel_updated" and isinstance(raw_payload, dict):
@@ -521,31 +579,63 @@ class EventCollector:
                 except Exception as e:
                     logger.warning(f"Failed to persist channel_conflict event for run {run_id}: {e}")
 
-            # Handle node_completed event: update node_executions with checkpoint data
+            # Handle node_completed / node_failed: stamp terminal status +
+            # finished_at. node_completed additionally persists checkpoint
+            # fields. Without this, the Logs tab and DAG render show every
+            # node as 'running' forever.
+            #
+            # `node_id` in incoming events is inconsistent — some emitters use
+            # the bare node_name ("hello"), others already namespace it with
+            # the run_id ("{run_id}:hello"). Normalize to the composite id
+            # that node_executions.id uses.
             completed_node_id: Optional[str] = None
-            if event_type == "node_completed":
+            if event_type in ("node_completed", "node_failed", "node_skipped"):
                 try:
                     metadata = event_data.get("metadata", {})
-                    content_hash = metadata.get("content_hash")
-                    input_versions = metadata.get("input_versions")
-                    cache_hit = metadata.get("cache_hit", False)
-                    completed_node_id = event_data.get("node_id")
-
-                    if completed_node_id and (content_hash or input_versions or cache_hit):
-                        # Serialize input_versions to JSON if present
-                        input_versions_json = json.dumps(input_versions) if input_versions else None
-
-                        # Update the node_executions row with checkpoint data and cache_hit
+                    raw_node_id = event_data.get("node_id")
+                    if raw_node_id:
+                        completed_node_id = (
+                            raw_node_id
+                            if raw_node_id.startswith(f"{run_id}:")
+                            else f"{run_id}:{raw_node_id}"
+                        )
+                        terminal_map = {
+                            "node_completed": "completed",
+                            "node_failed": "failed",
+                            "node_skipped": "skipped",
+                        }
+                        terminal_status = terminal_map[event_type]
+                        error_msg = (
+                            metadata.get("error")
+                            or event_data.get("error")
+                            if event_type == "node_failed"
+                            else None
+                        )
                         cursor.execute(
                             """
                             UPDATE node_executions
-                            SET content_hash = ?, input_versions = ?, cache_hit = ?
+                            SET status = ?, finished_at = ?, error = COALESCE(?, error)
                             WHERE id = ?
                             """,
-                            (content_hash, input_versions_json, 1 if cache_hit else 0, completed_node_id)
+                            (terminal_status, created_at, error_msg, completed_node_id),
                         )
+
+                        if event_type == "node_completed":
+                            content_hash = metadata.get("content_hash")
+                            input_versions = metadata.get("input_versions")
+                            cache_hit = metadata.get("cache_hit", False)
+                            if content_hash or input_versions or cache_hit:
+                                input_versions_json = json.dumps(input_versions) if input_versions else None
+                                cursor.execute(
+                                    """
+                                    UPDATE node_executions
+                                    SET content_hash = ?, input_versions = ?, cache_hit = ?
+                                    WHERE id = ?
+                                    """,
+                                    (content_hash, input_versions_json, 1 if cache_hit else 0, completed_node_id),
+                                )
                 except Exception as e:
-                    logger.warning(f"Failed to persist checkpoint data for node {completed_node_id}: {e}")
+                    logger.warning(f"Failed to transition node status for node {completed_node_id}: {e}")
 
             # Handle artifact_created: persist into artifacts table.
             # Key by execution_id = {run_id}:{node_id} to match node row convention.

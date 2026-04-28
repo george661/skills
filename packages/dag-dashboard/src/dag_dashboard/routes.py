@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,9 +56,12 @@ def get_events_dir(request: Request) -> Path:
 async def get_config(request: Request) -> Dict[str, bool]:
     """Return UI-relevant configuration flags."""
     settings = getattr(request.app.state, 'settings', None)
+    checkpoint_prefix = getattr(request.app.state, 'checkpoint_prefix', None)
     return {
         "allow_destructive_nodes": getattr(settings, 'allow_destructive_nodes', False) if settings else False,
         "builder_enabled": getattr(settings, 'builder_enabled', False) if settings else False,
+        "checkpoint_enabled": checkpoint_prefix is not None,
+        "trigger_enabled": getattr(settings, 'trigger_enabled', False) if settings else False,
     }
 
 
@@ -208,13 +212,18 @@ async def get_workflow_node(
     """Get a single node execution with artifacts, chat messages, and enriched data."""
     db_path = get_db_path(request)
 
-    node = get_node(db_path, node_id)
-    if node is None or node["run_id"] != run_id:
+    # The URL's {node_id} may be the bare node_name ("hello") or the composite
+    # "{run_id}:{node_name}" id. Try composite first, fall back to bare.
+    node = get_node(db_path, f"{run_id}:{node_id}") or get_node(db_path, node_id)
+    if node is None or node.get("run_id") != run_id:
         raise HTTPException(status_code=404, detail="Node execution not found")
 
+    # Every downstream query expects the composite id.
+    composite_id = node["id"]
+
     # Enrich with artifacts and chat messages
-    artifacts = get_artifacts(db_path, node_id)
-    chat_messages = get_chat_messages(db_path, node_id)
+    artifacts = get_artifacts(db_path, composite_id)
+    chat_messages = get_chat_messages(db_path, composite_id)
 
     # Enrich with upstream context if node has dependencies
     upstream_context = []
@@ -295,13 +304,27 @@ async def get_node_logs(
     - has_more: Boolean indicating if more lines are available
     """
     db_path = get_db_path(request)
-    
-    # Verify node exists
-    node = get_node(db_path, node_id)
-    if node is None or node["run_id"] != run_id:
-        raise HTTPException(status_code=404, detail="Node execution not found")
-    
-    # Get log lines with pagination and stream filter
+
+    # Verify node exists. The URL's {node_id} is the bare node_name, but
+    # node_executions.id is the composite "{run_id}:{node_name}". Try the
+    # composite lookup first; if that misses (older rows only have node_name),
+    # match on (run_id, node_name) directly.
+    node = get_node(db_path, f"{run_id}:{node_id}") or get_node(db_path, node_id)
+    if node is None or node.get("run_id") != run_id:
+        # Fallback: query by (run_id, node_name) pair.
+        conn = sqlite3.connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM node_executions WHERE run_id = ? AND node_name = ?",
+                (run_id, node_id),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Node execution not found")
+
+    # Get log lines with pagination and stream filter. node_logs.node_id stores
+    # the bare node_name (matching emitter contract).
     lines = get_node_log_lines(db_path, run_id, node_id, limit, offset, stream)
 
     # Total count via COUNT(*) so pagination metadata is cheap even for large runs.

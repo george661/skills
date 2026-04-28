@@ -24,7 +24,8 @@ def test_search_bar_script_tag_in_index(client: TestClient) -> None:
     response = client.get("/")
     assert response.status_code == 200
     content = response.text
-    assert '<script src="/js/search-bar.js">' in content
+    # Served HTML appends a ?v=<timestamp> cache-buster to script URLs.
+    assert '/js/search-bar.js' in content
 
 
 def test_sidebar_has_search_container(client: TestClient) -> None:

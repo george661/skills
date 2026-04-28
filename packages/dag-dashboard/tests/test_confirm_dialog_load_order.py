@@ -18,11 +18,13 @@ def test_confirm_dialog_loaded_before_forms(client: TestClient) -> None:
     assert response.status_code == 200
     html = response.text
     
-    # Find positions of script tags
-    confirm_dialog_pos = html.find('<script src="/js/confirm-dialog.js"></script>')
-    rerun_form_pos = html.find('<script src="/js/rerun-form.js"></script>')
-    replay_form_pos = html.find('<script src="/js/replay-form.js"></script>')
-    
+    # Find positions of script tags. Served HTML appends a ?v=<timestamp>
+    # cache-buster to each URL, so match on the path prefix rather than the
+    # exact closing tag.
+    confirm_dialog_pos = html.find('/js/confirm-dialog.js')
+    rerun_form_pos = html.find('/js/rerun-form.js')
+    replay_form_pos = html.find('/js/replay-form.js')
+
     # All script tags must exist
     assert confirm_dialog_pos != -1, "confirm-dialog.js script tag not found"
     assert rerun_form_pos != -1, "rerun-form.js script tag not found"

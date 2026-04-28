@@ -43,6 +43,8 @@ def create_app(
     checkpoint_dir_fallback: Optional[str] = None,
     workflows_dirs: Optional[List[Path]] = None,
     skills_dirs: Optional[List[Path]] = None,
+    cancel_reconcile_timeout_s: float = 3.0,
+    cancel_reconcile_poll_interval_s: float = 0.5,
 ) -> FastAPI:
     """Create and configure FastAPI application."""
 
@@ -181,7 +183,12 @@ def create_app(
 
     # Register cancel routes (always mounted, core functionality)
     cancel_settings = type('Settings', (), {'events_dir': events_dir})()
-    cancel_router = create_cancel_router(cancel_settings, db_path)
+    cancel_router = create_cancel_router(
+        cancel_settings,
+        db_path,
+        reconcile_timeout_s=cancel_reconcile_timeout_s,
+        reconcile_poll_interval_s=cancel_reconcile_poll_interval_s,
+    )
     app.include_router(cancel_router)
 
     # Register settings routes (always mounted, core functionality)
@@ -200,6 +207,19 @@ def create_app(
         app.mount("/css", StaticFiles(directory=str(static_dir / "css")), name="css")
         app.mount("/js", StaticFiles(directory=str(static_dir / "js")), name="js")
 
+    # During active iteration the dashboard ships JS without fingerprinted
+    # filenames, which means browsers happily serve a stale cached copy for
+    # hours after we restart the server. Send a short-lived Cache-Control on
+    # /js and /css so reloads pick up the freshly-deployed bundle without
+    # requiring the user to hard-refresh (Cmd+Shift+R).
+    @app.middleware("http")
+    async def _no_cache_static_assets(request, call_next):  # type: ignore[misc]
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/js/") or path.startswith("/css/"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
     @app.get("/health")
     async def health() -> Dict[str, str]:
         """Health check endpoint."""
@@ -212,15 +232,42 @@ def create_app(
         js_content = f"window.DAG_DASHBOARD_BUILDER_ENABLED = {'true' if enabled else 'false'};"
         return Response(content=js_content, media_type="application/javascript")
 
+    # Stable per-process cache-buster stamp appended to every /js and /css
+    # URL in index.html. Changes every server restart so deployed JS updates
+    # take effect on a normal page reload — no more "clear cache or the user
+    # sees a two-hour-stale ChatPanel" footguns.
+    import time as _time_mod
+    _asset_version = str(int(_time_mod.time()))
+
+    _static_dir_cache = Path(__file__).parent / "static"
+    _index_path_cache = _static_dir_cache / "index.html"
+
+    import re as _re_mod
+    _asset_rewrite_re = _re_mod.compile(
+        r'((?:src|href)\s*=\s*["\'])(/(?:js|css)/[^"\'?#]+)(["\'])'
+    )
+
+    def _rewrite_asset_urls(html: str, version: str) -> str:
+        return _asset_rewrite_re.sub(
+            lambda m: f'{m.group(1)}{m.group(2)}?v={version}{m.group(3)}',
+            html,
+        )
+
     @app.get("/")
-    async def root() -> FileResponse:
-        """Serve index.html at root path."""
-        static_dir = Path(__file__).parent / "static"
-        index_path = static_dir / "index.html"
-        if not index_path.exists():
+    async def root() -> Response:
+        """Serve index.html at root path, rewriting /js and /css URLs with a
+        per-process version stamp so browsers never serve stale dashboard
+        JS after a restart."""
+        if not _index_path_cache.exists():
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="index.html not found")
-        return FileResponse(index_path)
+        html = _index_path_cache.read_text(encoding="utf-8")
+        html = _rewrite_asset_urls(html, _asset_version)
+        return Response(
+            content=html,
+            media_type="text/html; charset=utf-8",
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 
     # Mount SSE router - router has its own state, doesn't need app.state
     sse_router = create_sse_router(
