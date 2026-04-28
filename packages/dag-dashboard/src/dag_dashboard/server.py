@@ -5,9 +5,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Dict, List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
+from starlette.middleware.base import RequestResponseEndpoint
 
 from .broadcast import Broadcaster
 from .cancel import create_cancel_router
@@ -213,7 +214,9 @@ def create_app(
     # /js and /css so reloads pick up the freshly-deployed bundle without
     # requiring the user to hard-refresh (Cmd+Shift+R).
     @app.middleware("http")
-    async def _no_cache_static_assets(request, call_next):  # type: ignore[misc]
+    async def _no_cache_static_assets(
+        request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         response = await call_next(request)
         path = request.url.path
         if path.startswith("/js/") or path.startswith("/css/"):

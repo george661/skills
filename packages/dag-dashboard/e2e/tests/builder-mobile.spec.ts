@@ -14,6 +14,10 @@ import { test, expect, devices, type Page, type ConsoleMessage } from '@playwrig
 const EXPECTED_404_URL_PATTERNS = [
   /\/api\/workflows\/[^/]+\/drafts\/current/,
   /\/api\/checkpoints\/workflows/,
+  // useAutosave's seed-from-canonical fallback probes /api/definitions/{name}
+  // when no draft exists; in a fresh-workflow CI run that endpoint 404s and
+  // the hook silently falls through to seeding an empty DAG. Expected 404.
+  /\/api\/definitions\/[^/?]+/,
 ];
 
 function isExpectedResourceError(msg: ConsoleMessage): boolean {

@@ -168,9 +168,18 @@ class Router {
     }
 }
 
+// Stale-render guard: async renderers capture the hash on entry and bail
+// before writing to #route-container if the user has navigated away. Without
+// this, an in-flight fetch from a prior route can land after the new route's
+// renderer has already painted and clobber its DOM.
+function renderStillActive(hashAtEntry) {
+    return (window.location.hash.slice(1) || '/') === (hashAtEntry || '/');
+}
+
 // Route handlers
 async function renderDashboard() {
     const container = document.getElementById('route-container');
+    const hashAtEntry = window.location.hash.slice(1) || '/';
 
     // Fetch status summary
     let statusSummary = { running: 0, completed: 0, failed: 0, pending: 0, cancelled: 0 };
@@ -262,6 +271,7 @@ async function renderDashboard() {
         `;
     }
 
+    if (!renderStillActive(hashAtEntry)) return;
     container.innerHTML = `
         <h2 style="margin-bottom: 1.5rem;">Dashboard</h2>
         ${summaryCards}
@@ -311,6 +321,7 @@ async function renderDashboard() {
 
 async function renderHistory() {
     const container = document.getElementById('route-container');
+    const hashAtEntry = window.location.hash.slice(1) || '/';
 
     // Parse query parameters
     const hash = window.location.hash.slice(1);
@@ -487,6 +498,7 @@ async function renderHistory() {
         </div>
     ` : '';
 
+    if (!renderStillActive(hashAtEntry)) return;
     container.innerHTML = `
         <h2 style="margin-bottom: 1.5rem;">Workflow History</h2>
         ${filtersHTML}
@@ -1476,10 +1488,13 @@ if (window.DAG_DASHBOARD_BUILDER_ENABLED) {
         const container = document.getElementById('route-container');
         if (!container) return;
 
-        // Bare /#/builder has no workflow to edit — send the user to the
-        // workflow picker so they can choose one to open in the builder.
+        // Bare /#/builder with no workflow context — show a picker. A
+        // ?workflow=<name> query param is the legacy way to pass the workflow
+        // (still used by Playwright fixtures), so only show the picker when
+        // BOTH hash path and query string lack a workflow name.
         const hashPath = (window.location.hash.slice(1) || '/').split('?')[0];
-        if (hashPath === '/builder') {
+        const legacyWorkflow = new URLSearchParams(window.location.search).get('workflow');
+        if (hashPath === '/builder' && !legacyWorkflow) {
             container.innerHTML = `
                 <div style="padding: 2rem;">
                     <h2>Open a workflow in the builder</h2>
@@ -1534,11 +1549,14 @@ if (window.DAG_DASHBOARD_BUILDER_ENABLED) {
 
 }
 
-// The Router constructor calls handleRoute() before any routes are registered.
-// Now that all routes — including the feature-flagged /builder route — are
-// registered, redispatch once so deep links like /#/workflows or /#/builder/demo
-// run their proper handler on first load instead of silently falling back.
-router.handleRoute();
+// The Router constructor calls handleRoute() before any routes are registered,
+// so `router.currentRoute` is null when that dispatch found no handler. Only
+// redispatch in that case — otherwise we risk firing renderDashboard twice in
+// parallel with the subsequent hashchange-driven render (the second one's
+// async fetch can land after the real renderer and clobber #route-container).
+if (router.currentRoute === null) {
+    router.handleRoute();
+}
 
 // Mobile menu toggle
 document.getElementById('mobile-menu-toggle')?.addEventListener('click', () => {
