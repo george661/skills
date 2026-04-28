@@ -9,6 +9,13 @@ from dag_dashboard.database import init_db
 from dag_dashboard.models import RunStatus
 
 
+# Small reconcile window for tests — the route polls the DB for up to this
+# many seconds waiting for a live executor to transition the row. No executor
+# exists in unit tests, so every cancel goes down the orphan-reconcile path.
+_TEST_RECONCILE_S = 0.05
+_TEST_POLL_INTERVAL_S = 0.01
+
+
 @pytest.fixture
 def test_app():
     """Create test app with in-memory DB."""
@@ -16,9 +23,9 @@ def test_app():
         db_path = Path(tmpdir) / "test.db"
         events_dir = Path(tmpdir) / "events"
         events_dir.mkdir()
-        
+
         init_db(db_path)
-        
+
         # Insert a test run
         import sqlite3
         conn = sqlite3.connect(db_path)
@@ -33,31 +40,51 @@ def test_app():
         )
         conn.commit()
         conn.close()
-        
-        app = create_app(db_path=db_path, events_dir=events_dir)
+
+        app = create_app(
+            db_path=db_path,
+            events_dir=events_dir,
+            cancel_reconcile_timeout_s=_TEST_RECONCILE_S,
+            cancel_reconcile_poll_interval_s=_TEST_POLL_INTERVAL_S,
+        )
         yield TestClient(app), events_dir
 
 
 def test_cancel_api_writes_marker_for_running(test_app):
-    """Test that POST to running run writes marker and returns 200."""
+    """POST on running run writes a marker and returns 200.
+
+    With no live executor watching (the test case), the dashboard falls back
+    to the orphan-reconcile path after a short timeout and returns
+    status="cancelling" along with the synthetic-event emission.
+    """
     client, events_dir = test_app
-    
+
     response = client.post("/api/workflows/test-run-running/cancel")
     assert response.status_code == 200
-    
+
     data = response.json()
     assert data["run_id"] == "test-run-running"
-    assert data["status"] == "running"  # Status doesn't change until executor processes marker
-    
-    # Verify marker file exists
+    # No live executor in tests → orphan-reconcile path
+    assert data["status"] == "cancelling"
+    assert "orphan-reconcile" in (data.get("message") or "")
+
+    # Verify marker file exists (for any live executor)
     marker_path = events_dir / "test-run-running.cancel"
     assert marker_path.exists()
-    
+
     with open(marker_path) as f:
         marker_data = json.load(f)
-    
+
     assert "cancelled_by" in marker_data
     assert "cancelled_at" in marker_data
+
+    # Verify synthetic workflow_cancelled event was appended to events JSONL
+    events_file = events_dir / "test-run-running.ndjson"
+    assert events_file.exists()
+    last_event = json.loads(events_file.read_text().splitlines()[-1])
+    assert last_event["event_type"] == "workflow_cancelled"
+    assert last_event["workflow_id"] == "test-run-running"
+    assert last_event["metadata"]["cancelled_by"] == "dashboard-ui:orphan-reconcile"
 
 
 def test_cancel_api_404_for_unknown_run():
@@ -68,9 +95,14 @@ def test_cancel_api_404_for_unknown_run():
         events_dir.mkdir()
         
         init_db(db_path)
-        app = create_app(db_path=db_path, events_dir=events_dir)
+        app = create_app(
+            db_path=db_path,
+            events_dir=events_dir,
+            cancel_reconcile_timeout_s=_TEST_RECONCILE_S,
+            cancel_reconcile_poll_interval_s=_TEST_POLL_INTERVAL_S,
+        )
         client = TestClient(app)
-        
+
         response = client.post("/api/workflows/nonexistent-run/cancel")
         assert response.status_code == 404
         
@@ -145,33 +177,39 @@ def test_cancel_api_writes_marker_for_resuming_run():
         db_path = Path(tmpdir) / "test.db"
         events_dir = Path(tmpdir) / "events"
         events_dir.mkdir()
-        
+
         init_db(db_path)
-        
+
         # Insert resuming run
         import sqlite3
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute(
-            """INSERT INTO workflow_runs 
+            """INSERT INTO workflow_runs
                (id, workflow_name, status, started_at, workflow_definition)
                VALUES (?, ?, ?, ?, ?)""",
-            ("test-run-resuming", "test-workflow", "resuming", 
+            ("test-run-resuming", "test-workflow", "resuming",
              "2026-04-21T11:00:00Z", '{"nodes": [], "edges": []}')
         )
         conn.commit()
         conn.close()
-        
-        app = create_app(db_path=db_path, events_dir=events_dir)
+
+        app = create_app(
+            db_path=db_path,
+            events_dir=events_dir,
+            cancel_reconcile_timeout_s=_TEST_RECONCILE_S,
+            cancel_reconcile_poll_interval_s=_TEST_POLL_INTERVAL_S,
+        )
         client = TestClient(app)
-        
+
         response = client.post("/api/workflows/test-run-resuming/cancel")
         assert response.status_code == 200
-        
+
         data = response.json()
         assert data["run_id"] == "test-run-resuming"
-        assert data["status"] == "resuming"  # Status unchanged until executor processes marker
-        
+        # Orphan-reconcile (no live executor in unit tests)
+        assert data["status"] == "cancelling"
+
         # Verify marker was written
         marker_path = events_dir / "test-run-resuming.cancel"
         assert marker_path.exists()

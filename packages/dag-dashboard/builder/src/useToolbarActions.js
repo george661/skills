@@ -19,21 +19,23 @@ export default function useToolbarActions(workflowName) {
   const saveDraft = async (yaml) => {
     setIsSaving(true);
     setLastError(null);
-    
+
     try {
+      // The drafts endpoint expects {content}, not {yaml}. Passing {yaml} yields
+      // HTTP 422 because the Pydantic model has extra=forbid.
       const response = await fetch(`/api/workflows/${workflowName}/drafts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ yaml }),
+        body: JSON.stringify({ content: yaml }),
       });
-      
+
       if (!response.ok) {
         throw new Error(`Save failed: ${response.status}`);
       }
-      
+
       const data = await response.json();
       lastSavedTimestampRef.current = data.timestamp;
-      
+
       return data;
     } catch (error) {
       setLastError(error.message);
@@ -47,14 +49,17 @@ export default function useToolbarActions(workflowName) {
     if (!lastSavedTimestampRef.current) {
       throw new Error('No saved draft to publish');
     }
-    
+
     setIsPublishing(true);
     setLastError(null);
-    
+
     try {
       const response = await fetch(
         `/api/workflows/${workflowName}/drafts/${lastSavedTimestampRef.current}/publish`,
-        { method: 'POST' }
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        }
       );
       
       if (!response.ok) {

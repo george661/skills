@@ -23,6 +23,7 @@ describe('BuilderToolbar', () => {
     hasUnsavedChanges: false,
     hasClientErrors: false,
     hasPublishableDraft: false,
+    triggerEnabled: true,
     onChangeWorkflowName: () => {},
     onChangeDescription: () => {},
     onChangeProvider: () => {},
@@ -128,6 +129,18 @@ describe('BuilderToolbar', () => {
     assert.ok(publishButton, 'Publish button should exist');
     publishButton.props.onClick();
     assert.strictEqual(publishCallCount, 1, 'onPublish should be called once');
+  });
+
+  it('run_disabled_when_trigger_endpoint_unavailable', () => {
+    const props = { ...defaultProps, triggerEnabled: false };
+    const renderer = TestRenderer.create(<BuilderToolbar {...props} />);
+    const root = renderer.root;
+
+    const buttons = root.findAllByType('button');
+    const runButton = buttons.find(b => b.props.children && b.props.children.includes && b.props.children.includes('Run'));
+
+    assert.ok(runButton, 'Run button should exist');
+    assert.strictEqual(runButton.props.disabled, true, 'Run button should be disabled when triggerEnabled=false');
   });
 
   it('run_click_fires_onRun', () => {

@@ -14,6 +14,8 @@ from .queries import (
     get_run,
     get_node,
     get_conversation_row,
+    list_conversations,
+    list_runs_in_conversation,
 )
 
 
@@ -202,6 +204,25 @@ def create_conversation_router(db_path: Path) -> APIRouter:
         Configured API router
     """
     router = APIRouter(prefix="/api/conversations", tags=["conversations"])
+
+    @router.get("")
+    async def list_conversations_endpoint(
+        limit: int = 50, offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """List conversations ordered by most-recent activity."""
+        return list_conversations(db_path, limit=limit, offset=offset)
+
+    @router.get("/{conversation_id}")
+    async def get_conversation_detail(conversation_id: str) -> Dict[str, Any]:
+        """Return conversation metadata and the runs that belong to it."""
+        conversation = get_conversation_row(db_path, conversation_id)
+        if not conversation:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Conversation {conversation_id} not found",
+            )
+        conversation["runs"] = list_runs_in_conversation(db_path, conversation_id)
+        return conversation
 
     @router.get("/{conversation_id}/messages")
     async def get_conversation_messages(

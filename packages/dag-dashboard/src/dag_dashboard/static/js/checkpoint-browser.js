@@ -15,14 +15,40 @@ async function renderCheckpointWorkflows() {
             <div class="loading-spinner">Loading workflows...</div>
         </div>
     `;
-    
+
     try {
-        const response = await fetch('/api/checkpoints/workflows');
+        // Gate on /api/config so we don't hit /api/checkpoints/workflows (404 noise)
+        // when DAG_DASHBOARD_CHECKPOINT_PREFIX is not set.
         const content = document.getElementById('checkpoint-workflows-content');
-        
+        try {
+            const cfgResp = await fetch('/api/config');
+            if (cfgResp.ok) {
+                const cfg = await cfgResp.json();
+                if (cfg && cfg.checkpoint_enabled === false) {
+                    content.innerHTML = `
+                        <div class="empty-state" style="padding: 3rem 1rem;">
+                            <div class="empty-state-icon">💾</div>
+                            <div class="empty-state-text">
+                                Checkpoint browsing is not configured.
+                            </div>
+                            <p style="color: var(--text-secondary); margin-top: 1rem; max-width: 500px; margin-left: auto; margin-right: auto;">
+                                To enable checkpoint browsing, set the <code>DAG_DASHBOARD_CHECKPOINT_PREFIX</code> environment variable to the path where checkpoints are stored.
+                            </p>
+                        </div>
+                    `;
+                    return;
+                }
+            }
+        } catch (_) {
+            // If /api/config itself fails, fall through and let the real fetch run.
+        }
+
+        const response = await fetch('/api/checkpoints/workflows');
+
         if (!response.ok) {
             if (response.status === 404) {
-                // Checkpoint prefix not configured
+                // Checkpoint prefix not configured (fallback for older servers without
+                // checkpoint_enabled in /api/config).
                 content.innerHTML = `
                     <div class="empty-state" style="padding: 3rem 1rem;">
                         <div class="empty-state-icon">💾</div>

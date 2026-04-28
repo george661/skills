@@ -51,9 +51,14 @@ _FALLBACK_ROUTING: Dict[str, Any] = {
         },
     },
     "models": {
-        "opus": {"provider": "bedrock", "model": "global.anthropic.claude-opus-4-6-v1"},
-        "sonnet": {"provider": "bedrock", "model": "global.anthropic.claude-sonnet-4-6"},
-        "haiku": {"provider": "bedrock", "model": "global.anthropic.claude-haiku-4-5"},
+        # Bedrock cross-region inference profile IDs (us.*). The short
+        # global.anthropic.* aliases used previously are not valid Bedrock model
+        # IDs — the Claude CLI rejects them with "provided model identifier is
+        # invalid". Verified working against Bedrock via `claude --print --bare`
+        # with AWS_PROFILE set.
+        "opus": {"provider": "bedrock", "model": "us.anthropic.claude-opus-4-6-v1"},
+        "sonnet": {"provider": "bedrock", "model": "us.anthropic.claude-sonnet-4-6"},
+        "haiku": {"provider": "bedrock", "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0"},
         # `local` is a role map rather than a single model. `qwen3-coder:30b`
         # is the canonical fast completion-mode local backend.
         "local": {

@@ -78,6 +78,7 @@ function Builder() {
     const [model, setModel] = React.useState('');
     const [hasClientErrors, setHasClientErrors] = React.useState(false);
     const [allowDestructiveNodes, setAllowDestructiveNodes] = React.useState(false);
+    const [triggerEnabled, setTriggerEnabled] = React.useState(false);
     const [selectedNode, setSelectedNode] = React.useState(null);
 
     // GW-5253: viewport-aware layout. Mobile forces single-column canvas-only view
@@ -89,8 +90,13 @@ function Builder() {
     // GW-5333: NodeLibrary visibility state (default: visible, hidden on mobile)
     const [isLibraryVisible, setIsLibraryVisible] = React.useState(true);
 
-    // Workflow name: initialize from ?workflow= but remain editable.
+    // Workflow name: initialize from the hash path /#/builder/<name>, falling back to
+    // ?workflow= query string. Remains editable afterwards.
     const initialWorkflowName = React.useMemo(() => {
+        const hash = window.location.hash.slice(1) || '';
+        const pathOnly = hash.split('?')[0];
+        const parts = pathOnly.split('/').filter(Boolean);
+        if (parts[0] === 'builder' && parts[1]) return decodeURIComponent(parts[1]);
         const params = new URLSearchParams(window.location.search);
         return params.get('workflow') || 'untitled';
     }, []);
@@ -104,22 +110,26 @@ function Builder() {
         () => window.DAGDashboardValidation?.useBuilderValidation || (() => ({ errors: [], warnings: [] })),
         []
     );
-    const validation = validationHook(dag);
+    // Hook expects { nodes: [...] }, not a bare array.
+    const canvasState = React.useMemo(() => ({ nodes: dag }), [dag]);
+    const validation = validationHook(canvasState);
 
     React.useEffect(() => {
         setHasClientErrors(validation.errors.length > 0);
     }, [validation.errors]);
 
-    // Fetch allow_destructive_nodes config flag on mount
+    // Fetch UI-relevant config flags on mount
     React.useEffect(() => {
         fetch('/api/config')
             .then(res => res.json())
             .then(data => {
                 setAllowDestructiveNodes(data.allow_destructive_nodes || false);
+                setTriggerEnabled(data.trigger_enabled || false);
             })
             .catch(err => {
                 console.error('Failed to fetch config:', err);
                 setAllowDestructiveNodes(false);
+                setTriggerEnabled(false);
             });
     }, []);
 
@@ -278,6 +288,7 @@ function Builder() {
                 hasUnsavedChanges={hasUnsavedChanges}
                 hasClientErrors={hasClientErrors}
                 hasPublishableDraft={!!toolbarActions.lastSavedTimestamp}
+                triggerEnabled={triggerEnabled}
                 isMobile={isMobile}
                 onChangeWorkflowName={setWorkflowName}
                 onChangeDescription={setDescription}
@@ -387,8 +398,20 @@ function Builder() {
                 </div>
             )}
 
-            {/* Placeholder for ValidationPanel (feature-flagged global script) */}
-            <div id="validation-panel-mount"></div>
+            {/* ValidationPanel (GW-5246) — rendered from global window.DAGDashboardValidation
+                when the validation scripts loaded successfully. Kept inside a mount div so
+                tests (and any external scripts) can still find #validation-panel-mount. */}
+            <div id="validation-panel-mount">
+                {window.DAGDashboardValidation?.ValidationPanel &&
+                    React.createElement(window.DAGDashboardValidation.ValidationPanel, {
+                        errors: validation.errors,
+                        warnings: validation.warnings,
+                        onIssueClick: (nodeId) => {
+                            const target = dag.find(n => n.id === nodeId);
+                            if (target) setSelectedNode(target);
+                        },
+                    })}
+            </div>
 
             {/* Version Drawer (GW-5251) */}
             <VersionDrawer
@@ -419,4 +442,7 @@ export function mount(container) {
     root.render(<Builder />);
 }
 
+// Expose React so sidecar validation scripts (validation-rules.js, use-builder-validation.js,
+// validation-panel.js) can attach hooks/components after the bundle loads.
+window.React = React;
 window.DAGDashboardBuilder = { mount };

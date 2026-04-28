@@ -1,54 +1,53 @@
 """
 test_validation_scripts_loaded.py
 
-CRITICAL: Validates that app.js loads validation scripts BEFORE builder.js.
-This is a static content test - no browser or FastAPI required.
+Validates that app.js loads the builder bundle AND the three sidecar validation
+scripts on the /builder route.
+
+Ordering requirement: the validation scripts are classical (ES5) React components
+that reference ``window.React``. The builder bundle ships React and exposes it on
+the window, so the sidecars must load AFTER the bundle. Verifying app.js
+references them in the right order.
 """
 
 import re
 from pathlib import Path
 
 
-def test_validation_scripts_loaded_before_builder():
-    """
-    Assert that app.js contains evidence of loading the three validation scripts
-    (use-builder-validation.js, validation-panel.js, validation-rules.js)
-    before loading builder.js.
-    """
-    app_js_path = Path(__file__).parent.parent / "src" / "dag_dashboard" / "static" / "js" / "app.js"
-    assert app_js_path.exists(), f"app.js not found at {app_js_path}"
-    
-    content = app_js_path.read_text()
-    
-    # Check for validation scripts
-    validation_scripts = [
-        'validation-rules.js',
-        'use-builder-validation.js',
-        'validation-panel.js',
-    ]
-    
-    for script in validation_scripts:
-        pattern = rf'["\'].*?/js/builder/{script}["\']'
-        assert re.search(pattern, content), \
-            f"app.js should load {script} (pattern: {pattern})"
-    
-    # Check that builder.js is also loaded
-    assert re.search(r'["\'].*?/js/builder/builder\.js["\']', content), \
-        "app.js should load builder.js"
-    
-    # Verify scripts are loaded in the builder route handler region
-    # Look for router.register('/builder' pattern
-    builder_route_match = re.search(
-        r"router\.register\(['\"]\/builder['\"]",
-        content
+def test_builder_and_validation_scripts_loaded_on_builder_route():
+    app_js_path = (
+        Path(__file__).parent.parent
+        / "src"
+        / "dag_dashboard"
+        / "static"
+        / "js"
+        / "app.js"
     )
-    assert builder_route_match, \
-        "app.js should contain builder route handler"
+    assert app_js_path.exists(), f"app.js not found at {app_js_path}"
 
-    # Verify that script loading code is present
-    assert 'appendChild' in content or 'createElement' in content, \
-        "app.js should contain script loading code"
-    
-    # Verify loadValidationScripts function exists
-    assert 'loadValidationScripts' in content, \
-        "app.js should contain loadValidationScripts function"
+    content = app_js_path.read_text()
+
+    expected_scripts = [
+        "builder.js",
+        "validation-rules.js",
+        "use-builder-validation.js",
+        "validation-panel.js",
+    ]
+
+    positions = {}
+    for script in expected_scripts:
+        match = re.search(rf'["\'].*?/js/builder/{re.escape(script)}["\']', content)
+        assert match, f"app.js should reference /js/builder/{script}"
+        positions[script] = match.start()
+
+    builder_route_match = re.search(r"router\.register\(['\"]\/builder['\"]", content)
+    assert builder_route_match, "app.js should contain a /builder route handler"
+
+    assert "createElement" in content, "app.js should contain script loading code"
+
+    # The bundle ships React; the sidecar scripts reference window.React.
+    # They must be listed AFTER the bundle so they run once React is available.
+    for sidecar in ("validation-rules.js", "use-builder-validation.js", "validation-panel.js"):
+        assert positions["builder.js"] < positions[sidecar], (
+            f"builder.js must be loaded before {sidecar} so window.React is available"
+        )

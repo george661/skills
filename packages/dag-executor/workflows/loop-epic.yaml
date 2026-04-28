@@ -51,7 +51,7 @@ nodes:
       - epic_issues
     script: |
       result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
-        "{\"jql\": \"parent = $epic_key ORDER BY rank ASC\", \"fields\": \"key,summary,status\"}")
+        "{\"jql\": \"parent = $epic_key ORDER BY rank ASC\", \"fields\": [\"key\", \"summary\", \"status\"]}")
       issues=$(echo "$result" | jq -r '.issues | map(.key) | @json')
       echo "{\"epic_issues\": $issues}"
     output_format: json

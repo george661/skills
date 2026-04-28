@@ -25,7 +25,9 @@ def test_rerun_form_script_tag_exists(tmp_client):
     response = tmp_client.get("/")
     assert response.status_code == 200
     html = response.text
-    assert '<script src="/js/rerun-form.js"></script>' in html
+    # Served HTML appends a ?v=<timestamp> cache-buster to script URLs, so
+    # check for the path rather than the exact string.
+    assert '/js/rerun-form.js' in html
 
 
 def test_rerun_form_js_exists(tmp_client):
