@@ -684,7 +684,16 @@ function renderFailureBanner(run, nodes) {
     container.parentNode.insertBefore(banner, container);
 }
 
+// Module-level active lifecycle for force-remount on runId change (AC-8)
+let activeLifecycle = null;
+
 async function renderRunDetail(runId) {
+    // Destroy previous lifecycle if re-entering
+    if (activeLifecycle) {
+        activeLifecycle.destroy();
+        activeLifecycle = null;
+    }
+
     const container = document.getElementById('route-container');
 
     // Tab state lives in the hash query string so it survives reload and
@@ -968,8 +977,22 @@ async function renderRunDetail(runId) {
             window.ArtifactList.render('run-artifacts-container', runId);
         }
 
+        // Initialize resizable split for the graph pane (AC-1)
+        const splitContainer = document.querySelector('.run-graph-split');
+        let resizableSplit = null;
+        if (splitContainer && window.ResizableSplit) {
+            resizableSplit = new window.ResizableSplit(splitContainer, {
+                defaultSplit: 60,
+                minSplit: 20,
+                maxSplit: 80,
+                storageKey: 'dag-dashboard.run-detail.split',
+                mobileBreakpoint: 1024
+            });
+        }
+
         // Connect to SSE for live updates
-        setupLiveUpdates(runId, dagRenderer, layoutData.nodes, channelPanel, chatPanel);
+        const lifecycle = setupLiveUpdates(runId, dagRenderer, layoutData.nodes, channelPanel, chatPanel, resizableSplit);
+        activeLifecycle = lifecycle;
 
     } catch (error) {
         console.error('Error loading workflow detail:', error);
@@ -1166,6 +1189,15 @@ function setupExecutingBanner(nodes) {
     const modelEl = document.getElementById('executing-model');
     const timerEl = document.getElementById('executing-timer');
 
+    // Cancel existing animation frame if present (prevent leak on re-render)
+    if (banner && banner.dataset.animationId) {
+        const oldId = parseInt(banner.dataset.animationId, 10);
+        if (!isNaN(oldId)) {
+            cancelAnimationFrame(oldId);
+        }
+        delete banner.dataset.animationId;
+    }
+
     // Find running node
     const runningNode = nodes.find(n => n.status === 'running');
 
@@ -1195,7 +1227,7 @@ function setupExecutingBanner(nodes) {
     }
 }
 
-function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel) {
+function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, resizableSplit) {
     // Store retry history per node for the Retry History tab
     const retryHistoryStore = {};
 
@@ -1326,15 +1358,46 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel) {
         }
     }, 2000); // Poll every 2 seconds
 
-    // Cleanup on route change
-    window.addEventListener('hashchange', () => {
-        clearInterval(pollInterval);
-        eventSource.close();
-        delete window.retryHistoryStore;
-        if (chatPanel) {
-            chatPanel.destroy();
+    // Create lifecycle object for cleanup (AC-8: force remount on runId change)
+    const lifecycle = {
+        destroy: () => {
+            // Clear interval
+            clearInterval(pollInterval);
+
+            // Close EventSource
+            eventSource.close();
+
+            // Clean up retry history
+            delete window.retryHistoryStore;
+
+            // Destroy chat panel
+            if (chatPanel) {
+                chatPanel.destroy();
+            }
+
+            // Destroy resizable split
+            if (resizableSplit) {
+                resizableSplit.destroy();
+            }
+
+            // Cancel executing banner animation frame (fix existing leak)
+            const banner = document.getElementById('executing-banner');
+            if (banner && banner.dataset.animationId) {
+                const animationId = parseInt(banner.dataset.animationId, 10);
+                if (!isNaN(animationId)) {
+                    cancelAnimationFrame(animationId);
+                }
+                delete banner.dataset.animationId;
+            }
         }
+    };
+
+    // Cleanup on route change (hashchange away from this run)
+    window.addEventListener('hashchange', () => {
+        lifecycle.destroy();
     }, { once: true });
+
+    return lifecycle;
 }
 
 // Gate Indicator - Pulsing notification for pending gates
