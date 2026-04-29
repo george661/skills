@@ -189,18 +189,8 @@
     padding: 0 1rem 1rem;
 }
 
-.run-graph-split {
-    display: grid;
-    grid-template-columns: minmax(0, 3fr) minmax(260px, 2fr);
-    gap: 1rem;
-    margin-top: 1rem;
-}
-
-@media (max-width: 900px) {
-    .run-graph-split {
-        grid-template-columns: 1fr;
-    }
-}
+/* .run-graph-split is kept as a DOM selector hook only; its layout is
+ * provided by .run-split below, added at runtime by ResizableSplit. */
 
 /* Resizable split layout */
 .run-split {

@@ -2,8 +2,14 @@
 from pathlib import Path
 
 
-def test_old_three_column_layout_removed() -> None:
-    """Test that the old .run-graph-3col layout is removed from CSS."""
+def test_run_graph_split_grid_rules_removed() -> None:
+    """Assert the pre-existing CSS grid rules on .run-graph-split are gone.
+
+    ResizableSplit adds `.run-split` to the same DOM element at runtime,
+    so the old `.run-graph-split { display: grid; ... }` rules became
+    dead code. Removing them avoids two display modes fighting on the
+    same element and keeps styles.css readable.
+    """
     css_path = (
         Path(__file__).parent.parent
         / "src"
@@ -14,8 +20,38 @@ def test_old_three_column_layout_removed() -> None:
     )
     content = css_path.read_text()
 
-    # Old three-column layout should be gone
-    assert ".run-graph-3col" not in content
+    # The class stays as a querySelector hook in app.js, but must not
+    # carry a `display: grid` rule anymore.
+    assert ".run-graph-split {" not in content, (
+        ".run-graph-split must not define its own CSS rules — "
+        "layout now comes from .run-split applied by ResizableSplit"
+    )
+    # And the old @media override that scoped `.run-graph-split` should be gone.
+    assert "grid-template-columns: 1fr" not in content or ".run-graph-split" not in content.split(
+        "grid-template-columns: 1fr"
+    )[0].split("@media")[-1]
+
+
+def test_run_graph_split_selector_still_used() -> None:
+    """The DOM class hook `.run-graph-split` must stay in the app.js template
+    so ResizableSplit can find it via `document.querySelector('.run-graph-split')`.
+    """
+    app_js_path = (
+        Path(__file__).parent.parent
+        / "src"
+        / "dag_dashboard"
+        / "static"
+        / "js"
+        / "app.js"
+    )
+    content = app_js_path.read_text()
+
+    assert 'class="run-graph-split"' in content, (
+        "run-graph-split must remain as a DOM class on the container"
+    )
+    assert "querySelector('.run-graph-split')" in content, (
+        "app.js must still look up the split container by its class hook"
+    )
 
 
 def test_new_split_layout_added_to_css() -> None:
