@@ -1139,6 +1139,11 @@ def get_state_diff_timeline(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
     """
     conn = get_connection(db_path)
     try:
+        # `events.payload.node_id` stores the **bare** node_name (emitter
+        # contract), but `node_executions.id` is the composite
+        # "{run_id}:{node_name}". A prior JOIN on ne.id always missed, so
+        # `node_name` came back NULL for every row and the timeline showed
+        # "unknown" for every entry. Join on (run_id, node_name) pair.
         cursor = conn.execute(
             """
             SELECT
@@ -1148,7 +1153,9 @@ def get_state_diff_timeline(db_path: Path, run_id: str) -> List[Dict[str, Any]]:
                 ne.started_at,
                 ne.finished_at
             FROM events e
-            LEFT JOIN node_executions ne ON json_extract(e.payload, '$.node_id') = ne.id
+            LEFT JOIN node_executions ne
+                ON ne.run_id = e.run_id
+                AND ne.node_name = json_extract(e.payload, '$.node_id')
             WHERE e.run_id = ? AND e.event_type = 'node_completed'
             ORDER BY e.created_at
             """,

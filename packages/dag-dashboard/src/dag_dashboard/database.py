@@ -475,6 +475,43 @@ def init_db(db_path: Path, fts5_enabled: bool = False) -> None:
         except sqlite3.OperationalError:
             pass
 
+        # Older DBs created chat_messages.execution_id as NOT NULL. The
+        # workflow-level chat endpoint inserts execution_id=NULL (messages
+        # scoped to the run, not to a single node execution), which then
+        # raises IntegrityError. Rebuild the column if still NOT NULL.
+        try:
+            col_info = cursor.execute("PRAGMA table_info(chat_messages)").fetchall()
+            execution_id_not_null = any(
+                c[1] == "execution_id" and c[3] == 1 for c in col_info
+            )
+            if execution_id_not_null:
+                cursor.executescript("""
+                    CREATE TABLE chat_messages_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        execution_id TEXT REFERENCES node_executions(id),
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        metadata TEXT,
+                        run_id TEXT REFERENCES workflow_runs(id),
+                        operator_username TEXT,
+                        conversation_id TEXT,
+                        session_id TEXT
+                    );
+                    INSERT INTO chat_messages_new
+                        (id, execution_id, role, content, created_at, metadata,
+                         run_id, operator_username, conversation_id, session_id)
+                    SELECT id, execution_id, role, content, created_at, metadata,
+                           run_id, operator_username, conversation_id, session_id
+                    FROM chat_messages;
+                    DROP TABLE chat_messages;
+                    ALTER TABLE chat_messages_new RENAME TO chat_messages;
+                    CREATE INDEX IF NOT EXISTS idx_chat_messages_conv_created
+                        ON chat_messages(conversation_id, created_at);
+                """)
+        except sqlite3.OperationalError:
+            pass
+
         # Create FTS5 indexes if enabled
         if fts5_enabled:
             init_fts5_index(conn)

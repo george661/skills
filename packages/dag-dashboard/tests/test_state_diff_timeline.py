@@ -47,21 +47,28 @@ def _insert_event(
     """Helper to insert an event with WorkflowEvent-shaped payload.
 
     Also creates node_executions entry if payload has node_id, so JOINs work.
+
+    Production contract: `events.payload.node_id` is the **bare** node_name
+    (emitter uses node_def.id). `node_executions.id` is the composite
+    "{run_id}:{name}", and `node_executions.node_name` holds the bare name.
+    The timeline query joins on (run_id, node_name) = payload.node_id, so
+    the fixture must mirror that contract.
     """
     # Extract node info for node_executions table
     node_id = payload.get("node_id")
-    node_name = payload.get("node_name")  # Will be in legacy format for now
+    node_name = payload.get("node_name") or node_id  # production: payload.node_id IS the name
     started_at = payload.get("started_at")
     finished_at = payload.get("finished_at")
 
     # Create node_executions entry if this is a node event
     if node_id and node_name:
+        composite_id = f"{run_id}:{node_name}"
         conn.execute(
             """
             INSERT OR IGNORE INTO node_executions (id, run_id, node_name, status, started_at, finished_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (node_id, run_id, node_name, "completed", started_at, finished_at)
+            (composite_id, run_id, node_name, "completed", started_at, finished_at)
         )
 
     conn.execute(
@@ -95,7 +102,7 @@ def test_detects_added_key(db_path: Path):
     _insert_event(
         conn, "run-1", "node_completed",
         {
-            "node_name": "node1",
+            "node_name": "node-1",
             "node_id": "node-1",
             "started_at": "2026-04-20T10:00:00Z",
             "finished_at": "2026-04-20T10:01:00Z",
@@ -109,7 +116,7 @@ def test_detects_added_key(db_path: Path):
     
     timeline = get_state_diff_timeline(db_path, "run-1")
     assert len(timeline) == 1
-    assert timeline[0]["node_name"] == "node1"
+    assert timeline[0]["node_name"] == "node-1"
     assert len(timeline[0]["changes"]) == 1
     change = timeline[0]["changes"][0]
     assert change["key"] == "new_key"
@@ -128,7 +135,7 @@ def test_detects_changed_key(db_path: Path):
     _insert_event(
         conn, "run-1", "node_completed",
         {
-            "node_name": "node1",
+            "node_name": "node-1",
             "node_id": "node-1",
             "started_at": "2026-04-20T10:00:00Z",
             "finished_at": "2026-04-20T10:01:00Z",
@@ -143,7 +150,7 @@ def test_detects_changed_key(db_path: Path):
     _insert_event(
         conn, "run-1", "node_completed",
         {
-            "node_name": "node2",
+            "node_name": "node-2",
             "node_id": "node-2",
             "started_at": "2026-04-20T10:01:00Z",
             "finished_at": "2026-04-20T10:02:00Z",
@@ -158,7 +165,7 @@ def test_detects_changed_key(db_path: Path):
     timeline = get_state_diff_timeline(db_path, "run-1")
     assert len(timeline) == 2
     # Check second node shows change
-    assert timeline[1]["node_name"] == "node2"
+    assert timeline[1]["node_name"] == "node-2"
     change = timeline[1]["changes"][0]
     assert change["key"] == "key1"
     assert change["change_type"] == "changed"
@@ -176,7 +183,7 @@ def test_detects_removed_key(db_path: Path):
     _insert_event(
         conn, "run-1", "node_completed",
         {
-            "node_name": "node1",
+            "node_name": "node-1",
             "node_id": "node-1",
             "started_at": "2026-04-20T10:00:00Z",
             "finished_at": "2026-04-20T10:01:00Z",
@@ -191,7 +198,7 @@ def test_detects_removed_key(db_path: Path):
     _insert_event(
         conn, "run-1", "node_completed",
         {
-            "node_name": "node2",
+            "node_name": "node-2",
             "node_id": "node-2",
             "started_at": "2026-04-20T10:01:00Z",
             "finished_at": "2026-04-20T10:02:00Z",
@@ -230,7 +237,7 @@ def test_distinguishes_removed_from_null_value(db_path: Path):
     _insert_event(
         conn, "run-1", "node_completed",
         {
-            "node_name": "node1",
+            "node_name": "node-1",
             "node_id": "node-1",
             "started_at": "2026-04-20T10:00:00Z",
             "finished_at": "2026-04-20T10:01:00Z",
@@ -261,7 +268,7 @@ def test_chronological_order(db_path: Path):
     _insert_event(
         conn, "run-1", "node_completed",
         {
-            "node_name": "node2",
+            "node_name": "node-2",
             "node_id": "node-2",
             "started_at": "2026-04-20T10:01:00Z",
             "finished_at": "2026-04-20T10:02:00Z",
@@ -272,7 +279,7 @@ def test_chronological_order(db_path: Path):
     _insert_event(
         conn, "run-1", "node_completed",
         {
-            "node_name": "node1",
+            "node_name": "node-1",
             "node_id": "node-1",
             "started_at": "2026-04-20T10:00:00Z",
             "finished_at": "2026-04-20T10:01:00Z",
@@ -284,8 +291,8 @@ def test_chronological_order(db_path: Path):
     
     timeline = get_state_diff_timeline(db_path, "run-1")
     assert len(timeline) == 2
-    assert timeline[0]["node_name"] == "node1"
-    assert timeline[1]["node_name"] == "node2"
+    assert timeline[0]["node_name"] == "node-1"
+    assert timeline[1]["node_name"] == "node-2"
 
 
 def test_multiple_keys_per_node(db_path: Path):
@@ -297,7 +304,7 @@ def test_multiple_keys_per_node(db_path: Path):
     _insert_event(
         conn, "run-1", "node_completed",
         {
-            "node_name": "node1",
+            "node_name": "node-1",
             "node_id": "node-1",
             "started_at": "2026-04-20T10:00:00Z",
             "finished_at": "2026-04-20T10:01:00Z",
@@ -335,7 +342,7 @@ def test_ignores_non_completed_events(db_path: Path):
     _insert_event(
         conn, "run-1", "node_failed",
         {
-            "node_name": "node-failed",
+            "node_name": "node-f",
             "node_id": "node-f",
             "metadata": {"state_diff": {"key": "value"}}
         },
@@ -344,7 +351,7 @@ def test_ignores_non_completed_events(db_path: Path):
     _insert_event(
         conn, "run-1", "node_completed",
         {
-            "node_name": "node1",
+            "node_name": "node-1",
             "node_id": "node-1",
             "started_at": "2026-04-20T10:02:00Z",
             "finished_at": "2026-04-20T10:03:00Z",
@@ -356,7 +363,7 @@ def test_ignores_non_completed_events(db_path: Path):
     
     timeline = get_state_diff_timeline(db_path, "run-1")
     assert len(timeline) == 1
-    assert timeline[0]["node_name"] == "node1"
+    assert timeline[0]["node_name"] == "node-1"
 
 
 def test_unknown_run_id_returns_empty(db_path: Path):
@@ -375,7 +382,7 @@ def test_json_payload_roundtrip(db_path: Path):
     _insert_event(
         conn, "run-1", "node_completed",
         {
-            "node_name": "node1",
+            "node_name": "node-1",
             "node_id": "node-1",
             "started_at": "2026-04-20T10:00:00Z",
             "finished_at": "2026-04-20T10:01:00Z",
@@ -446,13 +453,17 @@ def test_real_workflow_event_integration(db_path: Path):
         ("test-workflow", "test-workflow", "running", "2026-04-20T10:00:00Z")
     )
     
-    # Insert node_executions entry (so JOIN works)
+    # Insert node_executions entry (so JOIN works). Per production contract,
+    # node_executions.id is composite "{run_id}:{node_name}" and the emitter
+    # sets payload.node_id == node_name (the bare YAML id). The WorkflowEvent
+    # above was constructed with node_id="node-1", so node_name must match
+    # for the JOIN on (run_id, node_name = payload.node_id) to succeed.
     conn.execute(
         """
         INSERT INTO node_executions (id, run_id, node_name, status, started_at, finished_at)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
-        ("node-1", "test-workflow", "RealNode", "completed", "2026-04-20T10:00:00Z", "2026-04-20T10:01:00Z")
+        ("test-workflow:node-1", "test-workflow", "node-1", "completed", "2026-04-20T10:00:00Z", "2026-04-20T10:01:00Z")
     )
     
     # Store full event_data as payload (matching the fix)
@@ -477,7 +488,7 @@ def test_real_workflow_event_integration(db_path: Path):
     
     node_entry = timeline[0]
     assert node_entry["node_id"] == "node-1"
-    assert node_entry["node_name"] == "RealNode", f"Expected 'RealNode', got {node_entry['node_name']}"
+    assert node_entry["node_name"] == "node-1", f"Expected 'node-1', got {node_entry['node_name']}"
     assert node_entry["started_at"] == "2026-04-20T10:00:00Z"
     assert node_entry["finished_at"] == "2026-04-20T10:01:00Z"
     

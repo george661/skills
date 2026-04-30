@@ -139,18 +139,23 @@ class ChatMessageRequest(BaseModel):
     @field_validator("content")
     @classmethod
     def validate_content(cls, v: str) -> str:
-        """Validate content doesn't contain shell metacharacters and isn't empty after stripping."""
-        # Strip and check for empty
+        """Validate content is non-empty.
+
+        Chat messages are persisted verbatim to SQLite (parametrized) and
+        echoed back via SSE (HTML-sanitized client-side by DOMPurify in
+        chat-panel.js). They are NEVER fed to a shell. An earlier version
+        of this validator rejected shell metacharacters (`$`, `(`, `:` in
+        some builds, `\n`, etc.), which caused the "Talk to orchestrator"
+        chat to HTTP 422 on realistic prompts like
+        "variable reference $foo: how should I proceed?". The concern is
+        misplaced here — we only guard structural invariants now.
+        """
         stripped = v.strip()
         if not stripped:
             raise ValueError("content must contain at least 1 character after stripping whitespace")
-
-        # Check for shell metacharacters
-        dangerous_chars = [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\\"]
-        for char in dangerous_chars:
-            if char in v:
-                raise ValueError(f"content must not contain shell metacharacters: {char}")
-
+        # Reject raw NULs (SQLite truncates, clients misrender).
+        if "\x00" in v:
+            raise ValueError("content must not contain NUL characters")
         return v
 
 

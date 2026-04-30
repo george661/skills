@@ -32,17 +32,34 @@ def test_chat_message_request_max_length():
     assert "10000" in str(exc_info.value)
 
 
-def test_chat_message_request_shell_metacharacters():
-    """Messages with shell metacharacters should be rejected."""
-    dangerous_chars = [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\\"]
-    
-    for char in dangerous_chars:
-        with pytest.raises(ValidationError) as exc_info:
-            ChatMessageRequest(
-                content=f"test {char} command",
-                operator_username="alice"
-            )
-        assert "shell metacharacters" in str(exc_info.value).lower()
+def test_chat_message_request_allows_natural_punctuation():
+    """Chat content is never shell-executed — natural punctuation including
+    ``$``, ``:``, ``()``, ``<>``, ``\\n``, ``&`` must round-trip so users
+    can paste error messages / code snippets when asking for help.
+    Historical restriction (shell-metacharacter blacklist) is removed.
+    """
+    samples = [
+        "What does ${creation_result_bug_key} mean?",
+        "pipe: a | b",
+        "backticks: `foo`",
+        "parens (like this) and semi; colons",
+        "multi\nline okay",
+        "angle <brackets>",
+        "ampersand & co",
+    ]
+    for s in samples:
+        msg = ChatMessageRequest(content=s, operator_username="alice")
+        assert msg.content == s
+
+
+def test_chat_message_request_rejects_nul():
+    """NUL bytes are rejected because SQLite silently truncates them."""
+    with pytest.raises(ValidationError) as exc_info:
+        ChatMessageRequest(
+            content="has\x00nul",
+            operator_username="alice",
+        )
+    assert "nul" in str(exc_info.value).lower()
 
 
 def test_chat_message_request_empty_content():

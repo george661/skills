@@ -47,13 +47,27 @@ def test_post_workflow_chat_max_length(test_app):
     assert response.status_code == 400 or response.status_code == 422
 
 
-def test_post_workflow_chat_shell_metacharacters(test_app):
-    """POST with shell metacharacters should return 400."""
+def test_post_workflow_chat_allows_natural_punctuation(test_app):
+    """Chat content is never shell-executed. Natural punctuation (including
+    `;`, `$`, newlines) must be accepted so users can paste error messages
+    and variable references when asking the orchestrator for help."""
     response = test_app.post(
         "/api/workflows/run-123/chat",
-        json={"content": "test ; rm -rf /", "operator_username": "alice"}
+        json={
+            "content": "error ref ${foo_bar}; help please\npipe: a | b",
+            "operator_username": "alice",
+        },
     )
-    assert response.status_code == 400 or response.status_code == 422
+    assert response.status_code == 201
+
+
+def test_post_workflow_chat_rejects_nul(test_app):
+    """NUL bytes cause SQLite truncation — reject at the boundary."""
+    response = test_app.post(
+        "/api/workflows/run-123/chat",
+        json={"content": "has\x00nul", "operator_username": "alice"},
+    )
+    assert response.status_code in (400, 422)
 
 
 def test_post_workflow_chat_rate_limit(test_app):

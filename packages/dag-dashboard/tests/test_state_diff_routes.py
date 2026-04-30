@@ -52,24 +52,34 @@ def _insert_event(
     """Helper to insert an event with WorkflowEvent-shaped payload.
 
     Also creates node_executions entry if payload has node_id, so JOINs work.
+
+    Production contract: `events.payload.node_id` is the **bare** node_name
+    (emitter uses node_def.id). `node_executions.id` is the composite
+    "{run_id}:{name}". The timeline query joins on
+    (ne.run_id, ne.node_name) = (event.run_id, payload.node_id), so the
+    fixture inserts composite id with ne.node_name == payload.node_id.
     """
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys=ON")
 
     # Extract node info for node_executions table
     node_id = payload.get("node_id")
-    node_name = payload.get("node_name")
+    # Production contract: payload.node_id is the bare node_name. If test
+    # payloads ship a separate "node_name" field, prefer node_id so the JOIN
+    # against ne.node_name succeeds.
+    node_name = node_id or payload.get("node_name")
     started_at = payload.get("started_at")
     finished_at = payload.get("finished_at")
 
     # Create node_executions entry if this is a node event
     if node_id and node_name:
+        composite_id = f"{run_id}:{node_name}"
         conn.execute(
             """
             INSERT OR IGNORE INTO node_executions (id, run_id, node_name, status, started_at, finished_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (node_id, run_id, node_name, "completed", started_at, finished_at)
+            (composite_id, run_id, node_name, "completed", started_at, finished_at)
         )
 
     conn.execute(
@@ -103,7 +113,7 @@ def test_get_state_diff_timeline_returns_200(client: TestClient, db_path: Path):
     data = response.json()
     assert isinstance(data, list)
     assert len(data) == 1
-    assert data[0]["node_name"] == "node1"
+    assert data[0]["node_name"] == "node-1"
 
 
 def test_get_state_diff_timeline_404_for_unknown_run(client: TestClient):
@@ -197,7 +207,7 @@ def test_state_diff_multiple_nodes_timeline(client: TestClient, db_path: Path):
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 2
-    assert data[0]["node_name"] == "node1"
-    assert data[1]["node_name"] == "node2"
+    assert data[0]["node_name"] == "node-1"
+    assert data[1]["node_name"] == "node-2"
     # Verify change type on second node
     assert data[1]["changes"][0]["change_type"] == "changed"

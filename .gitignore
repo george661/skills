@@ -52,3 +52,8 @@ implementation-plan.md
 **/playwright-report/
 **/test-results/
 **/playwright/.cache/
+
+# Local runtime state — dashboard DB created when running the server, draft
+# workflows created via the builder. Neither belongs in source control.
+packages/dag-dashboard/dashboard.db
+packages/dag-executor/workflows/.drafts/
