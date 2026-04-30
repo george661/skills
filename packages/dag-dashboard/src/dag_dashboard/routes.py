@@ -342,7 +342,15 @@ async def get_node_logs(
 
 @router.get("/workflows/{run_id}/layout")
 async def get_workflow_layout(request: Request, run_id: str) -> Dict[str, Any]:
-    """Compute DAG layout for a workflow run."""
+    """Compute DAG layout for a workflow run.
+
+    When the executor hasn't started emitting node_started events yet (the
+    typical state for the first ~1-2 seconds after trigger), node_executions
+    is empty and the dashboard would show a blank graph. Fall back to the
+    workflow YAML and synthesize pending-status skeleton nodes so the user
+    sees the shape of the DAG immediately; real statuses overlay as the
+    executor walks the graph.
+    """
     db_path = get_db_path(request)
 
     # Verify workflow exists
@@ -350,11 +358,90 @@ async def get_workflow_layout(request: Request, run_id: str) -> Dict[str, Any]:
     if run is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
-    # Get nodes and compute layout
+    # Get nodes from DB (populated as the executor runs)
     nodes = list_nodes(db_path, run_id)
-    layout_data = compute_layout(nodes)
 
-    return layout_data
+    if not nodes:
+        # No execution yet — synthesize skeleton from the workflow definition.
+        # Prefer the YAML text saved on the run row (retry path) before
+        # scanning disk, so reruns of deleted workflows still render.
+        skeleton = _skeleton_from_workflow_def(
+            request=request,
+            run_id=run_id,
+            workflow_name=run.get("workflow_name", ""),
+            workflow_definition=run.get("workflow_definition"),
+        )
+        if skeleton:
+            return compute_layout(skeleton)
+
+    return compute_layout(nodes)
+
+
+def _skeleton_from_workflow_def(
+    request: Request,
+    run_id: str,
+    workflow_name: str,
+    workflow_definition: Optional[str],
+) -> list[Dict[str, Any]]:
+    """Parse the workflow YAML and return pending-status skeleton nodes.
+
+    Returns the list shape `list_nodes` produces so it plugs straight into
+    compute_layout. Empty list on any failure — caller falls through to the
+    (empty) live-db result without blowing up.
+    """
+    yaml_text: Optional[str] = workflow_definition
+    if not yaml_text:
+        workflows_dirs = getattr(request.app.state, "workflows_dirs", None) or []
+        for wd in workflows_dirs:
+            candidate = Path(wd) / f"{workflow_name}.yaml"
+            if candidate.exists():
+                try:
+                    yaml_text = candidate.read_text()
+                except OSError:
+                    continue
+                break
+    if not yaml_text:
+        return []
+
+    try:
+        parsed = yaml.safe_load(yaml_text) or {}
+    except yaml.YAMLError:
+        return []
+
+    raw_nodes = parsed.get("nodes") or []
+    if not isinstance(raw_nodes, list):
+        return []
+
+    skeleton: list[Dict[str, Any]] = []
+    for raw in raw_nodes:
+        if not isinstance(raw, dict):
+            continue
+        node_name = raw.get("id") or raw.get("name")
+        if not isinstance(node_name, str) or not node_name:
+            continue
+        depends_on = raw.get("depends_on") or []
+        if not isinstance(depends_on, list):
+            depends_on = []
+        # Forward node_data (edges/model/etc.) so compute_layout can render
+        # conditional edges for skeleton nodes too.
+        skeleton.append({
+            "id": f"{run_id}:{node_name}",
+            "run_id": run_id,
+            "node_name": node_name,
+            "status": "pending",
+            "depends_on": [str(d) for d in depends_on if isinstance(d, str)],
+            "node_data": {
+                "edges": raw.get("edges"),
+                "type": raw.get("type"),
+            },
+            "model": raw.get("model"),
+            "tokens": None,
+            "cost": None,
+            "started_at": None,
+            "finished_at": None,
+            "error": None,
+        })
+    return skeleton
 
 
 @router.get("/workflows/{run_id}/channels")
@@ -696,6 +783,68 @@ async def get_interrupt_context(
     return checkpoint
 
 
+@router.get("/workflows/{run_id}/escalations/{node_name}")
+async def get_escalation(
+    request: Request,
+    run_id: str,
+    node_name: str,
+) -> Dict[str, Any]:
+    """Return the escalation checkpoint for a paused run.
+
+    The wrapping conversation reads this to understand what the failed node
+    was trying to do (prompt, writes, output_format) and why it failed
+    (error, stdout_tail), then does the work inline and POSTs a synthesized
+    output back to the resume endpoint.
+    """
+    from dag_executor.checkpoint import CheckpointStore
+    import yaml
+
+    db_path = get_db_path(request)
+    checkpoint_dir_fallback = request.app.state.checkpoint_dir_fallback
+
+    run = get_run(db_path, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    # Resolve workflow file so we can parse the display name (CheckpointStore
+    # keys by name, not filename).
+    workflows_dirs = getattr(request.app.state, "workflows_dirs", None) or []
+    workflow_file: Optional[Path] = None
+    for wd in workflows_dirs:
+        candidate = Path(wd) / f"{run['workflow_name']}.yaml"
+        if candidate.exists():
+            workflow_file = candidate
+            break
+    workflow_def_yaml = run.get("workflow_definition")
+    workflow_def: Dict[str, Any] = {}
+    if workflow_def_yaml:
+        workflow_def = yaml.safe_load(workflow_def_yaml) or {}
+    elif workflow_file is not None:
+        try:
+            workflow_def = yaml.safe_load(workflow_file.read_text()) or {}
+        except (OSError, yaml.YAMLError):
+            pass
+
+    checkpoint_prefix = workflow_def.get("config", {}).get("checkpoint_prefix")
+    if not checkpoint_prefix:
+        checkpoint_prefix = checkpoint_dir_fallback or os.path.expanduser(
+            "~/.dag-executor/checkpoints"
+        )
+    checkpoint_workflow_name = workflow_def.get("name") or run["workflow_name"]
+
+    store = CheckpointStore(checkpoint_prefix)
+    escalation = store.load_escalation(checkpoint_workflow_name, run_id)
+    if escalation is None:
+        raise HTTPException(status_code=404, detail="Escalation checkpoint not found")
+
+    payload = escalation.model_dump()
+    if payload.get("node_id") != node_name:
+        # The endpoint takes node_name for parity with the interrupt URL
+        # shape, but we surface the stored node_id as authoritative.
+        payload["requested_node"] = node_name
+    return payload
+
+
 @router.post("/workflows/{run_id}/interrupts/{node_name}/resume")
 async def resume_interrupt(
     request: Request,
@@ -715,34 +864,91 @@ async def resume_interrupt(
     if run is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
-    # Verify node exists and is interrupted
+    # Accept both interrupted (human-in-the-loop pause) and escalated
+    # (on_failure=escalate) states — both flow through this same endpoint.
+    # The payload shape differs: interrupts get the resume value stored
+    # under the interrupt's resume_key; escalations get the synthesized
+    # output stored under the magic __escalation_output__ key for the
+    # executor to seed as ctx.node_outputs.
     node_id = f"{run_id}:{node_name}"
     node = get_node(db_path, node_id)
     if node is None:
         raise HTTPException(status_code=404, detail="Node not found")
-    if node["status"] != "interrupted":
-        raise HTTPException(status_code=409, detail="Node is not in interrupted state")
+    node_status = node["status"]
+    if node_status not in ("interrupted", "escalated"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Node is not in a resumable state (status={node_status})",
+        )
+    is_escalation = node_status == "escalated"
 
-    # Get checkpoint_prefix from workflow_definition
-    workflow_def_yaml = run["workflow_definition"]
-    workflow_def = yaml.safe_load(workflow_def_yaml)
+    # Resolve workflow file up front — we need it for checkpoint_prefix
+    # lookup and for the --resume respawn below.
+    workflows_dirs = getattr(request.app.state, "workflows_dirs", None) or []
+    workflow_file: Optional[Path] = None
+    for wd in workflows_dirs:
+        candidate = Path(wd) / f"{run['workflow_name']}.yaml"
+        if candidate.exists():
+            workflow_file = candidate
+            break
+    if workflow_file is None:
+        single_dir = getattr(request.app.state, "workflows_dir", None)
+        if single_dir:
+            candidate = Path(single_dir) / f"{run['workflow_name']}.yaml"
+            if candidate.exists():
+                workflow_file = candidate
+
+    # Get checkpoint_prefix. Prefer the saved workflow_definition (retry-flow
+    # convention); fall back to parsing the workflow file; fall back to the
+    # dashboard's configured checkpoint_dir_fallback.
+    workflow_def_yaml = run.get("workflow_definition")
+    workflow_def: Dict[str, Any] = {}
+    if workflow_def_yaml:
+        workflow_def = yaml.safe_load(workflow_def_yaml) or {}
+    elif workflow_file is not None:
+        try:
+            workflow_def = yaml.safe_load(workflow_file.read_text()) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning(f"Could not parse workflow file {workflow_file}: {exc}")
+
     checkpoint_prefix = workflow_def.get("config", {}).get("checkpoint_prefix")
-
     if not checkpoint_prefix:
         checkpoint_prefix = checkpoint_dir_fallback or os.path.expanduser(
             "~/.dag-executor/checkpoints"
         )
 
-    # Load interrupt checkpoint to get resume_key
+    # CheckpointStore keys by workflow_def.name (the display name in the YAML's
+    # `name:` field) — not the filename the dashboard DB stores as
+    # workflow_name. Prefer the parsed display name; fall back to the DB name
+    # for retry-path runs that actually stored the YAML in workflow_definition.
+    checkpoint_workflow_name = workflow_def.get("name") or run["workflow_name"]
+
     store = CheckpointStore(checkpoint_prefix)
-    interrupt_checkpoint = store.load_interrupt(run["workflow_name"], run_id)
 
-    if not interrupt_checkpoint:
-        raise HTTPException(status_code=404, detail="Interrupt checkpoint not found")
-
-    # Save resume values
-    resume_values = {interrupt_checkpoint.resume_key: body.resume_value}
-    store.save_resume_values(run["workflow_name"], run_id, resume_values)
+    if is_escalation:
+        # Load escalation checkpoint — payload IS the synthesized output.
+        escalation_checkpoint = store.load_escalation(
+            checkpoint_workflow_name, run_id
+        )
+        if not escalation_checkpoint:
+            raise HTTPException(
+                status_code=404, detail="Escalation checkpoint not found"
+            )
+        # Stash under the magic key the executor's resume path looks for.
+        resume_values = {"__escalation_output__": body.resume_value}
+        store.save_resume_values(checkpoint_workflow_name, run_id, resume_values)
+    else:
+        # Load interrupt checkpoint to get resume_key
+        interrupt_checkpoint = store.load_interrupt(
+            checkpoint_workflow_name, run_id
+        )
+        if not interrupt_checkpoint:
+            raise HTTPException(
+                status_code=404, detail="Interrupt checkpoint not found"
+            )
+        # Save resume values
+        resume_values = {interrupt_checkpoint.resume_key: body.resume_value}
+        store.save_resume_values(checkpoint_workflow_name, run_id, resume_values)
 
     # Get decided_by from request body or default to OS user
     decided_by = body.decided_by or os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
@@ -759,18 +965,74 @@ async def resume_interrupt(
         reason=body.comment,
     )
 
-    # Update node status to completed with resume_value in output
-    update_node(
-        db_path,
-        node_id,
-        status="completed",
-        finished_at=decided_at,
-        outputs={
-            **(node.get("outputs") or {}),
-            "resume_value": body.resume_value,
-            "node_type": "interrupt"
-        }
-    )
+    # Respawn dag-exec --resume so downstream nodes actually run.
+    # Without this, the executor exited at the interrupt and the DB was the
+    # only thing being updated — the workflow would permanently stall.
+    #
+    # When workflow_file can't be located (unit tests that only seed DB +
+    # checkpoint, without writing the YAML), fall back to the old contract:
+    # mark the interrupted node completed so the resume_values land in the
+    # store and the endpoint remains testable in isolation. A warning makes
+    # the degraded path visible in logs.
+    if workflow_file is None:
+        logger.warning(
+            "resume_interrupt: workflow file for %s not found; skipping --resume "
+            "respawn. Downstream nodes will NOT execute.",
+            run["workflow_name"],
+        )
+        update_node(
+            db_path,
+            node_id,
+            status="completed",
+            finished_at=decided_at,
+            outputs={
+                **(node.get("outputs") or {}),
+                "resume_value": body.resume_value,
+                "node_type": "interrupt",
+            },
+        )
+    else:
+        events_dir = get_events_dir(request)
+        child_env = {**os.environ, "DAG_EVENTS_DIR": str(events_dir.resolve())}
+
+        # Reset the run row back to "resuming". For interrupts we also flip
+        # the interrupted node back to pending so the executor re-runs it
+        # with the resume value in workflow_inputs. For escalations we leave
+        # the escalated node alone — the executor's prefill path marks it
+        # completed with the synthesized output and emits NODE_COMPLETED.
+        # Skipped downstream nodes are reset to pending in both cases so
+        # they actually run.
+        conn = sqlite3.connect(db_path)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE workflow_runs SET status = 'resuming', finished_at = NULL, error = NULL WHERE id = ?",
+                (run_id,),
+            )
+            if not is_escalation:
+                cur.execute(
+                    "UPDATE node_executions SET status = 'pending', finished_at = NULL "
+                    "WHERE id = ? AND status = 'interrupted'",
+                    (node_id,),
+                )
+            cur.execute(
+                "UPDATE node_executions SET status = 'pending', finished_at = NULL "
+                "WHERE run_id = ? AND status IN ('skipped')",
+                (run_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        await asyncio.create_subprocess_exec(
+            "dag-exec",
+            str(workflow_file),
+            "--resume",
+            "--run-id", run_id,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=child_env,
+        )
 
     return {
         "run_id": run_id,

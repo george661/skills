@@ -888,3 +888,127 @@ def test_get_workflows_default_is_flat_backwards_compat(client: TestClient, test
     for item in data["items"]:
         assert "children" not in item
         assert "aggregate_status" not in item
+
+
+# ---------------------------------------------------------------------------
+# Escalation endpoint tests (on_failure=escalate)
+# ---------------------------------------------------------------------------
+
+def test_get_escalation_returns_checkpoint(client: TestClient, test_db: Path, tmp_path: Path):
+    """GET /workflows/{run}/escalations/{node} surfaces the EscalationCheckpoint."""
+    from dag_executor.checkpoint import CheckpointStore, EscalationCheckpoint
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    workflow_def = f"""
+name: Test Workflow
+config:
+  checkpoint_prefix: {checkpoint_dir}
+nodes:
+  - name: node-1
+    type: prompt
+"""
+    insert_run(
+        test_db, "run-e1", "test-workflow", "paused",
+        "2026-04-17T12:00:00Z",
+        workflow_definition=workflow_def,
+    )
+    insert_node(
+        test_db, "run-e1:node-1", "run-e1", "node-1", "escalated",
+        started_at="2026-04-17T12:00:00Z",
+    )
+
+    store = CheckpointStore(str(checkpoint_dir))
+    store.save_escalation("Test Workflow", "run-e1", EscalationCheckpoint(
+        node_id="node-1",
+        node_type="prompt",
+        error="simulated timeout",
+        prompt="Answer in one word.",
+        model="local",
+        dispatch=None,
+        output_format="text",
+        writes=["answer"],
+    ))
+
+    response = client.get("/api/workflows/run-e1/escalations/node-1")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["node_id"] == "node-1"
+    assert payload["error"] == "simulated timeout"
+    assert payload["writes"] == ["answer"]
+    assert payload["prompt"] == "Answer in one word."
+
+
+def test_post_resume_on_escalated_node_stashes_synthesized_output(
+    client: TestClient, test_db: Path, tmp_path: Path
+):
+    """POST resume on an escalated node saves __escalation_output__."""
+    from dag_executor.checkpoint import CheckpointStore, EscalationCheckpoint
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    workflow_def = f"""
+name: Test Workflow
+config:
+  checkpoint_prefix: {checkpoint_dir}
+nodes:
+  - name: think
+    type: prompt
+"""
+    insert_run(
+        test_db, "run-e2", "test-workflow", "paused",
+        "2026-04-17T12:00:00Z",
+        workflow_definition=workflow_def,
+    )
+    insert_node(
+        test_db, "run-e2:think", "run-e2", "think", "escalated",
+        started_at="2026-04-17T12:00:00Z",
+    )
+
+    store = CheckpointStore(str(checkpoint_dir))
+    store.save_escalation("Test Workflow", "run-e2", EscalationCheckpoint(
+        node_id="think",
+        node_type="prompt",
+        error="simulated timeout",
+        prompt="Answer in one word.",
+        output_format="text",
+        writes=["answer"],
+    ))
+
+    response = client.post(
+        "/api/workflows/run-e2/interrupts/think/resume",
+        json={
+            "resume_value": "SYNTHESIZED-BY-OPUS",
+            "decided_by": "test-orchestrator",
+            "comment": "escalated from local-timeout",
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["resumed"] is True
+
+    # The synthesized output lands under the magic key — the executor picks
+    # it up via __escalation_output__ on resume.
+    resume_values = store.load_resume_values("Test Workflow", "run-e2")
+    assert resume_values == {"__escalation_output__": "SYNTHESIZED-BY-OPUS"}
+
+
+def test_post_resume_on_completed_node_rejects(client: TestClient, test_db: Path, tmp_path: Path):
+    """Nodes that aren't interrupted/escalated get 409, not 200."""
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    insert_run(
+        test_db, "run-e3", "test-workflow", "completed",
+        "2026-04-17T12:00:00Z",
+        workflow_definition="name: Test\nnodes: []\n",
+    )
+    insert_node(
+        test_db, "run-e3:done", "run-e3", "done", "completed",
+        started_at="2026-04-17T12:00:00Z",
+    )
+    response = client.post(
+        "/api/workflows/run-e3/interrupts/done/resume",
+        json={"resume_value": "x"},
+    )
+    assert response.status_code == 409
+    assert "status=completed" in response.json()["detail"]

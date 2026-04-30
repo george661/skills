@@ -62,7 +62,7 @@ def test_channel_updated_persists_to_db(setup_collector):
     event_data = {
         "workflow_id": run_id,
         "event_type": "channel_updated",
-        "payload": {
+        "metadata": {
             "channel_key": "state_var",
             "channel_type": "LastValueChannel",
             "value": {"count": 42},
@@ -112,7 +112,7 @@ def test_channel_updated_upserts_monotonic_version(setup_collector):
     collector._persist_and_broadcast(run_id, {
         "workflow_id": run_id,
         "event_type": "channel_updated",
-        "payload": {
+        "metadata": {
             "channel_key": "counter",
             "channel_type": "ReducerChannel",
             "value": [1],
@@ -127,7 +127,7 @@ def test_channel_updated_upserts_monotonic_version(setup_collector):
     collector._persist_and_broadcast(run_id, {
         "workflow_id": run_id,
         "event_type": "channel_updated",
-        "payload": {
+        "metadata": {
             "channel_key": "counter",
             "channel_type": "ReducerChannel",
             "value": [1, 2],
@@ -174,7 +174,7 @@ def test_channel_conflict_updates_conflict_json(setup_collector):
     collector._persist_and_broadcast(run_id, {
         "workflow_id": run_id,
         "event_type": "channel_updated",
-        "payload": {
+        "metadata": {
             "channel_key": "conflict_channel",
             "channel_type": "LastValueChannel",
             "value": "value1",
@@ -188,7 +188,7 @@ def test_channel_conflict_updates_conflict_json(setup_collector):
     conflict_event = {
         "workflow_id": run_id,
         "event_type": "channel_conflict",
-        "payload": {
+        "metadata": {
             "channel_key": "conflict_channel",
             "writers": ["node_a", "node_b"],
             "message": "Parallel write conflict on channel 'conflict_channel'"
@@ -235,7 +235,7 @@ def test_malformed_channel_updated_skipped_with_warning(setup_collector, caplog)
     event_data = {
         "workflow_id": run_id,
         "event_type": "channel_updated",
-        "payload": {
+        "metadata": {
             "channel_type": "LastValueChannel",
             "value": "data",
             "version": 1

@@ -427,8 +427,13 @@ class EventCollector:
             # notification path below uses the same event; persistence was a
             # missing partner that caused completed runs to linger as "running"
             # on the Active Workflows card.
-            if event_type in ("workflow_completed", "workflow_failed"):
-                terminal_status = "completed" if event_type == "workflow_completed" else "failed"
+            if event_type in ("workflow_completed", "workflow_failed", "workflow_interrupted"):
+                status_map = {
+                    "workflow_completed": "completed",
+                    "workflow_failed": "failed",
+                    "workflow_interrupted": "paused",
+                }
+                terminal_status = status_map[event_type]
                 finished_at = created_at
                 error_msg = None
                 if event_type == "workflow_failed":
@@ -446,16 +451,27 @@ class EventCollector:
                     """,
                     (terminal_status, finished_at, error_msg, run_id),
                 )
-                # Stamp any still-pending nodes as skipped so the UI doesn't
-                # show them hanging forever.
-                cursor.execute(
-                    """
-                    UPDATE node_executions
-                    SET status = 'skipped', finished_at = ?
-                    WHERE run_id = ? AND status IN ('pending', 'running')
-                    """,
-                    (finished_at, run_id),
-                )
+                # For completed/failed: sweep still-running nodes to skipped.
+                # For paused (interrupted): leave the interrupted node alone
+                # and skip only downstream pending nodes, matching executor output.
+                if event_type in ("workflow_completed", "workflow_failed"):
+                    cursor.execute(
+                        """
+                        UPDATE node_executions
+                        SET status = 'skipped', finished_at = ?
+                        WHERE run_id = ? AND status IN ('pending', 'running')
+                        """,
+                        (finished_at, run_id),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        UPDATE node_executions
+                        SET status = 'skipped', finished_at = ?
+                        WHERE run_id = ? AND status = 'pending'
+                        """,
+                        (finished_at, run_id),
+                    )
 
             # Insert event
             cursor.execute(
@@ -507,15 +523,21 @@ class EventCollector:
                 except Exception as e:
                     logger.warning(f"Failed to upsert node_executions for node_started event: {e}")
 
-            # Handle channel events
-            if event_type == "channel_updated" and isinstance(raw_payload, dict):
+            # Handle channel events. The WorkflowEvent contract places
+            # channel fields in `metadata`, not in a nested `payload` — the
+            # old `event_data.get("payload", {})` path always came back empty
+            # and the UPSERT was silently skipped, leaving channel_states
+            # with 0 rows and the dashboard's panel showing
+            # "No channels defined for this workflow."
+            event_metadata = event_data.get("metadata") or {}
+            if event_type == "channel_updated" and isinstance(event_metadata, dict):
                 try:
-                    channel_key = raw_payload.get("channel_key")
-                    channel_type = raw_payload.get("channel_type")
-                    value = raw_payload.get("value")
-                    version = raw_payload.get("version")
-                    writer_node_id = raw_payload.get("writer_node_id")
-                    reducer_strategy = raw_payload.get("reducer_strategy")
+                    channel_key = event_metadata.get("channel_key")
+                    channel_type = event_metadata.get("channel_type")
+                    value = event_metadata.get("value")
+                    version = event_metadata.get("version")
+                    writer_node_id = event_metadata.get("writer_node_id")
+                    reducer_strategy = event_metadata.get("reducer_strategy")
 
                     if channel_key and channel_type is not None and version is not None:
                         # Serialize value to JSON
@@ -557,11 +579,11 @@ class EventCollector:
                 except Exception as e:
                     logger.warning(f"Failed to persist channel_updated event for run {run_id}: {e}")
 
-            elif event_type == "channel_conflict" and isinstance(raw_payload, dict):
+            elif event_type == "channel_conflict" and isinstance(event_metadata, dict):
                 try:
-                    channel_key = raw_payload.get("channel_key")
-                    writers = raw_payload.get("writers", [])
-                    message = raw_payload.get("message", "Channel conflict")
+                    channel_key = event_metadata.get("channel_key")
+                    writers = event_metadata.get("writers", [])
+                    message = event_metadata.get("message", "Channel conflict")
 
                     if channel_key:
                         conflict_json = json.dumps({"message": message, "timestamp": created_at})
@@ -589,7 +611,7 @@ class EventCollector:
             # the run_id ("{run_id}:hello"). Normalize to the composite id
             # that node_executions.id uses.
             completed_node_id: Optional[str] = None
-            if event_type in ("node_completed", "node_failed", "node_skipped"):
+            if event_type in ("node_completed", "node_failed", "node_skipped", "node_interrupted", "node_escalated"):
                 try:
                     metadata = event_data.get("metadata", {})
                     raw_node_id = event_data.get("node_id")
@@ -603,6 +625,8 @@ class EventCollector:
                             "node_completed": "completed",
                             "node_failed": "failed",
                             "node_skipped": "skipped",
+                            "node_interrupted": "interrupted",
+                            "node_escalated": "escalated",
                         }
                         terminal_status = terminal_map[event_type]
                         error_msg = (
