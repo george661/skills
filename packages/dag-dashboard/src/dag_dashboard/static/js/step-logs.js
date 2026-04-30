@@ -24,6 +24,10 @@ class StepLogs {
    * Render the log viewer UI
    */
   render() {
+    // Sanitize nodeId for the list's DOM id. node_name can legitimately
+    // contain `:` (when composite), `.`, or spaces, any of which break
+    // `getElementById` / `querySelector` lookups.
+    this._safeId = String(this.nodeId || '').replace(/[^a-zA-Z0-9_-]/g, '-');
     this.container.innerHTML = `
       <div class="step-logs">
         <div class="step-logs-toolbar">
@@ -37,17 +41,17 @@ class StepLogs {
             <span class="log-count">${this.lines.length} lines</span>
           </div>
         </div>
-        <div class="step-logs-list" id="step-logs-list-${this.nodeId}">
-          <div class="step-logs-empty">No logs yet</div>
+        <div class="step-logs-list" id="step-logs-list-${this._safeId}">
+          <div class="step-logs-empty">Loading logs…</div>
         </div>
       </div>
     `;
 
-    this.logsList = document.getElementById(`step-logs-list-${this.nodeId}`);
-    
+    this.logsList = document.getElementById(`step-logs-list-${this._safeId}`);
+
     this._attachEventListeners();
     this._loadHistoricalLogs();
-    
+
     // Subscribe to live updates if node is running
     if (this.nodeStatus === 'running') {
       this._subscribeSSE();
@@ -78,21 +82,36 @@ class StepLogs {
   async _loadHistoricalLogs() {
     try {
       const response = await fetch(
-        `/api/workflows/${this.runId}/nodes/${this.nodeId}/logs?limit=500&offset=0&stream=all`
+        `/api/workflows/${this.runId}/nodes/${encodeURIComponent(this.nodeId)}/logs?limit=500&offset=0&stream=all`
       );
-      
+
       if (!response.ok) {
         console.error('Failed to load historical logs:', response.status);
+        if (this.logsList) {
+          this.logsList.innerHTML = `<div class="step-logs-empty">Failed to load logs (${response.status})</div>`;
+        }
         return;
       }
 
       const data = await response.json();
-      
+
       if (data.lines && data.lines.length > 0) {
         data.lines.forEach(line => this._appendLine(line));
+      } else if (this.logsList) {
+        // Differentiate between "logs still coming" and "this node doesn't
+        // produce log lines." Prompt/agent nodes used to fall into the
+        // latter; that's now fixed at the emitter, but a terminal bash
+        // node with zero stdout is legitimate.
+        const msg = this.nodeStatus === 'running'
+          ? 'Waiting for first log line…'
+          : 'No log output was captured for this node.';
+        this.logsList.innerHTML = `<div class="step-logs-empty">${msg}</div>`;
       }
     } catch (error) {
       console.error('Failed to load historical logs:', error);
+      if (this.logsList) {
+        this.logsList.innerHTML = `<div class="step-logs-empty">Failed to load logs: ${this._escapeHtml(String(error.message || error))}</div>`;
+      }
     }
   }
 

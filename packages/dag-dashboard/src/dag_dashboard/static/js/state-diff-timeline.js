@@ -15,7 +15,7 @@ async function renderStateDiffTimeline(container, runId) {
 
     try {
         const response = await fetch(`/api/workflows/${runId}/state-diff-timeline`);
-        
+
         if (!response.ok) {
             if (response.status === 404) {
                 container.innerHTML = '<p class="timeline-empty">Workflow run not found</p>';
@@ -34,9 +34,27 @@ async function renderStateDiffTimeline(container, runId) {
             return;
         }
 
+        // Preserve expand state across polling-driven re-renders: the
+        // run-detail page polls /state-diff-timeline every 2s. Without this,
+        // every poll wipes the DOM and the user's clicked-expanded rows snap
+        // shut. We key by "{nodeName}::{changeKey}" — node+channel is stable
+        // across polls.
+        const expandedKeys = new Set(
+            Array.from(container.querySelectorAll('.diff-row .diff-values.expanded'))
+                .map(el => el.closest('.diff-row')?.dataset.expandKey)
+                .filter(Boolean)
+        );
+
         // Render timeline
         const timelineHtml = timeline.map(nodeEntry => renderNodeEntry(nodeEntry)).join('');
         container.innerHTML = `<div class="state-diff-timeline">${timelineHtml}</div>`;
+
+        // Restore prior expanded rows
+        container.querySelectorAll('.diff-row').forEach(row => {
+            if (expandedKeys.has(row.dataset.expandKey)) {
+                row.querySelector('.diff-values')?.classList.add('expanded');
+            }
+        });
 
         // Wire expand/collapse handlers
         container.querySelectorAll('.diff-row').forEach(row => {
@@ -61,14 +79,14 @@ async function renderStateDiffTimeline(container, runId) {
  */
 function renderNodeEntry(nodeEntry) {
     const { node_name, node_id, started_at, finished_at, changes } = nodeEntry;
-    
+
     // Format timestamps
     const startTime = started_at ? new Date(started_at).toLocaleTimeString() : 'N/A';
     const endTime = finished_at ? new Date(finished_at).toLocaleTimeString() : 'N/A';
-    
-    // Render changes
-    const changesHtml = changes.map(change => renderChange(change)).join('');
-    
+
+    // Render changes (pass node_name so each row can carry a stable expand key)
+    const changesHtml = changes.map(change => renderChange(change, node_name)).join('');
+
     return `
         <div class="diff-node">
             <div class="diff-node-header">
@@ -87,25 +105,32 @@ function renderNodeEntry(nodeEntry) {
  * @param {Object} change - Change object with key, change_type, before, after
  * @returns {string} HTML string
  */
-function renderChange(change) {
+function renderChange(change, nodeName) {
     const { key, change_type, before, after } = change;
-    
+
     // Choose CSS class based on change type
     const cssClass = `diff-${change_type}`;
-    
+
     // Icon for change type
     const icon = {
         added: '➕',
         changed: '✏️',
         removed: '➖'
     }[change_type] || '•';
-    
-    // Format values as JSON
-    const beforeJson = before !== null ? JSON.stringify(before, null, 2) : 'null';
-    const afterJson = after !== null ? JSON.stringify(after, null, 2) : 'null';
-    
+
+    const beforeDisplay = formatValueForDisplay(before);
+    const afterDisplay = formatValueForDisplay(after);
+
+    // Stable expand key so polling-driven re-renders can restore state.
+    const expandKey = `${nodeName || '?'}::${key}`;
+
+    // For ADDED rows the "Before" is always null — hide it to reduce noise.
+    // For REMOVED rows the "After" is always null — hide it too.
+    const showBefore = change_type !== 'added';
+    const showAfter = change_type !== 'removed';
+
     return `
-        <div class="diff-row ${cssClass}">
+        <div class="diff-row ${cssClass}" data-expand-key="${escapeHtml(expandKey)}">
             <div class="diff-row-header">
                 <span class="diff-icon">${icon}</span>
                 <span class="diff-key">${escapeHtml(key)}</span>
@@ -113,17 +138,47 @@ function renderChange(change) {
                 <span class="diff-chevron">▼</span>
             </div>
             <div class="diff-values">
+                ${showBefore ? `
                 <div class="diff-value-pair">
                     <div class="diff-value-label">Before:</div>
-                    <pre class="diff-value-content">${escapeHtml(beforeJson)}</pre>
-                </div>
+                    <pre class="diff-value-content">${escapeHtml(beforeDisplay)}</pre>
+                </div>` : ''}
+                ${showAfter ? `
                 <div class="diff-value-pair">
                     <div class="diff-value-label">After:</div>
-                    <pre class="diff-value-content">${escapeHtml(afterJson)}</pre>
-                </div>
+                    <pre class="diff-value-content">${escapeHtml(afterDisplay)}</pre>
+                </div>` : ''}
             </div>
         </div>
     `;
+}
+
+/**
+ * Format a channel value for display in the diff panel.
+ *
+ * Priority:
+ *   - null/undefined → explicit placeholder.
+ *   - String that parses as JSON (possibly wrapped in ```json fences, which
+ *     is what prompt-runner output looks like) → pretty-printed JSON.
+ *   - Any other string → shown raw (no surrounding quotes, no \n escapes).
+ *   - Objects/arrays → pretty-printed JSON.
+ *   - Fallback → String(v).
+ */
+function formatValueForDisplay(v) {
+    if (v === null) return 'null';
+    if (v === undefined) return '(unset)';
+    if (typeof v === 'string') {
+        // Strip common ```json ... ``` fences before parsing.
+        const fenced = v.trim().match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/);
+        const candidate = fenced ? fenced[1] : v.trim();
+        if (candidate.startsWith('{') || candidate.startsWith('[')) {
+            try {
+                return JSON.stringify(JSON.parse(candidate), null, 2);
+            } catch { /* fall through to raw */ }
+        }
+        return v;
+    }
+    try { return JSON.stringify(v, null, 2); } catch { return String(v); }
 }
 
 // Export for use in app.js

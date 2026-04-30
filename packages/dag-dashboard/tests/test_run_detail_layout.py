@@ -32,9 +32,18 @@ def test_run_graph_split_grid_rules_removed() -> None:
     )[0].split("@media")[-1]
 
 
-def test_run_graph_split_selector_still_used() -> None:
-    """The DOM class hook `.run-graph-split` must stay in the app.js template
-    so ResizableSplit can find it via `document.querySelector('.run-graph-split')`.
+def test_resizable_split_has_a_mount_selector() -> None:
+    """ResizableSplit must query for *some* mount class in app.js.
+
+    The current run-detail template (3-column grid: canvas + side + chat)
+    intentionally has no mount point — ResizableSplit is designed for two
+    panes, so mounting it on the 3-column layout would clobber the chat
+    column when `_buildStructure` wipes the container. GW-5422 will swap
+    the right two columns for a single conversation feed and introduce a
+    `.run-pane-split` (or similar) mount class at that point.
+
+    This test just guards that app.js still HAS the `querySelector` wire
+    so the dormant init doesn't get accidentally deleted during refactor.
     """
     app_js_path = (
         Path(__file__).parent.parent
@@ -46,11 +55,14 @@ def test_run_graph_split_selector_still_used() -> None:
     )
     content = app_js_path.read_text()
 
-    assert 'class="run-graph-split"' in content, (
-        "run-graph-split must remain as a DOM class on the container"
+    assert "new window.ResizableSplit" in content, (
+        "ResizableSplit instantiation must remain in renderRunDetail so it "
+        "activates the moment GW-5422 introduces the 2-pane mount class"
     )
-    assert "querySelector('.run-graph-split')" in content, (
-        "app.js must still look up the split container by its class hook"
+    assert "querySelector('.run-pane-split')" in content or \
+           "querySelector('.run-graph-split')" in content, (
+        "app.js must still look up a split mount point — the mount class "
+        "may change with layout iterations, but the wire-up must persist"
     )
 
 

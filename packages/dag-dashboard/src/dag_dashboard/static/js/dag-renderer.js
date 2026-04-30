@@ -82,13 +82,17 @@ class DAGRenderer {
         // Render nodes
         layoutData.nodes.forEach(node => this.renderNode(node));
 
+        // Append to DOM first so centerView can read real clientWidth/Height.
+        // centerView() depends on svg.clientWidth/clientHeight; before the node
+        // is attached those are 0 and the view collapses to scale=0 at the
+        // origin, leaving the graph invisible. Measure after insertion.
+        this.container.appendChild(this.svg);
+
         // Center the view
         this.centerView(layoutData.nodes);
 
         // Setup zoom/pan interactions
         this.setupInteractions();
-
-        this.container.appendChild(this.svg);
     }
 
     renderNode(node) {
@@ -262,12 +266,16 @@ class DAGRenderer {
         const centerX = (minX + maxX) / 2;
         const centerY = (minY + maxY) / 2;
 
-        // Calculate scale to fit
-        const svgWidth = this.svg.clientWidth;
-        const svgHeight = this.svg.clientHeight;
+        // Calculate scale to fit. Guard against clientWidth/Height==0 — the
+        // SVG may be rendered inside a hidden tab pane (display:none) where
+        // layout has never happened. Fall back to the parsed CSS height
+        // (set to 600px on the SVG element) so we don't collapse to 0 scale.
+        const svgWidth = this.svg.clientWidth || this.svg.parentElement?.clientWidth || 800;
+        const svgHeight = this.svg.clientHeight || parseInt(this.svg.style.height, 10) || 600;
         const scaleX = svgWidth / (width + 200);
         const scaleY = svgHeight / (height + 200);
         this.scale = Math.min(scaleX, scaleY, 1);
+        if (!isFinite(this.scale) || this.scale <= 0) this.scale = 1;
 
         // Center translate
         this.translateX = svgWidth / 2 - centerX * this.scale;

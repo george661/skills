@@ -110,16 +110,20 @@ def test_chat_max_content_length_rejected(client: TestClient):
     assert response.status_code in (400, 422)
 
 
-def test_chat_shell_metachar_rejected(client: TestClient):
-    """Test that content with shell metacharacters is rejected."""
+def test_chat_shell_punctuation_accepted(client: TestClient):
+    """Chat content is persisted to SQLite + sanitized by DOMPurify
+    client-side; it is never shell-executed. Natural punctuation — which
+    earlier builds rejected — must round-trip so the user can paste error
+    messages or variable references when asking the orchestrator for help.
+    """
     run_id = "test-workflow-metachar"
-    dangerous_content = "hello; rm -rf /"
-    
+    content = "hello; what is ${foo}? (help pls)"
+
     response = client.post(
         f"/api/workflows/{run_id}/chat",
-        json={"content": dangerous_content, "operator_username": "test-op"}
+        json={"content": content, "operator_username": "test-op"}
     )
-    assert response.status_code in (400, 422)
+    assert response.status_code == 201
 
 
 def test_sse_chat_message_response_shape(client: TestClient):

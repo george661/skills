@@ -71,6 +71,16 @@ class NodeDetailPanel {
             this.stepLogsInstance = null;
         }
 
+        // Build a DOM-safe suffix for element IDs derived from node.id. The
+        // server's composite id looks like "{run_id}:{node_name}" — the
+        // colon is a legal HTML id character but an illegal CSS selector
+        // char, so `querySelector('#foo:bar')` raises SyntaxError. We keep
+        // the original node.id on `node` (used by API calls) and stash a
+        // sanitized copy on the panel so every `#node-...-${safeId}` expr
+        // uses the safe form consistently.
+        const safeId = String(node.id || '').replace(/[^a-zA-Z0-9_-]/g, '-');
+        this.safeId = safeId;
+
         // Check if retry history exists for this node
         const retryHistory = window.retryHistoryStore && window.retryHistoryStore[node.node_name];
         const hasRetryHistory = retryHistory && retryHistory.length > 0;
@@ -147,7 +157,7 @@ class NodeDetailPanel {
         // /api/workflows/{runId}/nodes/{nodeId}/logs — the endpoint expects
         // the bare node_name (node_logs.node_id stores bare names), not the
         // composite "{run_id}:{name}".
-        const stepLogsContainer = document.getElementById(`step-logs-container-${node.id}`);
+        const stepLogsContainer = document.getElementById(`step-logs-container-${safeId}`);
         if (stepLogsContainer) {
             this.stepLogsInstance = new StepLogs(stepLogsContainer, {
                 runId: node.run_id,
@@ -213,8 +223,8 @@ class NodeDetailPanel {
         }
 
         // Setup chat send button listener
-        const chatSendBtn = this.panel.querySelector(`#node-chat-send-${node.id}`);
-        const chatInput = this.panel.querySelector(`#node-chat-input-${node.id}`);
+        const chatSendBtn = this.panel.querySelector(`#node-chat-send-${safeId}`);
+        const chatInput = this.panel.querySelector(`#node-chat-input-${safeId}`);
         if (chatSendBtn && chatInput) {
             chatSendBtn.addEventListener('click', () => this.handleSendNodeMessage(node));
             // Also send on Enter (but not Shift+Enter for multi-line)
@@ -295,8 +305,10 @@ class NodeDetailPanel {
     }
 
     renderLogs(node) {
-        // Return placeholder div for StepLogs component
-        return `<div id="step-logs-container-${node.id}" class="step-logs-container"></div>`;
+        // Use this.safeId (set in render()) — node.id contains ":" which is
+        // a CSS pseudo-class char and breaks `#step-logs-container-{id}`
+        // querySelector lookups elsewhere in the panel.
+        return `<div id="step-logs-container-${this.safeId}" class="step-logs-container"></div>`;
     }
 
     renderChat(node) {
@@ -325,25 +337,28 @@ class NodeDetailPanel {
             `).join('')
             : '<p class="empty-state">No chat messages yet</p>';
 
+        // Use this.safeId for DOM ids — node.id contains ":" which is
+        // illegal in CSS selectors (`#node-chat-send-run:foo` → SyntaxError).
+        const sid = this.safeId;
         return `
             <div class="node-chat-container">
                 <div class="node-chat-model">${this.escapeHtml(modelName)}</div>
-                <div class="node-chat-messages" id="node-chat-messages-${node.id}">
+                <div class="node-chat-messages" id="node-chat-messages-${sid}">
                     ${messagesHtml}
                 </div>
-                <div class="node-chat-typing-indicator" id="node-chat-typing-${node.id}" style="display: none;">
+                <div class="node-chat-typing-indicator" id="node-chat-typing-${sid}" style="display: none;">
                     Agent is typing...
                 </div>
                 ${isRunning ? `
                     <div class="node-chat-input-container">
                         <textarea
-                            id="node-chat-input-${node.id}"
+                            id="node-chat-input-${sid}"
                             class="node-chat-input"
                             placeholder="Type a message..."
                             rows="3"
                         ></textarea>
                         <button
-                            id="node-chat-send-${node.id}"
+                            id="node-chat-send-${sid}"
                             class="node-chat-send-btn"
                         >Send</button>
                     </div>
@@ -406,7 +421,7 @@ class NodeDetailPanel {
                         <button class="copy-hash-btn" data-hash="${this.escapeHtml(node.content_hash)}" title="Copy full hash">📋</button>
                     </div>
                 </div>
-                <div class="checkpoint-versions" id="checkpoint-versions-${node.id}">
+                <div class="checkpoint-versions" id="checkpoint-versions-${this.safeId}">
                     <p>Loading version comparison...</p>
                 </div>
             </div>
@@ -421,7 +436,7 @@ class NodeDetailPanel {
             }
             const data = await response.json();
 
-            const container = document.getElementById(`checkpoint-versions-${node.id}`);
+            const container = document.getElementById(`checkpoint-versions-${this.safeId}`);
             if (!container) return;  // Panel was closed
 
             const hashedMismatches = data.mismatches && data.mismatches.length > 0;
@@ -475,7 +490,7 @@ class NodeDetailPanel {
             });
 
         } catch (err) {
-            const container = document.getElementById(`checkpoint-versions-${node.id}`);
+            const container = document.getElementById(`checkpoint-versions-${this.safeId}`);
             if (container) {
                 container.innerHTML = `<p class="error-state">Failed to load checkpoint comparison: ${this.escapeHtml(err.message)}</p>`;
             }
@@ -870,9 +885,10 @@ class NodeDetailPanel {
     }
 
     async handleSendNodeMessage(node) {
-        const chatInput = this.panel.querySelector(`#node-chat-input-${node.id}`);
-        const typingIndicator = this.panel.querySelector(`#node-chat-typing-${node.id}`);
-        const chatSendBtn = this.panel.querySelector(`#node-chat-send-${node.id}`);
+        const sid = this.safeId;
+        const chatInput = this.panel.querySelector(`#node-chat-input-${sid}`);
+        const typingIndicator = this.panel.querySelector(`#node-chat-typing-${sid}`);
+        const chatSendBtn = this.panel.querySelector(`#node-chat-send-${sid}`);
 
         if (!chatInput || !chatInput.value.trim()) {
             return;
@@ -964,7 +980,7 @@ class NodeDetailPanel {
         }
 
         // Hide typing indicator and clear timeout
-        const typingIndicator = this.panel?.querySelector(`#node-chat-typing-${this.currentNode.id}`);
+        const typingIndicator = this.panel?.querySelector(`#node-chat-typing-${this.safeId}`);
         if (typingIndicator) {
             typingIndicator.style.display = 'none';
             if (this.typingTimeout) {
@@ -975,7 +991,7 @@ class NodeDetailPanel {
     }
 
     appendChatMessageToDOM(node, message) {
-        const messagesContainer = this.panel?.querySelector(`#node-chat-messages-${node.id}`);
+        const messagesContainer = this.panel?.querySelector(`#node-chat-messages-${this.safeId}`);
         if (!messagesContainer) {
             return;
         }
@@ -1002,7 +1018,7 @@ class NodeDetailPanel {
     }
 
     showNodeChatError(node, message) {
-        const chatContainer = this.panel?.querySelector(`#node-chat-messages-${node.id}`);
+        const chatContainer = this.panel?.querySelector(`#node-chat-messages-${this.safeId}`);
         if (!chatContainer) return;
 
         // Remove any existing error

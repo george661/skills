@@ -696,13 +696,12 @@ async function renderRunDetail(runId) {
 
     const container = document.getElementById('route-container');
 
-    // Tab state lives in the hash query string so it survives reload and
-    // deep-link. Valid values: 'graph' | 'logs' | 'chat'. Default 'graph'.
-    const hashFragment = window.location.hash.slice(1);
-    const tabParams = new URLSearchParams(hashFragment.split('?')[1] || '');
-    const initialTab = ['graph', 'logs', 'chat'].includes(tabParams.get('tab'))
-        ? tabParams.get('tab')
-        : 'graph';
+    // No tabs. Archon-style: the run-detail page is a single three-column
+    // view (DAG + state rail + live trace). Per-node drill-down happens via
+    // the slide-out NodeDetailPanel triggered by clicking a DAG node — it
+    // already carries structured StepLogs / retry history / artifacts, so
+    // the dedicated Logs tab was redundant. The trace rail scrolls to the
+    // clicked node's card too so both surfaces respond to the click.
 
     container.innerHTML = `
         <div class="run-detail">
@@ -720,89 +719,49 @@ async function renderRunDetail(runId) {
                 <button id="rerun-button" class="btn btn-secondary" style="display: none;">Re-run</button>
             </div>
 
-            <!-- Tabs -->
-            <div class="run-detail-tabs">
-                <button class="run-tab" data-tab="graph">Graph</button>
-                <button class="run-tab" data-tab="logs">Logs</button>
-                <button class="run-tab" data-tab="chat">💬 Chat</button>
-            </div>
-
-            <!-- Graph tab: DAG + side-logs split; run context lives here too -->
-            <div class="run-tab-pane" data-pane="graph">
-                <div id="executing-banner" class="executing-banner" style="display: none;">
-                    <div class="executing-content">
-                        <span class="executing-label">Currently Executing:</span>
-                        <span id="executing-node-name"></span>
-                        <span id="executing-model" class="executing-model"></span>
-                        <span id="executing-timer" class="executing-timer">0s</span>
-                    </div>
-                </div>
-                <div id="totals-container"></div>
-                <div class="run-graph-split">
-                    <div class="run-graph-canvas">
-                        <div id="dag-container"></div>
-                    </div>
-                    <div class="run-graph-side">
-                        <h3 class="run-side-heading">State Channels</h3>
-                        <div id="channel-state-container"></div>
-                        <h3 class="run-side-heading">State Changes Timeline</h3>
-                        <div id="state-diff-timeline-container"></div>
-                        <h3 class="run-side-heading">Artifacts</h3>
-                        <div id="run-artifacts-container"></div>
-                    </div>
-                </div>
-                <div class="run-detail-id-strip">
-                    <span class="run-detail-id-label">Run ID:</span>
-                    <code>${escapeHtml(runId)}</code>
+            <div id="executing-banner" class="executing-banner" style="display: none;">
+                <div class="executing-content">
+                    <span class="executing-label">Currently Executing:</span>
+                    <span id="executing-node-name"></span>
+                    <span id="executing-model" class="executing-model"></span>
+                    <span id="executing-timer" class="executing-timer">0s</span>
                 </div>
             </div>
-
-            <!-- Logs tab: left sidebar of nodes, right pane streams StepLogs
-                 for the selected node. Populated once layoutData loads. -->
-            <div class="run-tab-pane" data-pane="logs">
-                <div class="run-logs-split">
-                    <aside id="run-logs-node-list" class="run-logs-node-list"></aside>
-                    <div id="run-logs-viewer" class="run-logs-viewer">
-                        <div class="empty-state-text" style="padding: 2rem;">
-                            Select a node on the left to stream its stdout/stderr.
+            <div id="totals-container"></div>
+            <!-- 3-column grid: DAG | state-side | trace+chat. ResizableSplit
+                 from PR #156 is intentionally NOT mounted on this layout —
+                 it's designed for two panes. GW-5422 will swap this for a
+                 true two-pane layout (DAG + unified conversation feed) and
+                 activate the resizable split at that point. -->
+            <div class="run-graph-3col">
+                <div class="run-graph-canvas">
+                    <div id="dag-container"></div>
+                </div>
+                <div class="run-graph-side">
+                    <h3 class="run-side-heading">State Channels</h3>
+                    <div id="channel-state-container"></div>
+                    <h3 class="run-side-heading">State Changes Timeline</h3>
+                    <div id="state-diff-timeline-container"></div>
+                    <h3 class="run-side-heading">Artifacts</h3>
+                    <div id="run-artifacts-container"></div>
+                </div>
+                <div class="run-graph-chat">
+                    <div id="trace-container" class="trace-section-rail"></div>
+                    <div id="run-chat-section" class="run-chat-section">
+                        <div class="run-chat-section-head">
+                            <h3 class="run-side-heading" style="margin: 0;">Talk to orchestrator</h3>
+                            <span class="run-chat-section-hint">Ask questions or provide direction. Messages are visible to the workflow.</span>
                         </div>
+                        <div id="workflow-chat-container" class="workflow-chat-container"></div>
                     </div>
                 </div>
             </div>
-
-            <!-- Chat tab: full-body conversation view. ChatPanel will mount
-                 into #chat-container which lives inside this pane. -->
-            <div class="run-tab-pane" data-pane="chat">
-                <section id="chat-container" class="chat-section chat-section-tab"></section>
+            <div class="run-detail-id-strip">
+                <span class="run-detail-id-label">Run ID:</span>
+                <code>${escapeHtml(runId)}</code>
             </div>
         </div>
     `;
-
-    // Wire tab clicks. Switching the active tab updates the URL fragment's
-    // ?tab= query so deep-link + refresh preserve state.
-    const applyTab = (tab) => {
-        document.querySelectorAll('.run-tab').forEach(b => {
-            b.classList.toggle('active', b.dataset.tab === tab);
-        });
-        document.querySelectorAll('.run-tab-pane').forEach(pane => {
-            pane.classList.toggle('active', pane.dataset.pane === tab);
-        });
-        const [pathPart] = hashFragment.split('?');
-        const params = new URLSearchParams(hashFragment.split('?')[1] || '');
-        if (tab === 'graph') {
-            params.delete('tab');
-        } else {
-            params.set('tab', tab);
-        }
-        const qs = params.toString();
-        const nextHash = qs ? `${pathPart}?${qs}` : pathPart;
-        // Use replaceState so tab changes don't pollute browser history.
-        window.history.replaceState(null, '', `#${nextHash}`);
-    };
-    document.querySelectorAll('.run-tab').forEach(btn => {
-        btn.addEventListener('click', () => applyTab(btn.dataset.tab));
-    });
-    applyTab(initialTab);
 
     // Fetch workflow data (includes totals) and layout data
     try {
@@ -818,15 +777,11 @@ async function renderRunDetail(runId) {
         const workflowData = await workflowResp.json();
         const layoutData = await layoutResp.json();
 
-        // Normalize layoutData so the rest of the code (DAGRenderer, setupLogsTab)
-        // doesn't need to guard against an empty run whose snapshot hasn't been
+        // Normalize layoutData so the rest of the code (DAGRenderer) doesn't
+        // need to guard against an empty run whose snapshot hasn't been
         // persisted yet (trigger→spawn races, fresh fixtures).
         if (!layoutData.nodes) layoutData.nodes = [];
         if (!layoutData.edges) layoutData.edges = [];
-
-        // Populate the Logs tab from node_executions. Runs *before* the DAG
-        // render so transient DAG errors don't block log inspection.
-        setupLogsTab(runId, workflowData.nodes || layoutData.nodes, applyTab);
 
         // Show Re-run button for terminal states
         if (workflowData.run && ['completed', 'failed', 'cancelled'].includes(workflowData.run.status)) {
@@ -968,17 +923,76 @@ async function renderRunDetail(runId) {
         // Initialize channel state panel
         const channelPanel = new window.ChannelStatePanel('channel-state-container');
 
-        // Initialize chat panel
-        const chatPanel = new window.ChatPanel('chat-container', runId);
-        chatPanel.render();
+        // Initialize live trace panel. This replaces the empty chat panel in
+        // the right rail of the workflow detail view — it consumes the same
+        // SSE stream and renders per-node cards with live elapsed timers,
+        // streamed tokens, log lines, channel writes, and errors.
+        let tracePanel = null;
+        if (window.TracePanel) {
+            tracePanel = new window.TracePanel('trace-container', runId);
+            tracePanel.render();
+            // Clicking a DAG node jumps the trace feed to that node's card.
+            if (dagRenderer && typeof dagRenderer.container !== 'undefined') {
+                dagRenderer.container.addEventListener('click', (e) => {
+                    const group = e.target.closest('.dag-node');
+                    if (!group) return;
+                    const nodeName = group.getAttribute('data-node-name');
+                    if (nodeName) tracePanel.scrollToNode(nodeName);
+                });
+            }
+        }
+        // Mount a real ChatPanel under the trace so users can talk to the
+        // orchestrator without leaving the run page. Escalated-card buttons
+        // scroll this into view via the 'trace-chat-request' CustomEvent.
+        let chatPanel;
+        if (window.ChatPanel) {
+            try {
+                chatPanel = new window.ChatPanel('workflow-chat-container', runId);
+                if (typeof chatPanel.render === 'function') chatPanel.render();
+            } catch (err) {
+                console.warn('ChatPanel failed to mount:', err);
+                chatPanel = { handleSSEMessage: () => {}, destroy: () => {} };
+            }
+        } else {
+            chatPanel = { handleSSEMessage: () => {}, destroy: () => {} };
+        }
+
+        // Escalated-card "Talk to orchestrator" button → scroll + focus.
+        window.addEventListener('trace-chat-request', (ev) => {
+            const sec = document.getElementById('run-chat-section');
+            if (sec) {
+                sec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                sec.classList.add('run-chat-section-flash');
+                setTimeout(() => sec.classList.remove('run-chat-section-flash'), 1500);
+            }
+            // Optionally prefill with a useful seed mentioning the node+error.
+            // Keep it a single line — the server's ChatMessageRequest
+            // validator rejects newlines + a handful of shell metacharacters,
+            // so we strip them client-side to avoid an HTTP 422.
+            const input = document.querySelector('#workflow-chat-container textarea, #workflow-chat-container input[type=text]');
+            if (input && !input.value && ev.detail) {
+                const err = (ev.detail.error || 'no-error').toString();
+                const safe = (s) => String(s)
+                    .replace(/\s+/g, ' ')
+                    .replace(/[`$();|&<>\\]/g, '')
+                    .replace(/:/g, '-')
+                    .trim();
+                const seed = `Node ${safe(ev.detail.nodeId)} escalated - ${safe(err).slice(0, 240)}. How should I proceed?`;
+                input.value = seed;
+                input.focus();
+            }
+        });
 
         // Render workflow-aggregated artifacts
         if (window.ArtifactList) {
             window.ArtifactList.render('run-artifacts-container', runId);
         }
 
-        // Initialize resizable split for the graph pane (AC-1)
-        const splitContainer = document.querySelector('.run-graph-split');
+        // Initialize resizable split for the graph pane (AC-1). Mount point
+        // is `.run-pane-split`, which will be introduced in GW-5422 when the
+        // right pane becomes a single conversation feed. Until then this
+        // querySelector returns null and the split stays dormant.
+        const splitContainer = document.querySelector('.run-pane-split');
         let resizableSplit = null;
         if (splitContainer && window.ResizableSplit) {
             resizableSplit = new window.ResizableSplit(splitContainer, {
@@ -991,7 +1005,7 @@ async function renderRunDetail(runId) {
         }
 
         // Connect to SSE for live updates
-        const lifecycle = setupLiveUpdates(runId, dagRenderer, layoutData.nodes, channelPanel, chatPanel, resizableSplit);
+        const lifecycle = setupLiveUpdates(runId, dagRenderer, layoutData.nodes, channelPanel, chatPanel, resizableSplit, tracePanel);
         activeLifecycle = lifecycle;
 
     } catch (error) {
@@ -1112,77 +1126,6 @@ async function renderConversationDetail(conversationId) {
     }
 }
 
-/**
- * Populate the Logs tab with a node sidebar + StepLogs viewer.
- *
- * Left: list of nodes (node_name, status badge). Click → mount StepLogs.
- * Right: #run-logs-viewer host for StepLogs instance.
- *
- * Also installs a window-level 'node-click' listener so clicking a node in
- * the Graph tab's DAG swings to the Logs tab with that node pre-selected.
- */
-function setupLogsTab(runId, nodes, applyTab) {
-    const listEl = document.getElementById('run-logs-node-list');
-    const viewerEl = document.getElementById('run-logs-viewer');
-    if (!listEl || !viewerEl || !Array.isArray(nodes)) return;
-
-    let currentStepLogs = null;
-    const mountLogs = (node) => {
-        if (currentStepLogs && typeof currentStepLogs.destroy === 'function') {
-            try { currentStepLogs.destroy(); } catch (_) { /* ignore */ }
-        }
-        viewerEl.innerHTML = '';
-        if (!window.StepLogs) {
-            viewerEl.textContent = 'StepLogs not loaded.';
-            return;
-        }
-        currentStepLogs = new window.StepLogs(viewerEl, {
-            runId,
-            nodeId: node.node_name,
-            nodeStatus: node.status || 'pending',
-        });
-        currentStepLogs.render();
-
-        // Update active highlight in the sidebar.
-        listEl.querySelectorAll('.run-logs-node-item').forEach(it => {
-            it.classList.toggle('active', it.dataset.nodeName === node.node_name);
-        });
-    };
-
-    // Render the sidebar once.
-    listEl.innerHTML = nodes.map(n => `
-        <button class="run-logs-node-item" data-node-name="${escapeHtml(n.node_name)}">
-            <span class="run-logs-node-name">${escapeHtml(n.node_name)}</span>
-            <span class="workflow-status ${escapeHtml(n.status || 'pending')}">${escapeHtml(n.status || 'pending')}</span>
-        </button>
-    `).join('');
-
-    listEl.querySelectorAll('.run-logs-node-item').forEach(item => {
-        item.addEventListener('click', () => {
-            const name = item.dataset.nodeName;
-            const node = nodes.find(n => n.node_name === name);
-            if (node) mountLogs(node);
-        });
-    });
-
-    // Clicking a node on the DAG canvas → switch to Logs tab with that node.
-    const onNodeClick = (ev) => {
-        const node = ev.detail;
-        if (!node || !node.node_name) return;
-        if (typeof applyTab === 'function') applyTab('logs');
-        mountLogs(node);
-    };
-    window.addEventListener('node-click', onNodeClick);
-    // Clean up the listener if the user navigates away from this run.
-    window.addEventListener('hashchange', function cleanup() {
-        window.removeEventListener('node-click', onNodeClick);
-        if (currentStepLogs && typeof currentStepLogs.destroy === 'function') {
-            try { currentStepLogs.destroy(); } catch (_) { /* ignore */ }
-        }
-        window.removeEventListener('hashchange', cleanup);
-    });
-}
-
 function setupExecutingBanner(nodes) {
     const banner = document.getElementById('executing-banner');
     const nodeNameEl = document.getElementById('executing-node-name');
@@ -1227,7 +1170,7 @@ function setupExecutingBanner(nodes) {
     }
 }
 
-function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, resizableSplit) {
+function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, resizableSplit, tracePanel) {
     // Store retry history per node for the Retry History tab
     const retryHistoryStore = {};
 
@@ -1242,6 +1185,26 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
             const isPersisted = typeof evt.payload === 'string';
             const payload = isPersisted ? JSON.parse(evt.payload) : evt;
             const eventType = isPersisted ? evt.event_type : evt.type;
+
+            // Forward every event to the live trace panel. The panel knows
+            // which event_types it cares about; unknown ones are dropped.
+            // We normalize to the NDJSON shape (event_type + node_id + metadata
+            // at the top level) so persisted and live events look identical.
+            if (tracePanel) {
+                try {
+                    tracePanel.handleEvent({
+                        event_type: eventType,
+                        node_id: payload.node_id,
+                        model: payload.model,
+                        dispatch: payload.dispatch,
+                        duration_ms: payload.duration_ms,
+                        timestamp: payload.timestamp || evt.created_at,
+                        metadata: payload.metadata || payload,
+                    });
+                } catch (e) {
+                    console.warn('trace panel event handling failed', e);
+                }
+            }
 
             // Route chat_message events to appropriate panel
             if (eventType === 'chat_message') {
@@ -1331,10 +1294,20 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
 
             const layoutData = await layoutResp.json();
 
-            // Update node statuses in the DAG
-            layoutData.nodes.forEach(node => {
-                dagRenderer.updateNodeStatus(node.node_name, node.status);
-            });
+            // Re-render the whole DAG when node topology changes (e.g. the
+            // initial layout returned 0 nodes because node_executions wasn't
+            // populated yet, or new conditionally-routed nodes showed up).
+            // updateNodeStatus is a no-op for unknown nodes, so without this
+            // the graph stays blank for the lifetime of the page.
+            const renderedNodeCount =
+                (dagRenderer.g && dagRenderer.g.querySelectorAll('.dag-node').length) || 0;
+            if (renderedNodeCount !== layoutData.nodes.length) {
+                dagRenderer.render(layoutData);
+            } else {
+                layoutData.nodes.forEach(node => {
+                    dagRenderer.updateNodeStatus(node.node_name, node.status);
+                });
+            }
 
             // Update executing banner
             setupExecutingBanner(layoutData.nodes);
@@ -1378,6 +1351,12 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
             // Destroy resizable split
             if (resizableSplit) {
                 resizableSplit.destroy();
+            }
+
+            // Destroy trace panel (clears per-node + banner timers so SPA
+            // navigation between runs doesn't leak intervals).
+            if (tracePanel && typeof tracePanel.destroy === 'function') {
+                tracePanel.destroy();
             }
 
             // Cancel executing banner animation frame (fix existing leak)

@@ -29,46 +29,52 @@ class ChannelStatePanel {
     }
 
     /**
-     * Render the channel state table
+     * Render the channel state panel as a vertical stack of cards — works in
+     * narrow right-rail columns where a 5-column table previously hid the
+     * rightmost columns and truncated values.
      */
     render() {
         if (!this.container) return;
 
         if (this.channels.length === 0) {
-            this.container.innerHTML = '<p class="empty-state">No channels defined for this workflow.</p>';
+            this.container.innerHTML = '<p class="empty-state">No channels written yet.</p>';
             return;
         }
 
         const html = `
             <div class="channel-state-panel">
-                <h3>Channel State</h3>
-                <table class="channel-table">
-                    <thead>
-                        <tr>
-                            <th>Channel</th>
-                            <th>Type</th>
-                            <th>Value</th>
-                            <th>Version</th>
-                            <th>Writers</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${this.channels.map(ch => this.renderChannelRow(ch)).join('')}
-                    </tbody>
-                </table>
+                ${this.channels.map(ch => this.renderChannelCard(ch)).join('')}
             </div>
         `;
         this.container.innerHTML = html;
     }
 
     /**
-     * Render a single channel row
+     * Render a single channel as a stacked card.
      * @param {Object} channel - Channel state object
      */
-    renderChannelRow(channel) {
+    renderChannelCard(channel) {
         const hasConflict = channel.conflict !== null;
         const conflictClass = hasConflict ? 'channel-conflict' : '';
-        const value = escapeHtml(JSON.stringify(channel.value, null, 2));
+        // Smart value formatting — identical logic to state-diff-timeline:
+        // raw strings shown unquoted; ```json ... ``` fenced blocks
+        // unwrapped + pretty-printed; objects/arrays pretty-printed.
+        // Without this, JSON.stringify on a raw string wraps it in quotes
+        // and converts newlines to literal \n, so the pre block becomes a
+        // single wide line that runs off the panel.
+        const formatChannelValue = (v) => {
+            if (v === null || v === undefined) return '';
+            if (typeof v === 'string') {
+                const fenced = v.trim().match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/);
+                const candidate = fenced ? fenced[1] : v.trim();
+                if (candidate.startsWith('{') || candidate.startsWith('[')) {
+                    try { return JSON.stringify(JSON.parse(candidate), null, 2); } catch { /* fall through */ }
+                }
+                return v;
+            }
+            try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+        };
+        const value = escapeHtml(formatChannelValue(channel.value));
         const reducerBadge = channel.reducer_strategy
             ? `<span class="reducer-badge">${escapeHtml(channel.reducer_strategy)}</span>`
             : '';
@@ -79,13 +85,19 @@ class ChannelStatePanel {
             : '';
 
         return `
-            <tr class="${conflictClass}">
-                <td><strong>${escapeHtml(channel.channel_key)}</strong></td>
-                <td>${escapeHtml(channel.channel_type)} ${reducerBadge}</td>
-                <td><pre class="channel-value">${value}</pre></td>
-                <td>${escapeHtml(String(channel.version))}</td>
-                <td>${writersList}${conflictMsg}</td>
-            </tr>
+            <div class="channel-card ${conflictClass}">
+                <div class="channel-card-head">
+                    <span class="channel-card-key">${escapeHtml(channel.channel_key)}</span>
+                    <span class="channel-card-meta">
+                        <span class="channel-card-type">${escapeHtml(channel.channel_type)}</span>
+                        ${reducerBadge}
+                        <span class="channel-card-version" title="Version">v${escapeHtml(String(channel.version))}</span>
+                    </span>
+                </div>
+                <pre class="channel-value">${value}</pre>
+                ${writersList ? `<div class="channel-card-writers">Writers: ${writersList}</div>` : ''}
+                ${conflictMsg}
+            </div>
         `;
     }
 }
