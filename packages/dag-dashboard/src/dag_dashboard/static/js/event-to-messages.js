@@ -1,149 +1,156 @@
 /**
- * eventToMessages — SSE event-to-message conversion with channel write folding.
+ * event-to-messages — SSE event → feed-message conversion.
  *
- * Architecture:
- * - SSE events can arrive out-of-order (channel_write before node_started)
- * - We buffer orphan channel writes in state.pendingChannels[writer_node_id]
- * - When node_started arrives, we flush the buffer and create message cards
+ * The unified conversation feed is a list of typed messages. Every SSE event
+ * from the workflow SSE stream is translated into one of these message shapes:
  *
- * Usage:
- *   const messages = eventToMessages({ type: 'node_started', node_id: 'step1', ... });
- *   messages.forEach(msg => progressCard.addMessage(msg));
+ *   { type: 'progress_card', nodeId, subtype, payload }
+ *   { type: 'terminal', status, payload }
+ *
+ * `progress_card` messages are routed to per-node WorkflowProgressCard
+ * instances (one card per node). `subtype` is the original event_type
+ * (`node_started`, `node_log_line`, `node_stream_token`, `channel_updated`,
+ * `node_completed`, `node_failed`, `node_skipped`, `node_interrupted`,
+ * `node_escalated`). The card decides how to render each subtype.
+ *
+ * Channel writes (`channel_updated`) are not top-level feed messages — they
+ * fold into the owning card via `metadata.writer_node_id`. If a channel write
+ * arrives before the owning node_started (SSE reconnect backfill), it's
+ * buffered in state.pendingChannels[writerNodeId] and flushed when the
+ * corresponding node_started arrives.
+ *
+ * `terminal` messages mark workflow-level end states and render as a footer
+ * banner in the feed.
  */
 
 (function (window) {
     'use strict';
 
-    // Global state for buffering orphan channel writes
-    const state = {
-        pendingChannels: {}, // { writer_node_id: [channelWriteEvent, ...] }
-        nodeNames: {}        // { node_id: node_name } cache
-    };
-
     /**
-     * Convert a single SSE event to an array of message objects.
-     * Returns [] if event should be ignored.
+     * Create a fresh state object. Callers keep one per feed instance so
+     * orphan channel writes buffered at connect time are flushed on the
+     * matching node_started.
      */
-    function eventToMessages(event) {
-        if (!event || !event.type) return [];
-
-        const messages = [];
-
-        switch (event.type) {
-            case 'node_started':
-                messages.push({
-                    type: 'node_started',
-                    nodeId: event.node_id,
-                    nodeName: event.node_name,
-                    timestamp: event.timestamp || new Date().toISOString()
-                });
-
-                // Cache node name
-                if (event.node_id && event.node_name) {
-                    state.nodeNames[event.node_id] = event.node_name;
-                }
-
-                // Flush any pending channel writes for this node
-                const pending = state.pendingChannels[event.node_id];
-                if (pending && pending.length > 0) {
-                    pending.forEach((channelEvent) => {
-                        messages.push(convertChannelWrite(channelEvent));
-                    });
-                    delete state.pendingChannels[event.node_id];
-                }
-                break;
-
-            case 'node_completed':
-                messages.push({
-                    type: 'node_completed',
-                    nodeId: event.node_id,
-                    nodeName: event.node_name || state.nodeNames[event.node_id],
-                    timestamp: event.timestamp || new Date().toISOString(),
-                    status: event.status
-                });
-                break;
-
-            case 'channel_write':
-                const writerNodeId = event.writer_node_id || event.node_id;
-                
-                // If we have the node name already, create message immediately
-                if (state.nodeNames[writerNodeId]) {
-                    messages.push(convertChannelWrite(event));
-                } else {
-                    // Buffer until node_started arrives
-                    if (!state.pendingChannels[writerNodeId]) {
-                        state.pendingChannels[writerNodeId] = [];
-                    }
-                    state.pendingChannels[writerNodeId].push(event);
-                }
-                break;
-
-            case 'escalation':
-                messages.push({
-                    type: 'escalation',
-                    nodeId: event.node_id,
-                    nodeName: event.node_name || state.nodeNames[event.node_id],
-                    message: event.error || event.message,
-                    timestamp: event.timestamp || new Date().toISOString()
-                });
-                break;
-
-            case 'escalation_resumed':
-                messages.push({
-                    type: 'escalation_resumed',
-                    nodeId: event.node_id,
-                    nodeName: event.node_name || state.nodeNames[event.node_id],
-                    timestamp: event.timestamp || new Date().toISOString()
-                });
-                break;
-
-            // Add other event types as needed
-            default:
-                // Unknown event type — ignore
-                break;
-        }
-
-        return messages;
-    }
-
-    /**
-     * Convert a channel_write event to a message object.
-     */
-    function convertChannelWrite(event) {
-        const writerNodeId = event.writer_node_id || event.node_id;
-        const nodeName = event.writer_node_name || state.nodeNames[writerNodeId] || writerNodeId;
-
-        let preview = '';
-        if (event.value) {
-            try {
-                const val = typeof event.value === 'string' ? event.value : JSON.stringify(event.value);
-                preview = val.substring(0, 200);
-                if (val.length > 200) preview += '...';
-            } catch (e) {
-                preview = String(event.value).substring(0, 200);
-            }
-        }
-
+    function createState() {
         return {
-            type: 'channel_write',
-            nodeId: writerNodeId,
-            nodeName: nodeName,
-            channel: event.channel,
-            preview: preview,
-            timestamp: event.timestamp || new Date().toISOString()
+            seenNodes: new Set(),
+            pendingChannels: {}, // { writer_node_id: [event, ...] }
         };
     }
 
     /**
-     * Reset state (useful for testing or when navigating away from run detail).
+     * Convert one SSE event to zero-or-more feed messages.
+     *
+     * @param {object} event Normalized event: { event_type, node_id, metadata, timestamp, model, dispatch, duration_ms }
+     * @param {object} state Mutable state from createState()
+     * @returns {Array<object>} messages
      */
-    function resetState() {
-        state.pendingChannels = {};
-        state.nodeNames = {};
+    function eventToMessages(event, state) {
+        if (!event || !event.event_type) return [];
+        if (!state) state = createState();
+
+        const t = event.event_type;
+        const meta = event.metadata || {};
+
+        switch (t) {
+            case 'workflow_started':
+                // Not a feed entry — handled by banner elsewhere.
+                return [];
+
+            case 'node_started': {
+                const nodeId = event.node_id;
+                if (!nodeId) return [];
+                const messages = [{
+                    type: 'progress_card',
+                    nodeId,
+                    subtype: 'node_started',
+                    payload: event,
+                }];
+                state.seenNodes.add(nodeId);
+                const pending = state.pendingChannels[nodeId];
+                if (pending && pending.length) {
+                    pending.forEach((chEvent) => {
+                        messages.push({
+                            type: 'progress_card',
+                            nodeId,
+                            subtype: 'channel_updated',
+                            payload: chEvent,
+                        });
+                    });
+                    delete state.pendingChannels[nodeId];
+                }
+                return messages;
+            }
+
+            case 'node_log_line':
+            case 'node_stream_token':
+            case 'node_progress': {
+                const nodeId = event.node_id;
+                if (!nodeId) return [];
+                // Suppress retry-style node_progress events (those carry an
+                // `attempt` counter and are handled by the DAG retry overlay,
+                // not the feed).
+                if (t === 'node_progress' && meta.attempt != null) return [];
+                return [{
+                    type: 'progress_card',
+                    nodeId,
+                    subtype: t,
+                    payload: event,
+                }];
+            }
+
+            case 'channel_updated': {
+                const writerNodeId = meta.writer_node_id || event.node_id;
+                if (!writerNodeId) return [];
+                // Fold into owning card if it's already been seen; otherwise
+                // buffer until node_started arrives.
+                if (state.seenNodes.has(writerNodeId)) {
+                    return [{
+                        type: 'progress_card',
+                        nodeId: writerNodeId,
+                        subtype: 'channel_updated',
+                        payload: event,
+                    }];
+                }
+                if (!state.pendingChannels[writerNodeId]) {
+                    state.pendingChannels[writerNodeId] = [];
+                }
+                state.pendingChannels[writerNodeId].push(event);
+                return [];
+            }
+
+            case 'node_completed':
+            case 'node_failed':
+            case 'node_skipped':
+            case 'node_interrupted':
+            case 'node_escalated': {
+                const nodeId = event.node_id;
+                if (!nodeId) return [];
+                return [{
+                    type: 'progress_card',
+                    nodeId,
+                    subtype: t,
+                    payload: event,
+                }];
+            }
+
+            case 'workflow_completed':
+            case 'workflow_failed':
+            case 'workflow_interrupted':
+            case 'workflow_cancelled':
+                return [{
+                    type: 'terminal',
+                    status: t.replace('workflow_', ''),
+                    payload: event,
+                }];
+
+            default:
+                return [];
+        }
     }
 
-    // Export to global scope
-    window.eventToMessages = eventToMessages;
-    window.eventToMessages.resetState = resetState;
-
+    window.EventToMessages = {
+        createState,
+        eventToMessages,
+    };
 })(window);

@@ -1,211 +1,143 @@
-"""Test unified feed layout (GW-5422)."""
+"""Test unified feed layout (GW-5422).
+
+These assertions protect the two-pane shape, the deletion of TracePanel /
+old 3-column scaffolding, and the wiring of the new WorkflowProgressCard +
+StateSlideover + NodeScrollBus + unified ChatPanel feed.
+"""
 from pathlib import Path
 
 
+STATIC = Path(__file__).parents[1] / "src" / "dag_dashboard" / "static"
+APP_JS = (STATIC / "js" / "app.js").read_text
+INDEX = (STATIC / "index.html").read_text
+STYLES = (STATIC / "css" / "styles.css").read_text
+
+
 def test_two_pane_split_layout_exists() -> None:
-    """Assert the new two-pane split layout is present in app.js."""
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
-
-    # Two-pane split mount class must exist
-    assert ".run-pane-split" in content, (
-        "New two-pane layout must use .run-pane-split mount class"
-    )
-
-    # ResizableSplit should be instantiated
-    assert "new window.ResizableSplit" in content, (
-        "ResizableSplit must be instantiated for the two-pane layout"
-    )
+    """app.js must render a .run-pane-split with .run-split-left-content + .run-split-right-content."""
+    content = APP_JS()
+    assert '"run-pane-split"' in content, "run-pane-split wrapper must be present"
+    assert "run-split-left-content" in content, "Left inner content wrapper must exist"
+    assert "run-split-right-content" in content, "Right inner content wrapper must exist"
+    assert 'querySelector(\'.run-pane-split\')' in content, \
+        "ResizableSplit must target .run-pane-split"
 
 
-def test_workflow_progress_card_initialized() -> None:
-    """Assert WorkflowProgressCard is initialized in app.js."""
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
+def test_old_three_column_layout_removed_from_app_js() -> None:
+    content = APP_JS()
+    for cls in (".run-graph-3col", ".run-graph-canvas", ".run-graph-side",
+                ".run-graph-chat", "id=\"run-chat-section\"",
+                "id=\"workflow-chat-container\"", "id=\"trace-container\""):
+        assert cls not in content, f"{cls} must no longer appear in app.js"
 
-    assert "window.WorkflowProgressCard" in content, (
-        "WorkflowProgressCard must be initialized in renderRunDetail"
-    )
-    assert "workflow-progress-card-container" in content, (
-        "WorkflowProgressCard container must be present"
-    )
+
+def test_old_three_column_layout_removed_from_css() -> None:
+    content = STYLES()
+    for cls in (".run-graph-3col", ".run-graph-canvas", ".run-graph-side",
+                ".run-graph-chat", ".run-chat-section", ".chat-section-rail",
+                ".trace-section-rail", ".workflow-chat-container"):
+        assert cls not in content, f"{cls} CSS rule must be deleted"
+
+
+def test_trace_panel_deleted() -> None:
+    """trace-panel.js must be deleted and no script tag should reference it."""
+    assert not (STATIC / "js" / "trace-panel.js").exists(), \
+        "trace-panel.js must be deleted from disk"
+    html = INDEX()
+    assert "/js/trace-panel.js" not in html, \
+        "trace-panel.js script tag must be removed from index.html"
+    app_js = APP_JS()
+    assert "window.TracePanel" not in app_js, \
+        "app.js must not reference window.TracePanel"
+    assert "new window.TracePanel" not in app_js, \
+        "app.js must not instantiate TracePanel"
+
+
+def test_trace_css_rules_all_deleted() -> None:
+    """No .trace-* CSS rule should remain after the TracePanel sunset."""
+    content = STYLES()
+    # Grep for any '.trace-' rule selector at the start of a line.
+    trace_rule_lines = [
+        line for line in content.splitlines()
+        if line.lstrip().startswith(".trace-")
+    ]
+    assert not trace_rule_lines, \
+        f"Expected zero .trace-* CSS rules, found {len(trace_rule_lines)}: {trace_rule_lines[:3]}"
+
+
+def test_workflow_feed_mount_exists() -> None:
+    """The right pane must mount a single #workflow-feed that ChatPanel owns."""
+    content = APP_JS()
+    assert 'id="workflow-feed"' in content, \
+        "Right pane must contain #workflow-feed (single unified feed mount)"
+    assert "new window.ChatPanel('workflow-feed'" in content, \
+        "ChatPanel must be instantiated on #workflow-feed in run mode"
 
 
 def test_state_slideover_mounted() -> None:
-    """Assert StateSlideover is mounted (eager mount) in app.js."""
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
-
-    assert "window.StateSlideover" in content, (
-        "StateSlideover must be mounted in renderRunDetail"
-    )
-    assert "state-slideover-mount" in content, (
+    content = APP_JS()
+    assert "window.StateSlideover.mount" in content, \
+        "StateSlideover.mount must be called in renderRunDetail"
+    assert "state-slideover-mount" in content, \
         "StateSlideover mount point must exist"
-    )
+    assert 'id="state-slideover-toggle"' in content, \
+        "State toggle button must exist in the left pane"
 
 
-def test_old_three_column_layout_removed() -> None:
-    """Assert the old 3-column grid layout is removed from app.js."""
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
-
-    # Old 3-column grid class should be gone
-    assert ".run-graph-3col" not in content, (
-        "Old three-column grid layout must be removed"
-    )
+def test_node_scroll_bus_wired_both_ways() -> None:
+    """DAG→feed and feed→DAG cross-selection must both be wired in app.js."""
+    content = APP_JS()
+    # DAG→feed: DAG click handler calls NodeScrollBus.trigger with source='dag'.
+    assert "NodeScrollBus.trigger" in content and "'dag'" in content, \
+        "DAG click must trigger NodeScrollBus with source='dag'"
+    # feed→DAG: subscriber flashes DAG nodes on card-origin triggers.
+    assert "NodeScrollBus.subscribe" in content, \
+        "Feed→DAG handler must subscribe to NodeScrollBus"
 
 
-def test_unified_feed_css_classes_exist() -> None:
-    """Test that unified feed CSS classes are present in styles.css."""
-    css_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "css"
-        / "styles.css"
-    )
-    content = css_path.read_text()
-
-    # New layout classes
-    assert ".run-pane-split" in content
-    assert ".run-pane-left" in content
-    assert ".run-pane-right" in content
-
-    # Progress card classes
-    assert ".workflow-progress-card-container" in content
-    assert ".progress-card-item" in content
-
-    # State slideover classes
-    assert ".state-slideover" in content
-    assert ".state-slideover-panel" in content
-    assert ".state-slideover--closed" in content
+def test_lifecycle_cleans_up_new_components() -> None:
+    """lifecycle.destroy must tear down every new component (no timer/subscription leaks)."""
+    content = APP_JS()
+    assert "chatPanel.destroy" in content, "ChatPanel.destroy must be called in lifecycle"
+    assert "StateSlideover.destroy" in content, "StateSlideover.destroy must be called in lifecycle"
+    assert "NodeScrollBus.clear" in content, "NodeScrollBus subscribers must be cleared in lifecycle"
+    # Keep PR #156's guarantees
+    assert "resizableSplit" in content and "destroy()" in content
+    assert "cancelAnimationFrame" in content and "animationId" in content
 
 
 def test_new_scripts_loaded_in_order() -> None:
-    """Test that new JS modules are loaded in correct order in index.html."""
-    html_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "index.html"
-    )
-    content = html_path.read_text()
+    """New JS modules must load before chat-panel.js (EventToMessages, NodeScrollBus,
+    WorkflowProgressCard are all used from ChatPanel)."""
+    content = INDEX()
+    for src in ("/js/node-scroll-bus.js", "/js/event-to-messages.js",
+                "/js/workflow-progress-card.js", "/js/state-slideover.js"):
+        assert src in content, f"{src} must be included"
 
-    # All new scripts must be present
-    assert "/js/node-scroll-bus.js" in content
-    assert "/js/event-to-messages.js" in content
-    assert "/js/workflow-progress-card.js" in content
-    assert "/js/state-slideover.js" in content
-
-    # Must be loaded before app.js
+    chat_idx = content.index("/js/chat-panel.js")
     app_idx = content.index("/js/app.js")
-    bus_idx = content.index("/js/node-scroll-bus.js")
-    events_idx = content.index("/js/event-to-messages.js")
-    card_idx = content.index("/js/workflow-progress-card.js")
-    slideover_idx = content.index("/js/state-slideover.js")
-
-    assert bus_idx < app_idx, "node-scroll-bus.js must load before app.js"
-    assert events_idx < app_idx, "event-to-messages.js must load before app.js"
-    assert card_idx < app_idx, "workflow-progress-card.js must load before app.js"
-    assert slideover_idx < app_idx, "state-slideover.js must load before app.js"
-
-    # Verify order
-    split_pos = content.find("/js/resizable-split.js")
-    app_pos = content.find("/js/app.js")
-    assert split_pos < app_pos, "resizable-split.js must load before app.js"
+    for src in ("/js/node-scroll-bus.js", "/js/event-to-messages.js",
+                "/js/workflow-progress-card.js"):
+        assert content.index(src) < chat_idx, \
+            f"{src} must load before chat-panel.js (ChatPanel uses it at instantiation time)"
+    assert content.index("/js/state-slideover.js") < app_idx, \
+        "state-slideover.js must load before app.js"
+    assert content.index("/js/resizable-split.js") < app_idx, \
+        "resizable-split.js must load before app.js"
 
 
-def test_app_js_creates_split_instance() -> None:
-    """Test that app.js creates a ResizableSplit instance."""
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
-
-    # Check for split instantiation
-    assert "ResizableSplit" in content
-    assert "new " in content or "new(" in content
+def test_unified_feed_css_classes_exist() -> None:
+    content = STYLES()
+    for cls in (".run-pane-split", ".workflow-feed", ".workflow-progress-card",
+                ".workflow-progress-card-head", ".workflow-progress-card-body",
+                ".workflow-progress-card--running", ".workflow-progress-card--completed",
+                ".workflow-progress-card--escalated", ".workflow-progress-card--interrupted",
+                ".state-slideover", ".state-slideover-panel", ".state-slideover--closed",
+                ".chat-terminal-banner"):
+        assert cls in content, f"Expected CSS rule {cls} to exist"
 
 
 def test_lifecycle_has_destroy_method() -> None:
-    """Test that app.js implements lifecycle.destroy() (AC-8)."""
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
-
-    # Check that lifecycle object with destroy method exists
+    """Preserve PR #156's AC-8 guarantee."""
+    content = APP_JS()
     assert "lifecycle" in content and "destroy:" in content
-
-
-def test_split_destroy_called() -> None:
-    """Test that app.js destroys the split instance on cleanup (AC-8)."""
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
-
-    # Check that resizableSplit.destroy() is called in lifecycle
-    assert "resizableSplit" in content and "destroy()" in content
-
-
-def test_animation_frame_cleanup() -> None:
-    """Test that requestAnimationFrame is cancelled on cleanup (AC-8 - fixes existing leak)."""
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
-
-    # Check for cancelAnimationFrame call
-    assert "cancelAnimationFrame" in content
-    assert "animationId" in content

@@ -246,614 +246,6 @@
     }
 }
 
-/* Three-column variant: graph canvas | state side rail | live chat+trace rail.
- * 12-col grid so reviewers can eyeball the proportions: canvas 6, state 3,
- * chat 3. At ≤1400px the chat wraps underneath to preserve state-panel
- * readability. At ≤900px everything stacks single-column.
- *
- * This is the active layout today. GW-5422 will swap this for the two-pane
- * layout (DAG + unified conversation) and the .run-split rules above will
- * take over. */
-.run-graph-3col {
-    display: grid;
-    grid-template-columns: minmax(0, 6fr) minmax(240px, 3fr) minmax(280px, 3fr);
-    gap: 1rem;
-    margin-top: 1rem;
-    align-items: start;
-}
-
-@media (max-width: 1400px) {
-    .run-graph-3col {
-        grid-template-columns: minmax(0, 3fr) minmax(240px, 2fr);
-    }
-    .run-graph-3col .run-graph-chat {
-        grid-column: 1 / -1;
-    }
-}
-
-@media (max-width: 900px) {
-    .run-graph-3col {
-        grid-template-columns: 1fr;
-    }
-}
-
-.run-graph-canvas {
-    min-width: 0;
-}
-
-.run-graph-side {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    padding: 1rem;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    min-width: 0;
-}
-
-.run-graph-chat {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-}
-
-/* chat-section-rail reuses the card styling but lets the chat panel fill
- * the column height rather than expanding the page. The inner .chat-panel
- * override in this file caps to the graph canvas height via flex. */
-.chat-section-rail {
-    margin-top: 0;
-    padding: 0.75rem;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    max-height: 640px;
-    overflow: hidden;
-}
-
-.chat-section-rail .chat-panel {
-    height: auto;
-    flex: 1;
-    min-height: 0;
-}
-
-/* Wrapper for the trace panel when it's mounted in the right rail of the
- * workflow detail page. Keeps the same dimensions as the old chat rail
- * card but lets the panel own its internal layout. */
-.trace-section-rail {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    height: 640px;
-    max-height: 80vh;
-}
-
-/* ==================== LIVE TRACE PANEL ==================== */
-
-.trace-panel {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    max-height: 60vh;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-}
-
-.run-chat-section {
-    margin-top: 1rem;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 0.6rem 0.75rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    transition: box-shadow 0.3s;
-}
-
-.run-chat-section-flash {
-    box-shadow: 0 0 0 2px #3b82f6;
-}
-
-.run-chat-section-head {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-}
-
-.run-chat-section-hint {
-    font-size: 0.7rem;
-    color: var(--text-secondary);
-}
-
-.workflow-chat-container {
-    min-height: 240px;
-    max-height: 50vh;
-    display: flex;
-    flex-direction: column;
-}
-
-.trace-header {
-    padding: 0.75rem 1rem 0.5rem;
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-}
-
-.trace-header h3 {
-    margin: 0 0 0.5rem 0;
-    font-size: 1rem;
-    color: var(--text);
-}
-
-.trace-banner {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    padding: 0.25rem 0;
-}
-
-.trace-banner-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #3b82f6;
-    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.6);
-    animation: trace-pulse 1.5s infinite;
-}
-
-@keyframes trace-pulse {
-    0%   { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.6); }
-    70%  { box-shadow: 0 0 0 8px rgba(59, 130, 246, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
-}
-
-.trace-banner-label {
-    font-weight: 600;
-    color: var(--text);
-}
-
-.trace-banner-node {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 0.8rem;
-}
-
-.trace-banner-elapsed {
-    margin-left: auto;
-    font-variant-numeric: tabular-nums;
-    color: var(--text-secondary);
-}
-
-.trace-feed {
-    flex: 1;
-    overflow-y: auto;
-    padding: 0.5rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    min-height: 0;
-}
-
-.trace-empty {
-    padding: 2rem 1rem;
-    color: var(--text-secondary);
-    text-align: center;
-    font-size: 0.875rem;
-}
-
-/* Per-node card. The left border color acts as the primary status signal;
- * the card head is always visible, the body collapses when the card has
- * no new content to show. `flex-shrink: 0` stops the flex container from
- * compressing head rows when many cards stack and the feed needs to
- * scroll — without it cards visibly overlap at ~8+ items. */
-.trace-card {
-    border: 1px solid var(--border);
-    border-left-width: 3px;
-    border-radius: var(--radius);
-    background: var(--bg);
-    overflow: hidden;
-    transition: border-color 0.2s ease;
-    flex-shrink: 0;
-}
-
-.trace-card-head {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    cursor: pointer;
-    user-select: none;
-    font-size: 0.85rem;
-    min-height: 2rem;
-    flex-wrap: nowrap;
-    min-width: 0;
-}
-
-.trace-card-head:hover {
-    background: var(--bg-hover, rgba(255, 255, 255, 0.03));
-}
-
-.trace-card-indicator {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--text-secondary);
-    flex-shrink: 0;
-}
-
-.trace-card-name {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-weight: 600;
-    color: var(--text);
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 0 1 auto;
-}
-
-.trace-card-meta {
-    display: inline-flex;
-    gap: 0.25rem;
-    flex-shrink: 0;
-}
-
-.trace-card-model,
-.trace-card-dispatch {
-    font-size: 0.7rem;
-    padding: 0.1rem 0.4rem;
-    border-radius: 3px;
-    background: var(--bg-card);
-    color: var(--text-secondary);
-    text-transform: lowercase;
-}
-
-.trace-card-elapsed {
-    margin-left: auto;
-    font-variant-numeric: tabular-nums;
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    flex-shrink: 0;
-}
-
-.trace-card-toggle {
-    font-size: 0.7rem;
-    color: var(--text-secondary);
-    flex-shrink: 0;
-}
-
-.trace-card-body {
-    border-top: 1px solid var(--border);
-    padding: 0.5rem 0.75rem;
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 0.75rem;
-    max-height: 320px;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    background: var(--bg-secondary, rgba(0, 0, 0, 0.15));
-}
-
-.trace-card-collapsed .trace-card-body {
-    display: none;
-}
-
-/* Visual cue that a collapsed card with useful content can be expanded. */
-.trace-card-collapsed .trace-card-head:hover .trace-card-toggle {
-    color: var(--text);
-}
-
-/* Status-specific styling. The left border + indicator dot both shift so
- * you can scan the feed at a glance. */
-.trace-card-running {
-    border-left-color: #3b82f6;
-}
-.trace-card-running .trace-card-indicator {
-    background: #3b82f6;
-    animation: trace-pulse 1.5s infinite;
-}
-
-.trace-card-completed { border-left-color: #10b981; }
-.trace-card-completed .trace-card-indicator { background: #10b981; }
-
-.trace-card-failed { border-left-color: #ef4444; }
-.trace-card-failed .trace-card-indicator { background: #ef4444; }
-
-.trace-card-skipped { border-left-color: #9ca3af; }
-.trace-card-skipped .trace-card-indicator { background: #9ca3af; }
-
-.trace-card-escalated { border-left-color: #f59e0b; }
-.trace-card-escalated .trace-card-indicator { background: #f59e0b; }
-
-.trace-card-interrupted { border-left-color: #8b5cf6; }
-.trace-card-interrupted .trace-card-indicator { background: #8b5cf6; }
-
-/* Flash animation when a DAG-node click scrolls the feed here. */
-.trace-card-flash {
-    animation: trace-flash 1.5s ease-out;
-}
-
-@keyframes trace-flash {
-    0%   { background: rgba(59, 130, 246, 0.25); }
-    100% { background: var(--bg); }
-}
-
-/* Body content: plain log lines, streaming token blocks, channel chips. */
-.trace-line {
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: var(--text);
-}
-
-.trace-line-stderr {
-    color: #f87171;
-}
-
-.trace-tokens {
-    white-space: pre-wrap;
-    word-break: break-word;
-    margin: 0.25rem 0;
-    padding: 0.5rem;
-    background: var(--bg-card);
-    border-radius: 4px;
-    color: var(--text);
-    font-size: 0.75rem;
-}
-
-.trace-channel-chip {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.35rem;
-    padding: 0.125rem 0.5rem;
-    background: rgba(16, 185, 129, 0.08);
-    border-left: 2px solid #10b981;
-    border-radius: 3px;
-    font-size: 0.7rem;
-    margin-top: 0.25rem;
-    align-self: flex-start;
-}
-
-.trace-channel-arrow {
-    color: #10b981;
-    font-weight: 700;
-}
-
-.trace-channel-value {
-    color: var(--text-secondary);
-    font-family: var(--font-mono, ui-monospace, monospace);
-}
-
-.trace-error {
-    padding: 0.5rem 0.75rem;
-    background: rgba(239, 68, 68, 0.08);
-    border-left: 2px solid #ef4444;
-    border-radius: 3px;
-    color: #f87171;
-    white-space: pre-wrap;
-    word-break: break-word;
-    margin-top: 0.25rem;
-}
-
-.trace-escalation {
-    padding: 0.6rem 0.8rem;
-    background: rgba(245, 158, 11, 0.08);
-    border-left: 3px solid #f59e0b;
-    border-radius: 4px;
-    color: var(--text);
-    margin-top: 0.25rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-}
-
-.trace-escalation-title {
-    font-size: 0.85rem;
-    color: var(--text);
-}
-
-.trace-escalation-title strong {
-    color: #fbbf24;
-    margin-right: 0.25rem;
-}
-
-.trace-escalation-section {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-}
-
-.trace-escalation-label {
-    font-size: 0.7rem;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    cursor: pointer;
-}
-
-.trace-escalation-error,
-.trace-escalation-pre {
-    margin: 0;
-    padding: 0.4rem 0.6rem;
-    background: rgba(0, 0, 0, 0.25);
-    border-radius: 3px;
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 0.7rem;
-    white-space: pre-wrap;
-    word-break: break-word;
-    max-height: 180px;
-    overflow-y: auto;
-    color: var(--text);
-}
-
-.trace-escalation-error {
-    color: #fca5a5;
-}
-
-.trace-escalation-actions {
-    display: flex;
-    gap: 0.4rem;
-    flex-wrap: wrap;
-}
-
-.trace-escalation-chat-btn {
-    display: inline-block;
-    padding: 0.35rem 0.7rem;
-    background: #3b82f6;
-    color: white !important;
-    text-decoration: none;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    border: 1px solid #2563eb;
-    cursor: pointer;
-}
-
-.trace-escalation-chat-btn:hover {
-    background: #2563eb;
-}
-
-.trace-interrupt {
-    padding: 0.5rem 0.75rem;
-    background: rgba(139, 92, 246, 0.08);
-    border-left: 2px solid #8b5cf6;
-    border-radius: 3px;
-    color: var(--text);
-    margin-top: 0.25rem;
-}
-
-.trace-footer {
-    padding: 0.5rem 0.75rem;
-    border-radius: var(--radius);
-    font-size: 0.8rem;
-    text-align: center;
-    font-weight: 600;
-    margin-top: 0.25rem;
-}
-
-.trace-footer-completed { color: #10b981; }
-.trace-footer-failed    { color: #ef4444; }
-.trace-footer-interrupted { color: #8b5cf6; }
-.trace-footer-cancelled { color: #9ca3af; }
-
-/* Inline resume form shown inside paused (escalated/interrupted) cards.
- * This is how the user actually "talks to" the paused workflow — no
- * separate chat input needed. */
-.trace-resume-form {
-    margin-top: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    border: 1px dashed var(--border);
-    border-radius: var(--radius);
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    background: var(--bg-card);
-}
-
-.trace-resume-heading {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--text);
-    margin-bottom: 0.15rem;
-}
-
-.trace-resume-heading code {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 0.8rem;
-    padding: 0.05rem 0.3rem;
-    background: var(--bg-secondary);
-    border-radius: 3px;
-}
-
-.trace-resume-label {
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-    font-family: var(--font-sans, system-ui, sans-serif);
-}
-
-.trace-resume-input,
-.trace-resume-comment,
-.trace-resume-textarea {
-    font: inherit;
-    padding: 0.35rem 0.5rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text);
-    font-size: 0.75rem;
-}
-
-.trace-resume-textarea {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    resize: vertical;
-    min-height: 60px;
-}
-
-.trace-resume-input:focus,
-.trace-resume-comment:focus,
-.trace-resume-textarea:focus {
-    outline: none;
-    border-color: #3b82f6;
-}
-
-.trace-resume-btns {
-    display: flex;
-    gap: 0.35rem;
-    margin-top: 0.25rem;
-    flex-wrap: wrap;
-}
-
-.trace-resume-btns button {
-    font: inherit;
-    padding: 0.35rem 0.6rem;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.7rem;
-    background: var(--bg);
-    color: var(--text);
-}
-
-.trace-resume-approve {
-    background: #10b981 !important;
-    border-color: #059669 !important;
-    color: white !important;
-}
-
-.trace-resume-reject {
-    background: #ef4444 !important;
-    border-color: #dc2626 !important;
-    color: white !important;
-}
-
-.trace-resume-submit {
-    background: #3b82f6 !important;
-    border-color: #2563eb !important;
-    color: white !important;
-}
-
-.trace-resume-btns button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-.trace-resume-status {
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-    font-style: italic;
-    min-height: 1em;
-}
-
-.trace-resume-status.trace-resume-status-error {
-    color: #ef4444;
-    font-style: normal;
-    font-weight: 500;
-}
 
 .run-side-heading {
     font-size: 0.85rem;
@@ -4778,150 +4170,399 @@ select.form-control {
 
 
 /* ==========================================================================
-   GW-5422: Unified Feed Layout + State Slideover
+   GW-5422: Unified Feed Layout + WorkflowProgressCard + StateSlideover
    ========================================================================== */
 
-/* Two-pane layout with ResizableSplit */
+/* Two-pane mount point for ResizableSplit. Split wraps our two children with
+ * its own .run-split-left / .run-split-right containers (from PR #156). */
 .run-pane-split {
     display: flex;
-    height: calc(100vh - 200px);
-    min-height: 400px;
+    min-height: 560px;
+    height: calc(100vh - 220px);
+    margin-top: 1rem;
     gap: 0;
 }
 
-.run-pane-left {
+/* Inner content wrappers — ResizableSplit puts these inside its own panes. */
+.run-split-left-content {
     position: relative;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
 }
 
-.run-pane-right {
+.run-split-right-content {
     display: flex;
     flex-direction: column;
-    overflow: hidden;
-    background: var(--bg-secondary);
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
 }
 
-/* State slideover toggle button */
 .state-slideover-toggle-btn {
     position: absolute;
-    bottom: 1rem;
-    right: 1rem;
-    z-index: 10;
+    bottom: 0.75rem;
+    right: 0.75rem;
+    z-index: 5;
 }
 
-/* Unified feed header */
-.unified-feed-header {
-    padding: 1rem;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-primary);
-}
-
-.unified-feed-header .run-side-heading {
-    margin: 0;
-}
-
-/* Workflow progress card container */
-.workflow-progress-card-container {
+/* Unified feed (the single conversation + progress list on the right pane). */
+.workflow-feed {
     flex: 1;
-    overflow-y: auto;
-    padding: 1rem;
-}
-
-/* Progress card items */
-.progress-card-item {
-    padding: 0.75rem 1rem;
-    margin-bottom: 0.5rem;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: var(--bg-primary);
-    border-left: 3px solid var(--border);
+    overflow: hidden;
+}
+
+.workflow-feed .chat-panel {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.workflow-feed .chat-messages {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0.75rem;
+}
+
+/* DAG-node flash used by NodeScrollBus feed→DAG trigger. */
+.dag-node--flash {
+    animation: dag-node-flash 1.5s ease;
+}
+
+@keyframes dag-node-flash {
+    0%, 100% { filter: none; }
+    30% { filter: drop-shadow(0 0 6px #3b82f6); }
+    70% { filter: drop-shadow(0 0 6px #3b82f6); }
+}
+
+/* ==================== Workflow progress card ==================== */
+
+.workflow-progress-card {
+    background: var(--bg-card, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-left: 3px solid var(--border, #e5e7eb);
+    border-radius: var(--radius);
+    margin-bottom: 0.5rem;
+    transition: box-shadow 0.2s ease;
+}
+
+.workflow-progress-card--flash {
+    box-shadow: 0 0 0 2px #3b82f6;
+}
+
+.workflow-progress-card-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
     cursor: pointer;
-    transition: all 0.2s ease;
+    user-select: none;
 }
 
-.progress-card-item:hover {
-    background: var(--bg-hover);
-    transform: translateX(2px);
+.workflow-progress-card-head:hover {
+    background: var(--bg-hover, rgba(59, 130, 246, 0.04));
 }
 
-.progress-card-item--highlight {
-    background: var(--accent-bg);
-    border-left-color: var(--accent);
-    animation: pulse 0.5s ease;
+.workflow-progress-card-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: #9ca3af;
 }
 
-@keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.7; }
-}
-
-.progress-card-item--node_started {
-    border-left-color: var(--info);
-}
-
-.progress-card-item--node_completed {
-    border-left-color: var(--success);
-}
-
-.progress-card-item--channel_write {
-    border-left-color: var(--warning);
-}
-
-.progress-card-item--escalation {
-    border-left-color: var(--error);
-}
-
-.progress-card-timestamp {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    margin-bottom: 0.25rem;
-}
-
-.progress-card-content {
+.workflow-progress-card-name {
+    font-weight: 600;
     font-size: 0.875rem;
     color: var(--text-primary);
 }
 
-.progress-card-content strong {
-    font-weight: 600;
-    color: var(--text-primary);
+.workflow-progress-card-meta {
+    display: flex;
+    gap: 0.35rem;
+    flex: 1;
+    flex-wrap: wrap;
+    min-width: 0;
 }
 
-.progress-card-content code {
-    padding: 0.125rem 0.25rem;
-    background: var(--bg-secondary);
+.workflow-progress-card-model,
+.workflow-progress-card-dispatch {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    background: var(--bg-secondary, rgba(0, 0, 0, 0.04));
+    padding: 0.1rem 0.35rem;
     border-radius: 2px;
+}
+
+.workflow-progress-card-elapsed {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+}
+
+.workflow-progress-card-toggle {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    flex-shrink: 0;
+    width: 1ch;
+    text-align: center;
+}
+
+.workflow-progress-card-body {
+    padding: 0 0.75rem 0.75rem;
+    max-height: 400px;
+    overflow: auto;
     font-size: 0.8rem;
 }
 
-.progress-card-preview {
-    margin-top: 0.5rem;
-    padding: 0.5rem;
-    background: var(--bg-secondary);
-    border-radius: var(--radius);
+.workflow-progress-card--collapsed .workflow-progress-card-body {
+    display: none;
+}
+
+/* Status variants — border-left color + indicator color. */
+.workflow-progress-card--running {
+    border-left-color: #3b82f6;
+}
+.workflow-progress-card--running .workflow-progress-card-indicator {
+    background: #3b82f6;
+    animation: workflow-progress-card-pulse 1.5s infinite;
+}
+
+@keyframes workflow-progress-card-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.workflow-progress-card--completed { border-left-color: #10b981; }
+.workflow-progress-card--completed .workflow-progress-card-indicator { background: #10b981; }
+.workflow-progress-card--failed { border-left-color: #ef4444; }
+.workflow-progress-card--failed .workflow-progress-card-indicator { background: #ef4444; }
+.workflow-progress-card--skipped { border-left-color: #9ca3af; }
+.workflow-progress-card--skipped .workflow-progress-card-indicator { background: #9ca3af; }
+.workflow-progress-card--escalated { border-left-color: #f59e0b; }
+.workflow-progress-card--escalated .workflow-progress-card-indicator { background: #f59e0b; }
+.workflow-progress-card--interrupted { border-left-color: #8b5cf6; }
+.workflow-progress-card--interrupted .workflow-progress-card-indicator { background: #8b5cf6; }
+
+.workflow-progress-card-line {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.72rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+    padding: 0.1rem 0;
+}
+
+.workflow-progress-card-line--stderr {
+    color: #b91c1c;
+}
+
+.workflow-progress-card-tokens {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.75rem;
     white-space: pre-wrap;
-    overflow-x: auto;
-    max-height: 100px;
+    word-break: break-word;
+    margin: 0.25rem 0;
+    padding: 0.4rem;
+    background: var(--bg-secondary, rgba(0, 0, 0, 0.03));
+    border-radius: 3px;
 }
 
-.progress-card-empty {
-    padding: 2rem;
+.workflow-progress-card-channel-chip {
+    display: flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    font-size: 0.75rem;
+    padding: 0.15rem 0;
+    color: var(--text-secondary);
+}
+
+.workflow-progress-card-channel-arrow {
+    color: #3b82f6;
+}
+
+.workflow-progress-card-channel-value {
+    color: var(--text-primary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.workflow-progress-card-summary {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    padding: 0.25rem 0;
+    margin-bottom: 0.25rem;
+    border-bottom: 1px dashed var(--border);
+}
+
+.workflow-progress-card-summary-label {
+    font-weight: 500;
+}
+
+.workflow-progress-card-error {
+    color: #991b1b;
+    background: rgba(239, 68, 68, 0.08);
+    padding: 0.35rem 0.5rem;
+    margin: 0.4rem 0;
+    border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+}
+
+.workflow-progress-card-escalation,
+.workflow-progress-card-interrupt {
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+    margin: 0.5rem 0;
+    font-size: 0.8rem;
+}
+
+.workflow-progress-card-escalation-title {
+    margin-bottom: 0.5rem;
+}
+
+.workflow-progress-card-escalation-section {
+    margin: 0.4rem 0;
+}
+
+.workflow-progress-card-escalation-label {
+    font-weight: 500;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.workflow-progress-card-escalation-error,
+.workflow-progress-card-escalation-pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.72rem;
+    white-space: pre-wrap;
+    background: var(--bg-secondary, rgba(0, 0, 0, 0.04));
+    padding: 0.3rem;
+    border-radius: 3px;
+    margin: 0.25rem 0 0;
+}
+
+/* ==================== Resume form (inside progress card) ==================== */
+
+.workflow-progress-card-resume-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.5rem 0;
+    border-top: 1px solid var(--border);
+    margin-top: 0.5rem;
+}
+
+.workflow-progress-card-resume-heading {
+    font-weight: 600;
+    font-size: 0.8rem;
+    margin-bottom: 0.25rem;
+}
+
+.workflow-progress-card-resume-label {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+
+.workflow-progress-card-resume-input,
+.workflow-progress-card-resume-comment,
+.workflow-progress-card-resume-textarea {
+    font-family: inherit;
+    font-size: 0.8rem;
+    padding: 0.35rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg-primary, #fff);
+    color: var(--text-primary);
+}
+
+.workflow-progress-card-resume-textarea {
+    resize: vertical;
+    min-height: 3em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.workflow-progress-card-resume-input:focus,
+.workflow-progress-card-resume-comment:focus,
+.workflow-progress-card-resume-textarea:focus {
+    outline: 2px solid #3b82f6;
+    outline-offset: -1px;
+}
+
+.workflow-progress-card-resume-btns {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin-top: 0.25rem;
+}
+
+.workflow-progress-card-resume-btns button {
+    font-size: 0.78rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    background: var(--bg-primary, #fff);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.workflow-progress-card-resume-approve { background: #10b981; color: #fff; border-color: #10b981; }
+.workflow-progress-card-resume-reject  { background: #ef4444; color: #fff; border-color: #ef4444; }
+.workflow-progress-card-resume-submit  { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+
+.workflow-progress-card-resume-btns button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.workflow-progress-card-resume-status {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-style: italic;
+    min-height: 1em;
+}
+
+.workflow-progress-card-resume-status--error {
+    color: #ef4444;
+    font-style: normal;
+    font-weight: 500;
+}
+
+/* ==================== Terminal banner (in feed) ==================== */
+
+.chat-terminal-banner {
+    padding: 0.5rem 0.75rem;
+    margin-top: 0.5rem;
+    border-radius: 3px;
+    font-weight: 600;
     text-align: center;
-    color: var(--text-muted);
+    font-size: 0.85rem;
 }
 
-/* State slideover */
+.chat-terminal-banner--completed { background: rgba(16, 185, 129, 0.12); color: #047857; }
+.chat-terminal-banner--failed { background: rgba(239, 68, 68, 0.12); color: #b91c1c; }
+.chat-terminal-banner--interrupted { background: rgba(139, 92, 246, 0.12); color: #6d28d9; }
+.chat-terminal-banner--cancelled { background: rgba(156, 163, 175, 0.18); color: #4b5563; }
+
+/* ==================== State slide-over ==================== */
+
 .state-slideover {
     position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    inset: 0;
     z-index: 1000;
     display: flex;
-    align-items: center;
     justify-content: flex-end;
 }
 
@@ -4931,101 +4572,92 @@ select.form-control {
 
 .state-slideover-backdrop {
     position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
     cursor: pointer;
 }
 
 .state-slideover-panel {
     position: relative;
-    width: 500px;
+    width: 520px;
     max-width: 90vw;
     height: 100vh;
-    background: var(--bg-primary);
-    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.2);
+    background: var(--bg-primary, #fff);
+    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.18);
     display: flex;
     flex-direction: column;
-    animation: slideIn 0.3s ease;
+    animation: state-slideover-slide 0.25s ease;
 }
 
-@keyframes slideIn {
-    from {
-        transform: translateX(100%);
-    }
-    to {
-        transform: translateX(0);
-    }
+@keyframes state-slideover-slide {
+    from { transform: translateX(100%); }
+    to   { transform: translateX(0); }
 }
 
 .state-slideover-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 1rem 1.5rem;
+    padding: 1rem 1.25rem;
     border-bottom: 1px solid var(--border);
 }
 
 .state-slideover-header h3 {
     margin: 0;
-    font-size: 1.25rem;
-    color: var(--text-primary);
+    font-size: 1rem;
 }
 
 .state-slideover-close {
     background: none;
     border: none;
-    font-size: 1.5rem;
-    color: var(--text-muted);
+    font-size: 1.35rem;
+    color: var(--text-secondary);
     cursor: pointer;
-    padding: 0;
     width: 2rem;
     height: 2rem;
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: var(--radius);
-    transition: background 0.2s ease;
+    border-radius: 3px;
 }
 
 .state-slideover-close:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+    background: var(--bg-hover, rgba(0, 0, 0, 0.05));
 }
 
 .state-slideover-body {
     flex: 1;
     overflow-y: auto;
-    padding: 1.5rem;
+    padding: 1rem 1.25rem;
 }
 
 .state-slideover-section-title {
-    font-size: 1rem;
+    font-size: 0.8rem;
     font-weight: 600;
-    color: var(--text-primary);
-    margin: 1.5rem 0 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 1.25rem 0 0.5rem;
 }
 
 .state-slideover-section-title:first-child {
     margin-top: 0;
 }
 
-/* Mobile responsive adjustments */
-@media (max-width: 768px) {
+/* On narrow viewports, the slide-over covers the full screen rather than
+ * just the right pane — matches the stacked layout the ResizableSplit
+ * falls back to at ≤1024px. */
+@media (max-width: 1024px) {
     .run-pane-split {
-        flex-direction: column;
         height: auto;
     }
-
-    .state-slideover-toggle-btn {
-        position: static;
-        margin: 1rem;
-    }
-
     .state-slideover-panel {
         width: 100vw;
         max-width: 100vw;
+    }
+    .state-slideover-toggle-btn {
+        position: static;
+        margin: 0.75rem;
+        align-self: flex-end;
     }
 }

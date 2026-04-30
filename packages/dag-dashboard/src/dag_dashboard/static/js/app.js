@@ -729,31 +729,24 @@ async function renderRunDetail(runId) {
             </div>
             <div id="totals-container"></div>
             <!-- GW-5422: Two-pane layout with ResizableSplit (DAG | unified feed).
-                 State channels/timeline/artifacts moved to slide-over panel. -->
+                 ResizableSplit wraps this container and injects its own
+                 .run-split-left / .run-split-right structure around the two
+                 children below. The State button opens a slide-over for
+                 channel state / timeline / artifacts (eager-mounted in the
+                 hidden slide-over DOM from page load so live updates work). -->
             <div class="run-pane-split">
-                <div class="run-pane-left">
-                    <div class="run-graph-canvas">
-                        <div id="dag-container"></div>
-                    </div>
+                <div class="run-split-left-content">
+                    <div id="dag-container"></div>
                     <button id="state-slideover-toggle" class="btn btn-secondary state-slideover-toggle-btn">
                         View State
                     </button>
                 </div>
-                <div class="run-pane-right">
-                    <div class="unified-feed-header">
-                        <h3 class="run-side-heading">Workflow Progress</h3>
-                    </div>
-                    <div id="workflow-progress-card-container" class="workflow-progress-card-container"></div>
-                    <div id="run-chat-section" class="run-chat-section">
-                        <div class="run-chat-section-head">
-                            <h3 class="run-side-heading" style="margin: 0;">Talk to orchestrator</h3>
-                            <span class="run-chat-section-hint">Ask questions or provide direction. Messages are visible to the workflow.</span>
-                        </div>
-                        <div id="workflow-chat-container" class="workflow-chat-container"></div>
-                    </div>
+                <div class="run-split-right-content">
+                    <div id="workflow-feed" class="workflow-feed"></div>
                 </div>
             </div>
-            <!-- State slideover (eager mount - containers exist in DOM from page load) -->
+            <!-- State slideover (eager mount — channel/timeline/artifact
+                 containers exist in DOM from page load, hidden via CSS) -->
             <div id="state-slideover-mount"></div>
             <div class="run-detail-id-strip">
                 <span class="run-detail-id-label">Run ID:</span>
@@ -919,90 +912,83 @@ async function renderRunDetail(runId) {
         // Setup currently executing banner
         setupExecutingBanner(layoutData.nodes);
 
-        // Mount state slideover (eager mount - containers in DOM from page load)
+        // Mount state slideover (eager mount — channel/timeline/artifact
+        // containers exist in DOM from page load, hidden via CSS). This
+        // preserves the existing ChannelStatePanel / renderStateDiffTimeline /
+        // ArtifactList call-sites: they keep polling the same container ids
+        // whether the slide-over is open or closed.
         if (window.StateSlideover) {
             window.StateSlideover.mount('state-slideover-mount');
         }
 
-        // Initialize channel state panel (now inside slideover)
+        // Initialize channel state panel (lives inside the slide-over DOM)
         const channelPanel = new window.ChannelStatePanel('channel-state-container');
 
-        // Initialize WorkflowProgressCard (unified feed replacing TracePanel)
-        let progressCard = null;
-        if (window.WorkflowProgressCard) {
-            progressCard = new window.WorkflowProgressCard('workflow-progress-card-container', runId);
-
-            // Setup cross-selection with DAG via NodeScrollBus
-            const nodeScrollBus = window.NodeScrollBus ? window.NodeScrollBus.getInstance() : null;
-            if (nodeScrollBus) {
-                nodeScrollBus.subscribe((nodeId, source) => {
-                    if (source === 'dag' && progressCard) {
-                        progressCard.scrollToNode(nodeId);
-                    }
-                });
-
-                // Wire DAG node clicks to bus
-                if (dagRenderer && typeof dagRenderer.container !== 'undefined') {
-                    dagRenderer.container.addEventListener('click', (e) => {
-                        const group = e.target.closest('.dag-node');
-                        if (!group) return;
-                        const nodeName = group.getAttribute('data-node-name');
-                        if (nodeName) nodeScrollBus.notifyNodeClicked(nodeName);
-                    });
-                }
-            }
-        }
-
-        // Keep tracePanel stub for backward compatibility (will be removed in future PR)
-        const tracePanel = progressCard || { handleSSEMessage: () => {}, destroy: () => {} };
-        // Mount a real ChatPanel under the trace so users can talk to the
-        // orchestrator without leaving the run page. Escalated-card buttons
-        // scroll this into view via the 'trace-chat-request' CustomEvent.
+        // Single unified ChatPanel on the right pane. Routes SSE workflow
+        // events through EventToMessages → per-node WorkflowProgressCard
+        // instances; also handles chat_message turns in-place. Replaces the
+        // old separate TracePanel + ChatPanel split.
         let chatPanel;
         if (window.ChatPanel) {
             try {
-                chatPanel = new window.ChatPanel('workflow-chat-container', runId);
+                chatPanel = new window.ChatPanel('workflow-feed', runId);
                 if (typeof chatPanel.render === 'function') chatPanel.render();
             } catch (err) {
                 console.warn('ChatPanel failed to mount:', err);
-                chatPanel = { handleSSEMessage: () => {}, destroy: () => {} };
+                chatPanel = {
+                    handleSSEMessage: () => {},
+                    handleWorkflowEvent: () => {},
+                    destroy: () => {},
+                };
             }
         } else {
-            chatPanel = { handleSSEMessage: () => {}, destroy: () => {} };
+            chatPanel = {
+                handleSSEMessage: () => {},
+                handleWorkflowEvent: () => {},
+                destroy: () => {},
+            };
         }
 
-        // Escalated-card "Talk to orchestrator" button → scroll + focus.
-        window.addEventListener('trace-chat-request', (ev) => {
-            const sec = document.getElementById('run-chat-section');
-            if (sec) {
-                sec.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                sec.classList.add('run-chat-section-flash');
-                setTimeout(() => sec.classList.remove('run-chat-section-flash'), 1500);
+        // DAG↔feed cross-selection. The bus is a tiny pub/sub shared by the
+        // DAG side (this block) and the ChatPanel side (which subscribes in
+        // _subscribeToScrollBus). Source tagging (`'dag'` / `'feed'`) lets
+        // each side ignore its own triggers.
+        if (window.NodeScrollBus) {
+            // DAG click → notify bus with source='dag'; ChatPanel scrolls+flashes the card.
+            if (dagRenderer && typeof dagRenderer.container !== 'undefined') {
+                dagRenderer.container.addEventListener('click', (e) => {
+                    const group = e.target.closest('.dag-node');
+                    if (!group) return;
+                    const nodeName = group.getAttribute('data-node-name');
+                    if (nodeName) window.NodeScrollBus.trigger(nodeName, 'dag');
+                });
             }
-            // Optionally prefill with a useful seed mentioning the node+error.
-            // Keep it a single line — the server's ChatMessageRequest
-            // validator rejects newlines + a handful of shell metacharacters,
-            // so we strip them client-side to avoid an HTTP 422.
-            const input = document.querySelector('#workflow-chat-container textarea, #workflow-chat-container input[type=text]');
-            if (input && !input.value && ev.detail) {
-                const err = (ev.detail.error || 'no-error').toString();
-                const safe = (s) => String(s)
-                    .replace(/\s+/g, ' ')
-                    .replace(/[`$();|&<>\\]/g, '')
-                    .replace(/:/g, '-')
-                    .trim();
-                const seed = `Node ${safe(ev.detail.nodeId)} escalated - ${safe(err).slice(0, 240)}. How should I proceed?`;
-                input.value = seed;
-                input.focus();
-            }
-        });
+            // Feed click → flash+center the DAG node. Ignore our own 'dag' triggers.
+            window.NodeScrollBus.subscribe((nodeId, source) => {
+                if (source === 'dag') return; // ignore self-triggers from above
+                if (dagRenderer && typeof dagRenderer.flashNode === 'function') {
+                    dagRenderer.flashNode(nodeId);
+                } else if (dagRenderer && dagRenderer.container) {
+                    const group = dagRenderer.container.querySelector(
+                        `.dag-node[data-node-name="${CSS.escape(nodeId)}"]`,
+                    );
+                    if (group) {
+                        group.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        group.classList.add('dag-node--flash');
+                        setTimeout(() => group.classList.remove('dag-node--flash'), 1500);
+                    }
+                }
+            });
+        }
 
-        // Render workflow-aggregated artifacts
+        // Render workflow-aggregated artifacts into the (eager-mounted) slide-over.
         if (window.ArtifactList) {
             window.ArtifactList.render('run-artifacts-container', runId);
         }
 
-        // Initialize resizable split for the new two-pane layout (GW-5422)
+        // Initialize resizable split for the new two-pane layout (GW-5422).
+        // ResizableSplit wraps .run-pane-split's children with its own
+        // .run-split-left / .run-split-right containers.
         const splitContainer = document.querySelector('.run-pane-split');
         let resizableSplit = null;
         if (splitContainer && window.ResizableSplit) {
@@ -1015,7 +1001,7 @@ async function renderRunDetail(runId) {
             });
         }
 
-        // Wire up state slideover toggle button
+        // Wire up state slideover toggle button.
         const slideoverToggleBtn = document.getElementById('state-slideover-toggle');
         if (slideoverToggleBtn && window.StateSlideover) {
             slideoverToggleBtn.addEventListener('click', () => {
@@ -1024,7 +1010,7 @@ async function renderRunDetail(runId) {
         }
 
         // Connect to SSE for live updates
-        const lifecycle = setupLiveUpdates(runId, dagRenderer, layoutData.nodes, channelPanel, chatPanel, resizableSplit, tracePanel);
+        const lifecycle = setupLiveUpdates(runId, dagRenderer, layoutData.nodes, channelPanel, chatPanel, resizableSplit);
         activeLifecycle = lifecycle;
 
     } catch (error) {
@@ -1189,7 +1175,7 @@ function setupExecutingBanner(nodes) {
     }
 }
 
-function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, resizableSplit, tracePanel) {
+function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, resizableSplit) {
     // Store retry history per node for the Retry History tab
     const retryHistoryStore = {};
 
@@ -1205,13 +1191,15 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
             const payload = isPersisted ? JSON.parse(evt.payload) : evt;
             const eventType = isPersisted ? evt.event_type : evt.type;
 
-            // Forward every event to the live trace panel. The panel knows
-            // which event_types it cares about; unknown ones are dropped.
-            // We normalize to the NDJSON shape (event_type + node_id + metadata
-            // at the top level) so persisted and live events look identical.
-            if (tracePanel) {
+            // Forward every event to the unified feed (ChatPanel in run mode).
+            // ChatPanel.handleWorkflowEvent delegates to EventToMessages and
+            // routes per-node events to WorkflowProgressCard instances it
+            // manages. Normalize to the NDJSON shape (event_type + node_id +
+            // metadata at the top level) so persisted and live events look
+            // identical.
+            if (chatPanel && typeof chatPanel.handleWorkflowEvent === 'function') {
                 try {
-                    tracePanel.handleEvent({
+                    chatPanel.handleWorkflowEvent({
                         event_type: eventType,
                         node_id: payload.node_id,
                         model: payload.model,
@@ -1221,7 +1209,7 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
                         metadata: payload.metadata || payload,
                     });
                 } catch (e) {
-                    console.warn('trace panel event handling failed', e);
+                    console.warn('chat panel workflow event handling failed', e);
                 }
             }
 
@@ -1362,7 +1350,9 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
             // Clean up retry history
             delete window.retryHistoryStore;
 
-            // Destroy chat panel
+            // Destroy chat panel — this also tears down every per-node
+            // WorkflowProgressCard (and their per-card timers) via
+            // ChatPanel.destroy's cascade.
             if (chatPanel) {
                 chatPanel.destroy();
             }
@@ -1372,10 +1362,15 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
                 resizableSplit.destroy();
             }
 
-            // Destroy trace panel (clears per-node + banner timers so SPA
-            // navigation between runs doesn't leak intervals).
-            if (tracePanel && typeof tracePanel.destroy === 'function') {
-                tracePanel.destroy();
+            // Destroy state slide-over (releases its DOM + Esc listener).
+            if (window.StateSlideover && typeof window.StateSlideover.destroy === 'function') {
+                window.StateSlideover.destroy();
+            }
+
+            // Clear NodeScrollBus subscribers so the DAG-click handler + the
+            // ChatPanel's card listener don't leak across runs.
+            if (window.NodeScrollBus && typeof window.NodeScrollBus.clear === 'function') {
+                window.NodeScrollBus.clear();
             }
 
             // Cancel executing banner animation frame (fix existing leak)

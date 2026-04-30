@@ -18,6 +18,7 @@
     'use strict';
 
     let slideoverElement = null;
+    let escKeyHandler = null;
 
     const StateSlideover = {
         /**
@@ -68,6 +69,14 @@
                 backdrop.addEventListener('click', () => StateSlideover.close());
             }
 
+            // Esc key closes the slide-over when open.
+            escKeyHandler = (ev) => {
+                if (ev.key === 'Escape' && StateSlideover.isOpen()) {
+                    StateSlideover.close();
+                }
+            };
+            document.addEventListener('keydown', escKeyHandler);
+
             // Containers are now in the DOM and ready for live updates
         },
 
@@ -113,6 +122,10 @@
          * Cleanup (on route change).
          */
         destroy() {
+            if (escKeyHandler) {
+                document.removeEventListener('keydown', escKeyHandler);
+                escKeyHandler = null;
+            }
             if (slideoverElement && slideoverElement.parentNode) {
                 slideoverElement.parentNode.removeChild(slideoverElement);
             }

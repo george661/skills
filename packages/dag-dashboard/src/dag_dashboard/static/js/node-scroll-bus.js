@@ -1,97 +1,62 @@
 /**
- * NodeScrollBus — singleton event bus for DAG-feed cross-selection.
+ * NodeScrollBus — pub/sub for DAG↔feed cross-selection.
  *
- * Coordinates scroll/highlight between:
- * - DAG nodes (dag-renderer.js)
- * - Progress card feed items (workflow-progress-card.js)
+ * Maintains a monotonic counter and broadcasts { counter, nodeId, source }
+ * to every subscriber on trigger(). `source` is 'dag' or 'feed' so each side
+ * can ignore its own triggers and avoid feedback loops.
  *
  * Usage:
- *   const bus = NodeScrollBus.getInstance();
- *   bus.subscribe((nodeId) => { /* scroll to nodeId */ });
- *   bus.notifyNodeClicked('step1');
+ *   window.NodeScrollBus.subscribe((nodeId, source) => {
+ *       if (source === 'dag') { scrollFeedTo(nodeId); }
+ *   });
+ *   window.NodeScrollBus.trigger('node-a', 'dag');
+ *
+ * Use window.NodeScrollBus.clear() in SPA lifecycle cleanup to drop all
+ * subscribers and reset the counter.
  */
 
 (function (window) {
     'use strict';
 
-    let instance = null;
+    let counter = 0;
+    const subscribers = [];
 
-    class NodeScrollBus {
-        constructor() {
-            if (instance) {
-                return instance;
+    function trigger(nodeId, source) {
+        if (!nodeId) return;
+        counter += 1;
+        const evt = { counter, nodeId, source: source || 'unknown' };
+        for (const cb of subscribers.slice()) {
+            try {
+                cb(nodeId, source || 'unknown', evt);
+            } catch (e) {
+                console.error('NodeScrollBus subscriber threw', e);
             }
-
-            this.subscribers = [];
-            instance = this;
-        }
-
-        /**
-         * Subscribe to node click events.
-         * @param {Function} callback - Called with (nodeId, source) when a node is clicked
-         *                              source is 'dag' or 'card'
-         */
-        subscribe(callback) {
-            if (typeof callback === 'function') {
-                this.subscribers.push(callback);
-            }
-        }
-
-        /**
-         * Unsubscribe a callback
-         */
-        unsubscribe(callback) {
-            const index = this.subscribers.indexOf(callback);
-            if (index > -1) {
-                this.subscribers.splice(index, 1);
-            }
-        }
-
-        /**
-         * Notify all subscribers that a DAG node was clicked.
-         */
-        notifyNodeClicked(nodeId) {
-            this.subscribers.forEach((callback) => {
-                try {
-                    callback(nodeId, 'dag');
-                } catch (e) {
-                    console.error('NodeScrollBus: subscriber error', e);
-                }
-            });
-        }
-
-        /**
-         * Notify all subscribers that a progress card was clicked.
-         */
-        notifyCardClicked(nodeId) {
-            this.subscribers.forEach((callback) => {
-                try {
-                    callback(nodeId, 'card');
-                } catch (e) {
-                    console.error('NodeScrollBus: subscriber error', e);
-                }
-            });
-        }
-
-        /**
-         * Clear all subscribers (useful for cleanup on route change).
-         */
-        clear() {
-            this.subscribers = [];
-        }
-
-        /**
-         * Get the singleton instance.
-         */
-        static getInstance() {
-            if (!instance) {
-                instance = new NodeScrollBus();
-            }
-            return instance;
         }
     }
 
-    // Export to global scope
-    window.NodeScrollBus = NodeScrollBus;
+    function subscribe(cb) {
+        if (typeof cb === 'function') subscribers.push(cb);
+    }
 
+    function unsubscribe(cb) {
+        const i = subscribers.indexOf(cb);
+        if (i >= 0) subscribers.splice(i, 1);
+    }
+
+    function clear() {
+        subscribers.length = 0;
+        counter = 0;
+    }
+
+    function getCounter() {
+        return counter;
+    }
+
+    window.NodeScrollBus = {
+        trigger,
+        subscribe,
+        unsubscribe,
+        clear,
+        getCounter,
+    };
 })(window);

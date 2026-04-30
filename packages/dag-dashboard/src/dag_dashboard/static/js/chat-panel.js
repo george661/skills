@@ -1,23 +1,33 @@
 /**
- * ChatPanel - Per-workflow chat UI component
- * Displays a chat interface for a specific workflow run with SSE live updates
- * Can also display conversation-wide history (read-only mode)
+ * ChatPanel — unified conversation feed.
+ *
+ * Two modes:
+ *   'run'          — a workflow's live run-detail page. Renders user/agent
+ *                    chat turns, progress cards (one per node), and a terminal
+ *                    banner when the workflow ends. Accepts SSE workflow
+ *                    events via handleWorkflowEvent().
+ *   'conversation' — cross-run conversation view. Renders user/agent only;
+ *                    other message types are filtered out.
+ *
+ * Progress cards are delegated to WorkflowProgressCard instances (one per
+ * nodeId) maintained in a Map so subsequent events route back to the
+ * existing card instead of creating a duplicate.
  */
 class ChatPanel {
   constructor(containerId, runIdOrOptions) {
     this.containerId = containerId;
     this.container = document.getElementById(containerId);
-    this.messages = new Map(); // dedupe by message id
+    this.messages = new Map(); // dedupe chat messages by id
     this.isNearBottom = true;
 
-    // Support two constructor signatures:
-    // new ChatPanel(containerId, runId) - existing run mode
-    // new ChatPanel(containerId, { mode: 'conversation', conversationId }) - new conversation mode
+    // Constructor signatures:
+    //   new ChatPanel(containerId, runId) — run mode (back-compat)
+    //   new ChatPanel(containerId, { mode, runId, conversationId }) — explicit
     if (typeof runIdOrOptions === 'string') {
       this.mode = 'run';
       this.runId = runIdOrOptions;
       this.conversationId = null;
-    } else if (typeof runIdOrOptions === 'object') {
+    } else if (typeof runIdOrOptions === 'object' && runIdOrOptions !== null) {
       this.mode = runIdOrOptions.mode || 'run';
       this.runId = runIdOrOptions.runId || null;
       this.conversationId = runIdOrOptions.conversationId || null;
@@ -28,16 +38,24 @@ class ChatPanel {
     if (!this.container) {
       throw new Error(`Container #${containerId} not found`);
     }
+
+    // Per-node progress cards keyed by nodeId — used by handleWorkflowEvent
+    // to route follow-up events to an existing card.
+    this.cards = new Map();
+    // Mutable state shared with EventToMessages for out-of-order folding.
+    this._eventState = window.EventToMessages
+      ? window.EventToMessages.createState()
+      : { seenNodes: new Set(), pendingChannels: {} };
+    // NodeScrollBus subscription (run mode only).
+    this._scrollSubscription = null;
+    // Bound terminal banner flag.
+    this._terminalShown = false;
   }
 
-  /**
-   * Render the chat panel UI
-   */
   render() {
     const uniqueId = this.mode === 'conversation' ? this.conversationId : this.runId;
     const isReadOnly = this.mode === 'conversation';
 
-    // Render input form only if not in read-only conversation mode
     const inputFormHtml = isReadOnly
       ? `<div class="chat-read-only-hint">
            <p>Read-only view across runs — send messages from the originating run</p>
@@ -54,10 +72,7 @@ class ChatPanel {
          </form>`;
 
     this.container.innerHTML = `
-      <div class="chat-panel">
-        <div class="chat-header">
-          <h3>Chat</h3>
-        </div>
+      <div class="chat-panel chat-panel--${this.mode}">
         <div class="chat-messages" id="chat-messages-${uniqueId}">
           <div class="chat-empty-state">No messages yet</div>
         </div>
@@ -71,18 +86,25 @@ class ChatPanel {
       this.form = document.getElementById(`chat-form-${uniqueId}`);
       this.input = document.getElementById(`chat-input-${uniqueId}`);
       this._attachEventListeners();
+      this._subscribeToScrollBus();
     }
 
     this._setupScrollTracking();
     this._loadHistory();
   }
 
-  /**
-   * Load chat history from backend
-   */
+  _subscribeToScrollBus() {
+    if (this.mode !== 'run' || !window.NodeScrollBus) return;
+    this._scrollSubscription = (nodeId, source) => {
+      if (source === 'feed') return; // ignore self-triggers
+      const card = this.cards.get(nodeId);
+      if (card) card.scrollIntoViewAndFlash();
+    };
+    window.NodeScrollBus.subscribe(this._scrollSubscription);
+  }
+
   async _loadHistory() {
     try {
-      // Route to the correct endpoint based on mode
       const url = this.mode === 'conversation'
         ? `/api/conversations/${this.conversationId}/messages?limit=50`
         : `/api/workflows/${this.runId}/chat/history?limit=50`;
@@ -93,14 +115,9 @@ class ChatPanel {
         return;
       }
 
-      // Backend returns bare JSON array (List[Dict]), not wrapped object
       const messages = await response.json();
-
-      // Render messages in chronological order
       for (const msg of messages) {
-        // Store in messages map for dedupe
         if (msg.id) {
-          // Only render if not already displayed
           if (!this.messages.has(msg.id)) {
             this.messages.set(msg.id, msg);
             this.renderMessage(msg);
@@ -114,17 +131,12 @@ class ChatPanel {
     }
   }
 
-  /**
-   * Attach event listeners for form submission and keyboard shortcuts
-   */
   _attachEventListeners() {
-    // Form submission
     this.form.addEventListener('submit', (e) => {
       e.preventDefault();
       this._handleSendMessage();
     });
 
-    // Cmd/Ctrl+Enter to send
     this.input.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         e.preventDefault();
@@ -133,27 +145,26 @@ class ChatPanel {
     });
   }
 
-  /**
-   * Track when user is near bottom for auto-scroll behavior
-   */
   _setupScrollTracking() {
     this.messagesContainer.addEventListener('scroll', () => {
       const threshold = 100;
-      const scrollBottom = this.messagesContainer.scrollHeight - 
-                          this.messagesContainer.scrollTop - 
+      const scrollBottom = this.messagesContainer.scrollHeight -
+                          this.messagesContainer.scrollTop -
                           this.messagesContainer.clientHeight;
       this.isNearBottom = scrollBottom < threshold;
     });
   }
 
-  /**
-   * Handle sending a message
-   */
+  _scrollToBottomIfNeeded() {
+    if (this.isNearBottom) {
+      this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+    }
+  }
+
   async _handleSendMessage() {
     const content = this.input.value.trim();
     if (!content) return;
 
-    // Disable input while sending
     this.input.disabled = true;
     this.form.querySelector('.chat-send-btn').disabled = true;
 
@@ -162,42 +173,27 @@ class ChatPanel {
       this.input.value = '';
     } catch (error) {
       console.error('Failed to send message:', error);
-      
-      // Show 429 rate limit warning inline
       if (error.status === 429) {
         this._showRateLimitWarning();
       } else {
         alert(`Failed to send message: ${error.message}`);
       }
     } finally {
-      // Re-enable input
       this.input.disabled = false;
       this.form.querySelector('.chat-send-btn').disabled = false;
       this.input.focus();
     }
   }
 
-  /**
-   * Show inline rate limit warning
-   */
   _showRateLimitWarning() {
     const warningDiv = document.createElement('div');
     warningDiv.className = 'chat-rate-limit-warning';
     warningDiv.textContent = 'Rate limit exceeded. Please wait a moment before sending another message.';
-    
     this.form.insertAdjacentElement('beforebegin', warningDiv);
-    
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-      warningDiv.remove();
-    }, 5000);
+    setTimeout(() => { warningDiv.remove(); }, 5000);
   }
 
-  /**
-   * Send a message to the backend
-   */
   async sendMessage(content) {
-    // Get or prompt for operator username
     let operatorUsername = localStorage.getItem('chat_operator_username');
     if (!operatorUsername) {
       operatorUsername = prompt('Enter your username for chat:');
@@ -209,13 +205,8 @@ class ChatPanel {
 
     const response = await fetch(`/api/workflows/${this.runId}/chat`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        content,
-        operator_username: operatorUsername
-      }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, operator_username: operatorUsername }),
     });
 
     if (!response.ok) {
@@ -228,44 +219,102 @@ class ChatPanel {
   }
 
   /**
-   * Handle SSE message event
-   * @param {Object} payload - Chat message payload
+   * Handle an SSE chat_message event (back-compat name).
    */
   handleSSEMessage(payload) {
-    // Dedupe by message id
-    if (payload.id && this.messages.has(payload.id)) {
-      return;
-    }
-
-    if (payload.id) {
-      this.messages.set(payload.id, payload);
-    }
-
+    if (payload.id && this.messages.has(payload.id)) return;
+    if (payload.id) this.messages.set(payload.id, payload);
     this.renderMessage(payload);
   }
 
   /**
-   * Render a single chat message
-   * @param {Object} msg - Message object with role, content, timestamp
+   * Handle an SSE workflow event (run mode only).
+   * `payload` is the normalized shape from setupLiveUpdates:
+   *   { event_type, node_id, model, dispatch, duration_ms, timestamp, metadata }
+   * Conversation mode filters everything out.
+   */
+  handleWorkflowEvent(payload) {
+    if (this.mode !== 'run') return;
+    if (!window.EventToMessages) return;
+    const messages = window.EventToMessages.eventToMessages(payload, this._eventState);
+    for (const msg of messages) {
+      this._dispatchWorkflowMessage(msg);
+    }
+  }
+
+  _dispatchWorkflowMessage(msg) {
+    if (msg.type === 'progress_card') {
+      const card = this._ensureCard(msg.nodeId, msg.payload);
+      card.handleEvent(msg);
+      this._scrollToBottomIfNeeded();
+    } else if (msg.type === 'terminal') {
+      this._renderTerminalBanner(msg.status);
+    }
+  }
+
+  _ensureCard(nodeId, payload) {
+    let card = this.cards.get(nodeId);
+    if (card) return card;
+
+    const empty = this.messagesContainer.querySelector('.chat-empty-state');
+    if (empty) empty.remove();
+
+    const meta = (payload && payload.metadata) || {};
+    card = new window.WorkflowProgressCard({
+      runId: this.runId,
+      nodeId,
+      model: payload ? (payload.model || meta.model || '') : '',
+      dispatch: payload ? (payload.dispatch || meta.dispatch || '') : '',
+    });
+    this.cards.set(nodeId, card);
+    card.mount(this.messagesContainer);
+    return card;
+  }
+
+  _renderTerminalBanner(status) {
+    if (this._terminalShown) return;
+    this._terminalShown = true;
+    const banner = document.createElement('div');
+    banner.className = `chat-terminal-banner chat-terminal-banner--${status}`;
+    banner.textContent = `Workflow ${status}`;
+    this.messagesContainer.appendChild(banner);
+    this._scrollToBottomIfNeeded();
+  }
+
+  /**
+   * Render a chat message (user/agent/operator). In conversation mode,
+   * anything that isn't a chat turn is filtered out — no progress cards
+   * ever render in the conversation view.
    */
   renderMessage(msg) {
-    // Remove empty state if present
-    const emptyState = this.messagesContainer.querySelector('.chat-empty-state');
-    if (emptyState) {
-      emptyState.remove();
+    const type = msg.type || msg.role;
+    if (this.mode === 'conversation') {
+      if (type !== 'user' && type !== 'agent' && type !== 'operator') return;
     }
 
+    const empty = this.messagesContainer.querySelector('.chat-empty-state');
+    if (empty) empty.remove();
+
+    if (type === 'progress_card' || type === 'terminal') {
+      // Defensive: these go through _dispatchWorkflowMessage in run mode
+      // and are filtered out in conversation mode above.
+      return;
+    }
+    return this._renderChatTurn(msg);
+  }
+
+  _renderChatTurn(msg) {
     const messageDiv = document.createElement('div');
-    messageDiv.className = `chat-message chat-message-${this._escapeHtml(msg.role)}`;
-    
+    const role = msg.role || msg.type || 'agent';
+    messageDiv.className = `chat-message chat-message-${this._escapeHtml(role)}`;
+
     const timestamp = msg.created_at ? new Date(msg.created_at).toLocaleTimeString() : '';
     const timestampHtml = timestamp ? `<span class="chat-message-time">${this._escapeHtml(timestamp)}</span>` : '';
-    
-    // Sanitize all content - markdown for agent, plain text for operator
+
     let contentHtml;
-    if (msg.role === 'agent' && typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+    if (role === 'agent' && typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
       contentHtml = DOMPurify.sanitize(marked.parse(msg.content));
-    } else if (msg.role === 'operator' && typeof DOMPurify !== 'undefined') {
+    } else if (role === 'operator' && typeof DOMPurify !== 'undefined') {
       contentHtml = DOMPurify.sanitize(this._escapeHtml(msg.content));
     } else {
       contentHtml = this._escapeHtml(msg.content);
@@ -273,36 +322,34 @@ class ChatPanel {
 
     messageDiv.innerHTML = `
       <div class="chat-message-header">
-        <span class="chat-message-role">${this._escapeHtml(msg.role)}</span>
+        <span class="chat-message-role">${this._escapeHtml(role)}</span>
         ${timestampHtml}
       </div>
       <div class="chat-message-content">${contentHtml}</div>
     `;
 
     this.messagesContainer.appendChild(messageDiv);
-
-    // Auto-scroll only if user is near bottom
     if (this.isNearBottom) {
       this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
     }
   }
 
-  /**
-   * Escape HTML to prevent XSS
-   */
   _escapeHtml(text) {
     const div = document.createElement('div');
-    div.textContent = text;
+    div.textContent = text == null ? '' : text;
     return div.innerHTML;
   }
 
-  /**
-   * Destroy the chat panel and clean up resources
-   */
   destroy() {
-    if (this.container) {
-      this.container.innerHTML = '';
+    if (this._scrollSubscription && window.NodeScrollBus) {
+      window.NodeScrollBus.unsubscribe(this._scrollSubscription);
+      this._scrollSubscription = null;
     }
+    for (const card of this.cards.values()) {
+      try { card.destroy(); } catch (_) { /* best-effort */ }
+    }
+    this.cards.clear();
+    if (this.container) this.container.innerHTML = '';
     this.messages.clear();
   }
 }

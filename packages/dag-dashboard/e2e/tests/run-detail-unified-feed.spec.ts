@@ -1,120 +1,81 @@
 /**
- * E2E tests for unified feed layout (GW-5422)
- * 
- * Tests:
- * - Two-pane layout with ResizableSplit
- * - WorkflowProgressCard renders SSE events
- * - State slideover opens/closes
- * - DAG-feed cross-selection via NodeScrollBus
+ * E2E — unified feed layout (GW-5422).
+ *
+ * Opt-in suite (PLAYWRIGHT_E2E=1). Navigates to the dashboard index and
+ * asserts that all unified-feed modules are loaded and available on the
+ * window. The full run-detail flow (trigger workflow → see progress cards)
+ * needs seeded run data and lives in the larger mobile/e2e suites.
  */
-
 import { test, expect } from '@playwright/test';
 
-test.describe('Run Detail Unified Feed', () => {
-    test('should display two-pane layout with DAG and unified feed', async ({ page }) => {
-        // Navigate to a run detail page (assumes test data exists)
+test.describe('Unified feed modules load', () => {
+    test('every GW-5422 module is available on window', async ({ page }) => {
         await page.goto('/');
-        
-        // Check for two-pane split layout
-        const splitContainer = page.locator('.run-pane-split');
-        await expect(splitContainer).toBeVisible();
-        
-        // Left pane should contain DAG
-        const leftPane = page.locator('.run-pane-left');
-        await expect(leftPane).toBeVisible();
-        await expect(leftPane.locator('#dag-container')).toBeVisible();
-        
-        // Right pane should contain unified feed
-        const rightPane = page.locator('.run-pane-right');
-        await expect(rightPane).toBeVisible();
-        await expect(rightPane.locator('.workflow-progress-card-container')).toBeVisible();
+
+        const exposed = await page.evaluate(() => ({
+            hasChatPanel: typeof (window as any).ChatPanel === 'function',
+            hasWorkflowProgressCard: typeof (window as any).WorkflowProgressCard === 'function',
+            hasEventToMessages: typeof (window as any).EventToMessages === 'object',
+            hasNodeScrollBus: typeof (window as any).NodeScrollBus === 'object',
+            hasStateSlideover: typeof (window as any).StateSlideover === 'object',
+            hasResizableSplit: typeof (window as any).ResizableSplit === 'function',
+            // TracePanel is sunset — must NOT be available any longer.
+            noTracePanel: typeof (window as any).TracePanel === 'undefined',
+        }));
+
+        expect(exposed.hasChatPanel).toBeTruthy();
+        expect(exposed.hasWorkflowProgressCard).toBeTruthy();
+        expect(exposed.hasEventToMessages).toBeTruthy();
+        expect(exposed.hasNodeScrollBus).toBeTruthy();
+        expect(exposed.hasStateSlideover).toBeTruthy();
+        expect(exposed.hasResizableSplit).toBeTruthy();
+        expect(exposed.noTracePanel).toBeTruthy();
     });
 
-    test('should show state slideover toggle button', async ({ page }) => {
+    test('event-to-messages folds channel_updated into owning card', async ({ page }) => {
         await page.goto('/');
-        
-        const toggleBtn = page.locator('#state-slideover-toggle');
-        await expect(toggleBtn).toBeVisible();
-        await expect(toggleBtn).toHaveText(/View State/i);
-    });
 
-    test('should open and close state slideover', async ({ page }) => {
-        await page.goto('/');
-        
-        // Slideover should be closed initially
-        const slideover = page.locator('.state-slideover');
-        await expect(slideover).toHaveClass(/state-slideover--closed/);
-        
-        // Click toggle button to open
-        await page.click('#state-slideover-toggle');
-        await expect(slideover).not.toHaveClass(/state-slideover--closed/);
-        
-        // Slideover panel should be visible
-        const panel = page.locator('.state-slideover-panel');
-        await expect(panel).toBeVisible();
-        
-        // Should contain state containers
-        await expect(panel.locator('#channel-state-container')).toBeVisible();
-        await expect(panel.locator('#state-diff-timeline-container')).toBeVisible();
-        await expect(panel.locator('#run-artifacts-container')).toBeVisible();
-        
-        // Click close button
-        await page.click('.state-slideover-close');
-        await expect(slideover).toHaveClass(/state-slideover--closed/);
-    });
-
-    test('should close slideover when clicking backdrop', async ({ page }) => {
-        await page.goto('/');
-        
-        // Open slideover
-        await page.click('#state-slideover-toggle');
-        const slideover = page.locator('.state-slideover');
-        await expect(slideover).not.toHaveClass(/state-slideover--closed/);
-        
-        // Click backdrop
-        await page.click('.state-slideover-backdrop');
-        await expect(slideover).toHaveClass(/state-slideover--closed/);
-    });
-
-    test('should render progress card messages', async ({ page }) => {
-        await page.goto('/');
-        
-        // Wait for progress card container
-        const container = page.locator('.workflow-progress-card-container');
-        await expect(container).toBeVisible();
-        
-        // Should either show messages or empty state
-        const hasMessages = await page.locator('.progress-card-item').count() > 0;
-        const hasEmpty = await page.locator('.progress-card-empty').count() > 0;
-        expect(hasMessages || hasEmpty).toBeTruthy();
-    });
-
-    test('should handle DAG node click for cross-selection', async ({ page }) => {
-        await page.goto('/');
-        
-        // Wait for DAG to render
-        await page.waitForSelector('#dag-container .dag-node', { timeout: 5000 }).catch(() => {
-            // DAG might not have nodes in empty state - that's OK for this test structure
+        const result = await page.evaluate(() => {
+            const ETM = (window as any).EventToMessages;
+            const state = ETM.createState();
+            const events = [
+                { event_type: 'node_started', node_id: 'n1', metadata: {} },
+                { event_type: 'channel_updated', node_id: 'n1',
+                  metadata: { writer_node_id: 'n1', channel_key: 'seed', value: 'v1' } },
+            ];
+            const out: any[] = [];
+            for (const ev of events) {
+                for (const m of ETM.eventToMessages(ev, state)) {
+                    out.push({ type: m.type, subtype: m.subtype, nodeId: m.nodeId });
+                }
+            }
+            return out;
         });
-        
-        // Check that NodeScrollBus is available
-        const busAvailable = await page.evaluate(() => {
-            return typeof (window as any).NodeScrollBus !== 'undefined';
-        });
-        expect(busAvailable).toBeTruthy();
+
+        expect(result).toEqual([
+            { type: 'progress_card', subtype: 'node_started', nodeId: 'n1' },
+            { type: 'progress_card', subtype: 'channel_updated', nodeId: 'n1' },
+        ]);
     });
 
-    test('should have ResizableSplit initialized', async ({ page }) => {
+    test('NodeScrollBus broadcasts to subscribers with source tag', async ({ page }) => {
         await page.goto('/');
-        
-        // Check that ResizableSplit is available and applied
-        const hasResizableSplit = await page.evaluate(() => {
-            return typeof (window as any).ResizableSplit !== 'undefined';
+
+        const received = await page.evaluate(() => {
+            const bus = (window as any).NodeScrollBus;
+            bus.clear();
+            const calls: any[] = [];
+            bus.subscribe((nodeId: string, source: string) => calls.push({ nodeId, source }));
+            bus.trigger('n1', 'dag');
+            bus.trigger('n2', 'feed');
+            bus.clear();
+            bus.trigger('n3', 'dag'); // should not be received after clear
+            return calls;
         });
-        expect(hasResizableSplit).toBeTruthy();
-        
-        // Split should have the run-split class applied by ResizableSplit
-        const splitContainer = page.locator('.run-pane-split');
-        await expect(splitContainer).toBeVisible();
+
+        expect(received).toEqual([
+            { nodeId: 'n1', source: 'dag' },
+            { nodeId: 'n2', source: 'feed' },
+        ]);
     });
 });
