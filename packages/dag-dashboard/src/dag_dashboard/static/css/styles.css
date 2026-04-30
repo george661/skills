@@ -4776,3 +4776,256 @@ select.form-control {
     }
 }
 
+
+/* ==========================================================================
+   GW-5422: Unified Feed Layout + State Slideover
+   ========================================================================== */
+
+/* Two-pane layout with ResizableSplit */
+.run-pane-split {
+    display: flex;
+    height: calc(100vh - 200px);
+    min-height: 400px;
+    gap: 0;
+}
+
+.run-pane-left {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.run-pane-right {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-secondary);
+}
+
+/* State slideover toggle button */
+.state-slideover-toggle-btn {
+    position: absolute;
+    bottom: 1rem;
+    right: 1rem;
+    z-index: 10;
+}
+
+/* Unified feed header */
+.unified-feed-header {
+    padding: 1rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-primary);
+}
+
+.unified-feed-header .run-side-heading {
+    margin: 0;
+}
+
+/* Workflow progress card container */
+.workflow-progress-card-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem;
+}
+
+/* Progress card items */
+.progress-card-item {
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.5rem;
+    border-radius: var(--radius);
+    background: var(--bg-primary);
+    border-left: 3px solid var(--border);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.progress-card-item:hover {
+    background: var(--bg-hover);
+    transform: translateX(2px);
+}
+
+.progress-card-item--highlight {
+    background: var(--accent-bg);
+    border-left-color: var(--accent);
+    animation: pulse 0.5s ease;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+.progress-card-item--node_started {
+    border-left-color: var(--info);
+}
+
+.progress-card-item--node_completed {
+    border-left-color: var(--success);
+}
+
+.progress-card-item--channel_write {
+    border-left-color: var(--warning);
+}
+
+.progress-card-item--escalation {
+    border-left-color: var(--error);
+}
+
+.progress-card-timestamp {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+}
+
+.progress-card-content {
+    font-size: 0.875rem;
+    color: var(--text-primary);
+}
+
+.progress-card-content strong {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.progress-card-content code {
+    padding: 0.125rem 0.25rem;
+    background: var(--bg-secondary);
+    border-radius: 2px;
+    font-size: 0.8rem;
+}
+
+.progress-card-preview {
+    margin-top: 0.5rem;
+    padding: 0.5rem;
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    overflow-x: auto;
+    max-height: 100px;
+}
+
+.progress-card-empty {
+    padding: 2rem;
+    text-align: center;
+    color: var(--text-muted);
+}
+
+/* State slideover */
+.state-slideover {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.state-slideover--closed {
+    display: none;
+}
+
+.state-slideover-backdrop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+}
+
+.state-slideover-panel {
+    position: relative;
+    width: 500px;
+    max-width: 90vw;
+    height: 100vh;
+    background: var(--bg-primary);
+    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.2);
+    display: flex;
+    flex-direction: column;
+    animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+    }
+    to {
+        transform: translateX(0);
+    }
+}
+
+.state-slideover-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.state-slideover-header h3 {
+    margin: 0;
+    font-size: 1.25rem;
+    color: var(--text-primary);
+}
+
+.state-slideover-close {
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0;
+    width: 2rem;
+    height: 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius);
+    transition: background 0.2s ease;
+}
+
+.state-slideover-close:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.state-slideover-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.5rem;
+}
+
+.state-slideover-section-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 1.5rem 0 0.75rem;
+}
+
+.state-slideover-section-title:first-child {
+    margin-top: 0;
+}
+
+/* Mobile responsive adjustments */
+@media (max-width: 768px) {
+    .run-pane-split {
+        flex-direction: column;
+        height: auto;
+    }
+
+    .state-slideover-toggle-btn {
+        position: static;
+        margin: 1rem;
+    }
+
+    .state-slideover-panel {
+        width: 100vw;
+        max-width: 100vw;
+    }
+}

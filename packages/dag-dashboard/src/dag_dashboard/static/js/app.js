@@ -728,25 +728,22 @@ async function renderRunDetail(runId) {
                 </div>
             </div>
             <div id="totals-container"></div>
-            <!-- 3-column grid: DAG | state-side | trace+chat. ResizableSplit
-                 from PR #156 is intentionally NOT mounted on this layout —
-                 it's designed for two panes. GW-5422 will swap this for a
-                 true two-pane layout (DAG + unified conversation feed) and
-                 activate the resizable split at that point. -->
-            <div class="run-graph-3col">
-                <div class="run-graph-canvas">
-                    <div id="dag-container"></div>
+            <!-- GW-5422: Two-pane layout with ResizableSplit (DAG | unified feed).
+                 State channels/timeline/artifacts moved to slide-over panel. -->
+            <div class="run-pane-split">
+                <div class="run-pane-left">
+                    <div class="run-graph-canvas">
+                        <div id="dag-container"></div>
+                    </div>
+                    <button id="state-slideover-toggle" class="btn btn-secondary state-slideover-toggle-btn">
+                        View State
+                    </button>
                 </div>
-                <div class="run-graph-side">
-                    <h3 class="run-side-heading">State Channels</h3>
-                    <div id="channel-state-container"></div>
-                    <h3 class="run-side-heading">State Changes Timeline</h3>
-                    <div id="state-diff-timeline-container"></div>
-                    <h3 class="run-side-heading">Artifacts</h3>
-                    <div id="run-artifacts-container"></div>
-                </div>
-                <div class="run-graph-chat">
-                    <div id="trace-container" class="trace-section-rail"></div>
+                <div class="run-pane-right">
+                    <div class="unified-feed-header">
+                        <h3 class="run-side-heading">Workflow Progress</h3>
+                    </div>
+                    <div id="workflow-progress-card-container" class="workflow-progress-card-container"></div>
                     <div id="run-chat-section" class="run-chat-section">
                         <div class="run-chat-section-head">
                             <h3 class="run-side-heading" style="margin: 0;">Talk to orchestrator</h3>
@@ -756,6 +753,8 @@ async function renderRunDetail(runId) {
                     </div>
                 </div>
             </div>
+            <!-- State slideover (eager mount - containers exist in DOM from page load) -->
+            <div id="state-slideover-mount"></div>
             <div class="run-detail-id-strip">
                 <span class="run-detail-id-label">Run ID:</span>
                 <code>${escapeHtml(runId)}</code>
@@ -920,27 +919,42 @@ async function renderRunDetail(runId) {
         // Setup currently executing banner
         setupExecutingBanner(layoutData.nodes);
 
-        // Initialize channel state panel
+        // Mount state slideover (eager mount - containers in DOM from page load)
+        if (window.StateSlideover) {
+            window.StateSlideover.mount('state-slideover-mount');
+        }
+
+        // Initialize channel state panel (now inside slideover)
         const channelPanel = new window.ChannelStatePanel('channel-state-container');
 
-        // Initialize live trace panel. This replaces the empty chat panel in
-        // the right rail of the workflow detail view — it consumes the same
-        // SSE stream and renders per-node cards with live elapsed timers,
-        // streamed tokens, log lines, channel writes, and errors.
-        let tracePanel = null;
-        if (window.TracePanel) {
-            tracePanel = new window.TracePanel('trace-container', runId);
-            tracePanel.render();
-            // Clicking a DAG node jumps the trace feed to that node's card.
-            if (dagRenderer && typeof dagRenderer.container !== 'undefined') {
-                dagRenderer.container.addEventListener('click', (e) => {
-                    const group = e.target.closest('.dag-node');
-                    if (!group) return;
-                    const nodeName = group.getAttribute('data-node-name');
-                    if (nodeName) tracePanel.scrollToNode(nodeName);
+        // Initialize WorkflowProgressCard (unified feed replacing TracePanel)
+        let progressCard = null;
+        if (window.WorkflowProgressCard) {
+            progressCard = new window.WorkflowProgressCard('workflow-progress-card-container', runId);
+
+            // Setup cross-selection with DAG via NodeScrollBus
+            const nodeScrollBus = window.NodeScrollBus ? window.NodeScrollBus.getInstance() : null;
+            if (nodeScrollBus) {
+                nodeScrollBus.subscribe((nodeId, source) => {
+                    if (source === 'dag' && progressCard) {
+                        progressCard.scrollToNode(nodeId);
+                    }
                 });
+
+                // Wire DAG node clicks to bus
+                if (dagRenderer && typeof dagRenderer.container !== 'undefined') {
+                    dagRenderer.container.addEventListener('click', (e) => {
+                        const group = e.target.closest('.dag-node');
+                        if (!group) return;
+                        const nodeName = group.getAttribute('data-node-name');
+                        if (nodeName) nodeScrollBus.notifyNodeClicked(nodeName);
+                    });
+                }
             }
         }
+
+        // Keep tracePanel stub for backward compatibility (will be removed in future PR)
+        const tracePanel = progressCard || { handleSSEMessage: () => {}, destroy: () => {} };
         // Mount a real ChatPanel under the trace so users can talk to the
         // orchestrator without leaving the run page. Escalated-card buttons
         // scroll this into view via the 'trace-chat-request' CustomEvent.
@@ -988,10 +1002,7 @@ async function renderRunDetail(runId) {
             window.ArtifactList.render('run-artifacts-container', runId);
         }
 
-        // Initialize resizable split for the graph pane (AC-1). Mount point
-        // is `.run-pane-split`, which will be introduced in GW-5422 when the
-        // right pane becomes a single conversation feed. Until then this
-        // querySelector returns null and the split stays dormant.
+        // Initialize resizable split for the new two-pane layout (GW-5422)
         const splitContainer = document.querySelector('.run-pane-split');
         let resizableSplit = null;
         if (splitContainer && window.ResizableSplit) {
@@ -1001,6 +1012,14 @@ async function renderRunDetail(runId) {
                 maxSplit: 80,
                 storageKey: 'dag-dashboard.run-detail.split',
                 mobileBreakpoint: 1024
+            });
+        }
+
+        // Wire up state slideover toggle button
+        const slideoverToggleBtn = document.getElementById('state-slideover-toggle');
+        if (slideoverToggleBtn && window.StateSlideover) {
+            slideoverToggleBtn.addEventListener('click', () => {
+                window.StateSlideover.toggle();
             });
         }
 

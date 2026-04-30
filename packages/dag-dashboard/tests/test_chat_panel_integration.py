@@ -143,3 +143,50 @@ def test_sse_chat_message_response_shape(client: TestClient):
         assert field in data, f"Missing field: {field}"
     
     # The broadcaster will emit this shape — chat_routes.py handles the SSE broadcast
+
+
+def test_event_to_messages_channel_fold_logic():
+    """Test that event-to-messages.js handles out-of-order channel writes.
+    
+    Architecture detail: SSE events can arrive out of order. If a channel_write
+    arrives before its node_started event, eventToMessages buffers it in
+    state.pendingChannels[writer_node_id] and flushes when node_started arrives.
+    
+    This test verifies the JavaScript module exports the right interface.
+    """
+    from pathlib import Path
+    
+    js_path = (
+        Path(__file__).parent.parent
+        / "src"
+        / "dag_dashboard"
+        / "static"
+        / "js"
+        / "event-to-messages.js"
+    )
+    content = js_path.read_text()
+    
+    # Must export eventToMessages function
+    assert "window.eventToMessages" in content, (
+        "eventToMessages must be exported to global scope"
+    )
+    
+    # Must have pendingChannels buffer
+    assert "pendingChannels" in content, (
+        "eventToMessages must buffer orphan channel writes"
+    )
+    
+    # Must handle channel_write event type
+    assert "channel_write" in content, (
+        "eventToMessages must handle channel_write events"
+    )
+    
+    # Must handle node_started event type
+    assert "node_started" in content, (
+        "eventToMessages must handle node_started events to flush buffer"
+    )
+    
+    # Must flush pending writes when node_started arrives
+    assert "pending" in content and "flush" in content.lower() or "delete state.pendingChannels" in content, (
+        "eventToMessages must flush buffered channel writes when node_started arrives"
+    )

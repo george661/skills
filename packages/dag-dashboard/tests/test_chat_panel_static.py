@@ -96,3 +96,61 @@ def test_app_js_registers_conversation_route(client: TestClient):
     response = client.get("/js/app.js")
     assert response.status_code == 200
     assert "/conversations/" in response.text
+
+
+def test_index_includes_new_unified_feed_scripts(client: TestClient):
+    """Test that index.html includes new unified feed scripts in correct order."""
+    response = client.get("/")
+    assert response.status_code == 200
+    html = response.text
+
+    # Check all new scripts are present
+    assert "/js/node-scroll-bus.js" in html
+    assert "/js/event-to-messages.js" in html
+    assert "/js/workflow-progress-card.js" in html
+    assert "/js/state-slideover.js" in html
+
+    # Verify order: new scripts before app.js
+    bus_pos = html.find("/js/node-scroll-bus.js")
+    events_pos = html.find("/js/event-to-messages.js")
+    card_pos = html.find("/js/workflow-progress-card.js")
+    slideover_pos = html.find("/js/state-slideover.js")
+    app_js_pos = html.find("/js/app.js")
+
+    assert bus_pos < app_js_pos, "node-scroll-bus.js must load before app.js"
+    assert events_pos < app_js_pos, "event-to-messages.js must load before app.js"
+    assert card_pos < app_js_pos, "workflow-progress-card.js must load before app.js"
+    assert slideover_pos < app_js_pos, "state-slideover.js must load before app.js"
+
+
+def test_workflow_progress_card_js_served(client: TestClient):
+    """Test that workflow-progress-card.js is served."""
+    response = client.get("/js/workflow-progress-card.js")
+    assert response.status_code == 200
+    assert "class WorkflowProgressCard" in response.text
+    assert "handleEvent" in response.text
+
+
+def test_event_to_messages_js_served(client: TestClient):
+    """Test that event-to-messages.js is served."""
+    response = client.get("/js/event-to-messages.js")
+    assert response.status_code == 200
+    assert "eventToMessages" in response.text
+    assert "pendingChannels" in response.text
+
+
+def test_node_scroll_bus_js_served(client: TestClient):
+    """Test that node-scroll-bus.js is served."""
+    response = client.get("/js/node-scroll-bus.js")
+    assert response.status_code == 200
+    assert "class NodeScrollBus" in response.text
+    assert "notifyNodeClicked" in response.text
+
+
+def test_state_slideover_js_served(client: TestClient):
+    """Test that state-slideover.js is served."""
+    response = client.get("/js/state-slideover.js")
+    assert response.status_code == 200
+    assert "StateSlideover" in response.text
+    assert "mount" in response.text
+    assert "state-slideover--closed" in response.text
