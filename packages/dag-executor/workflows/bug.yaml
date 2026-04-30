@@ -101,6 +101,7 @@ nodes:
       - collect_evidence
     model: opus
     dispatch: inline
+    output_format: json
     reads:
       - evidence
     writes:
@@ -137,6 +138,10 @@ nodes:
       - duplicate_gate
     model: sonnet
     dispatch: local
+    # Local Sonnet can time out on long analyses. Pause the workflow and
+    # hand the prompt to the wrapping conversation (Opus) instead of
+    # failing the whole run.
+    on_failure: escalate
     reads:
       - evidence
       - classification
@@ -193,6 +198,9 @@ nodes:
       - create_bug_issue
     model: sonnet
     dispatch: local
+    # Escalate on local-Sonnet failure so the wrapping conversation can
+    # synthesize the verdict instead of failing the whole bug report.
+    on_failure: escalate
     reads:
       - evidence
       - root_cause

@@ -58,19 +58,29 @@ class VariableResolutionError(Exception):
 # Regex to match $variable or $node.field.nested or $function(args)
 VARIABLE_PATTERN = re.compile(r'\$([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*)')
 
+# Shell-style ${variable} form. Workflow authors naturally write ${description}
+# inside prompts and scripts (matches bash). We normalize to $description before
+# the main resolver runs. Dotted forms like ${node.field} are NOT supported
+# here — authors should use $node.field for those (matches YAML-level refs).
+BRACED_VARIABLE_PATTERN = re.compile(r'\$\{([a-zA-Z0-9_-]+)\}')
+
 
 def _interpolate(value: Any) -> str:
     """Render a resolved value for string interpolation inside a script.
 
-    Strings are inserted verbatim. Everything else goes through json.dumps so
-    bash/jq pipelines see valid JSON rather than Python's repr of a dict
-    (which uses single quotes and `True`/`False`/`None`). This matters for
-    workflows that pipe an upstream state channel through `jq`:
+    Strings are inserted verbatim. Booleans and None use Python-literal form
+    (`True`/`False`/`None`) so SimpleEval-parsed gate/interrupt conditions
+    like `$x == False` resolve cleanly. Everything else goes through
+    json.dumps so bash/jq pipelines see valid JSON rather than Python's
+    repr of a dict (which uses single quotes). This matters for workflows
+    that pipe an upstream state channel through `jq`:
     `echo "$children_list" | jq '.issues[]'` only works if the variable
     expands to JSON, not Python-repr.
     """
     if isinstance(value, str):
         return value
+    if isinstance(value, bool) or value is None:
+        return repr(value)
     try:
         return json.dumps(value)
     except (TypeError, ValueError):
@@ -130,6 +140,17 @@ def _resolve_string(
     (used for bash-local variable names — the subshell handles their expansion).
     """
     skip = skip_names or set()
+
+    # Normalize bash-style ${foo} → $foo so the rest of the resolver doesn't
+    # need to duplicate regex logic. Names in `skip` are preserved verbatim so
+    # bash subshells still expand their own ${local_var} as before.
+    def _unbrace(m: "re.Match[str]") -> str:
+        name = m.group(1)
+        if name in skip:
+            return m.group(0)
+        return f"${name}"
+
+    value = BRACED_VARIABLE_PATTERN.sub(_unbrace, value)
 
     # First check for callable patterns (like $repo_path(...))
     callable_matches = list(CALLABLE_PATTERN.finditer(value))

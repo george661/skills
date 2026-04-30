@@ -213,18 +213,37 @@ class PromptRunner(BaseRunner):
 
             # Stream output line by line
             output_lines = []
+            log_seq = 0
             if process.stdout:
                 for line in process.stdout:
                     output_lines.append(line)
-                    # Emit stream token event if emitter is available
+                    rstripped = line.rstrip('\n')
+                    # Emit stream token event if emitter is available (drives
+                    # TracePanel). Also emit NODE_LOG_LINE so prompt stdout is
+                    # persisted to the `node_logs` table — without this the
+                    # NodeDetailPanel's Logs tab shows "No logs yet" for every
+                    # prompt/agent node even though the trace shows output.
                     if ctx.event_emitter:
+                        now = datetime.now(timezone.utc)
                         ctx.event_emitter.emit(WorkflowEvent(
                             event_type=EventType.NODE_STREAM_TOKEN,
                             workflow_id=ctx.workflow_id,
                             node_id=ctx.node_def.id,
-                            metadata={"token": line.rstrip('\n')},
-                            timestamp=datetime.now(timezone.utc)
+                            metadata={"token": rstripped},
+                            timestamp=now,
                         ))
+                        ctx.event_emitter.emit(WorkflowEvent(
+                            event_type=EventType.NODE_LOG_LINE,
+                            workflow_id=ctx.workflow_id,
+                            node_id=ctx.node_def.id,
+                            metadata={
+                                "stream": "stdout",
+                                "sequence": log_seq,
+                                "line": rstripped,
+                            },
+                            timestamp=now,
+                        ))
+                        log_seq += 1
 
             # Wait for process completion with timeout
             # NOTE: Timeout only applies after stdout draining completes. If the process generates
@@ -244,6 +263,23 @@ class PromptRunner(BaseRunner):
 
             # Collect stderr
             stderr = process.stderr.read() if process.stderr else ""
+
+            # Persist stderr lines so the Logs tab's stderr filter has data.
+            if stderr and ctx.event_emitter:
+                now = datetime.now(timezone.utc)
+                for errline in stderr.splitlines():
+                    ctx.event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.NODE_LOG_LINE,
+                        workflow_id=ctx.workflow_id,
+                        node_id=ctx.node_def.id,
+                        metadata={
+                            "stream": "stderr",
+                            "sequence": log_seq,
+                            "line": errline,
+                        },
+                        timestamp=now,
+                    ))
+                    log_seq += 1
 
             if returncode != 0:
                 return NodeResult(

@@ -81,6 +81,50 @@ class InterruptCheckpoint(BaseModel):
     pending_nodes: List[str] = Field(default_factory=list)
 
 
+class EscalationCheckpoint(BaseModel):
+    """Checkpoint data for a node that failed with on_failure=escalate.
+
+    The wrapping conversation (typically Opus/Sonnet in a Claude Code session)
+    reads this checkpoint to understand what the node was asked to do, what
+    happened, and what output shape downstream nodes expect. It then does
+    the work inline and resumes by POSTing a synthesized output.
+
+    Attributes:
+        node_id: ID of the escalated node.
+        node_type: "prompt" | "bash" | ... so the resumer knows what shape
+            to synthesize (a prompt's response text vs a bash JSON payload).
+        error: The failure string from the runner.
+        prompt: Full prompt text for prompt nodes. Truncated if very long.
+        script: Full script for bash nodes. Truncated if very long.
+        model: Resolved model tier at time of failure (for context).
+        dispatch: Resolved dispatch mode at time of failure.
+        stdout_tail: Last 2000 chars of stdout streamed before the failure.
+        stderr_tail: Last 2000 chars of stderr.
+        output_format: Declared output_format (json/text) — the synthesized
+            payload must match this so downstream JSON field refs resolve.
+        writes: Channel names the node was supposed to write to. The resumer
+            must include keys for each of these in the synthesized output.
+        workflow_state: Snapshot at time of escalation (so the resumer has
+            access to upstream node outputs).
+        pending_nodes: Node IDs that hadn't run yet.
+    """
+    model_config = {"extra": "forbid"}
+
+    node_id: str
+    node_type: str
+    error: str
+    prompt: Optional[str] = None
+    script: Optional[str] = None
+    model: Optional[str] = None
+    dispatch: Optional[str] = None
+    stdout_tail: Optional[str] = None
+    stderr_tail: Optional[str] = None
+    output_format: Optional[str] = None
+    writes: List[str] = Field(default_factory=list)
+    workflow_state: Dict[str, Any] = Field(default_factory=dict)
+    pending_nodes: List[str] = Field(default_factory=list)
+
+
 class CheckpointStore:
     """File-based checkpoint store for workflow state persistence.
     
@@ -533,6 +577,51 @@ class CheckpointStore:
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Corrupted interrupt checkpoint at {interrupt_path}: {e}")
             return None
+
+    def save_escalation(
+        self,
+        workflow_name: str,
+        run_id: str,
+        escalation: EscalationCheckpoint,
+    ) -> None:
+        """Save escalation checkpoint for on_failure=escalate nodes.
+
+        Stored alongside interrupt.json under the run's checkpoint dir as
+        escalation.json. The wrapping conversation reads this to synthesize
+        a replacement output and then resumes the workflow.
+        """
+        run_dir = self._get_run_dir(workflow_name, run_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        path = run_dir / "escalation.json"
+        path.write_text(escalation.model_dump_json(indent=2))
+        path.chmod(0o600)
+
+    def load_escalation(
+        self,
+        workflow_name: str,
+        run_id: str,
+    ) -> Optional[EscalationCheckpoint]:
+        """Load escalation checkpoint if one exists for this run."""
+        path = self._get_run_dir(workflow_name, run_id) / "escalation.json"
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text())
+            return EscalationCheckpoint.model_validate(data)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Corrupted escalation checkpoint at {path}: {e}")
+            return None
+
+    def clear_escalation(self, workflow_name: str, run_id: str) -> None:
+        """Remove the escalation checkpoint once it's been resolved.
+
+        Called on successful resume so a subsequent failure on a different
+        node creates a fresh escalation instead of confusing the resumer
+        with stale data.
+        """
+        path = self._get_run_dir(workflow_name, run_id) / "escalation.json"
+        if path.exists():
+            path.unlink()
 
     def save_resume_values(
         self,

@@ -258,15 +258,52 @@ def resume_workflow(
         for resume_key, resume_value in resume_values.items():
             inputs[resume_key] = resume_value
 
-    # The executor will use checkpoint_store.check_cache() to skip completed nodes
-    # by matching content hashes - completed nodes with matching hashes will be restored
-    # from cache instead of re-executed
+    # Escalation fulfillment: if the run paused on an on_failure=escalate
+    # node and the resumer supplied a synthesized output under the magic key
+    # `__escalation_output__`, hand it to the executor as a prefilled output
+    # so the escalated node is treated as already-completed and downstream
+    # nodes run against the synthesized value.
+    prefilled_outputs: Dict[str, Dict[str, Any]] = {}
+    prefilled_channel_writes: Dict[str, Dict[str, Any]] = {}
+    escalation = checkpoint_store.load_escalation(workflow_name, run_id)
+    if escalation is not None:
+        synthesized = inputs.pop("__escalation_output__", None)
+        if synthesized is not None:
+            if isinstance(synthesized, dict):
+                output_dict: Dict[str, Any] = dict(synthesized)
+            else:
+                # Scalars are folded into `response` (prompt-runner convention).
+                output_dict = {"response": synthesized}
+
+            # Every declared `writes:` channel gets the synthesized value
+            # unless the resumer already provided it. This matches how the
+            # prompt runner fills channels from output_dict.
+            channel_values: Dict[str, Any] = {}
+            for k in escalation.writes or []:
+                if k in output_dict:
+                    channel_values[k] = output_dict[k]
+                else:
+                    # For scalar synthesized outputs, write the scalar; for
+                    # dicts, fall back to the full dict (matches prompt
+                    # runner's `output_dict.setdefault(k, full_output)`).
+                    channel_values[k] = synthesized
+                    output_dict.setdefault(k, synthesized)
+
+            prefilled_outputs[escalation.node_id] = output_dict
+            if channel_values:
+                prefilled_channel_writes[escalation.node_id] = channel_values
+            # Checkpoint consumed — drop the escalation so a future failure
+            # on a different node produces a clean new escalation.
+            checkpoint_store.clear_escalation(workflow_name, run_id)
+
     executor = WorkflowExecutor()
     return asyncio.run(
         executor.execute(
             workflow_def, inputs, concurrency_limit,
             event_emitter=event_emitter, checkpoint_store=checkpoint_store, run_id=run_id,
-            channel_store=channel_store
+            channel_store=channel_store,
+            prefilled_outputs=prefilled_outputs or None,
+            prefilled_channel_writes=prefilled_channel_writes or None,
         )
     )
 

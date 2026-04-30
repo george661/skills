@@ -119,6 +119,11 @@ class InterruptRunner(BaseRunner):
             # Add resolved inputs (node-specific resolved values)
             names.update(ctx.resolved_inputs)
 
+            # Accept JSON/YAML-style lowercase booleans + null so authors
+            # can write `$x == false` without SimpleEval complaining.
+            names.setdefault("true", True)
+            names.setdefault("false", False)
+            names.setdefault("null", None)
             evaluator.names = names
 
             # Explicitly disable dangerous functions

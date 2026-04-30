@@ -952,7 +952,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         # the caller's database row all agree. Otherwise generate a fresh UUID.
         import uuid
         from dag_executor.cancel import InvalidRunIdError, validate_run_id
-        if args.run_id and not args.resume:
+        if args.run_id:
+            # Honor caller-supplied run_id in both fresh and resume modes.
+            # The dashboard's resume endpoint and the /api/trigger path both
+            # depend on {run_id}.ndjson matching the DB row — losing the id on
+            # resume routes events to an orphan file the collector never sees.
             try:
                 validate_run_id(args.run_id)
             except InvalidRunIdError as e:

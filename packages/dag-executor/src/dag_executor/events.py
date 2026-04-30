@@ -25,6 +25,10 @@ class EventType(str, Enum):
     NODE_FAILED = "node_failed"
     NODE_SKIPPED = "node_skipped"
     NODE_INTERRUPTED = "node_interrupted"
+    # Node failed with on_failure=escalate. Metadata carries {error, model,
+    # dispatch, prompt (truncated), stdout_tail, stderr_tail} so the wrapping
+    # conversation can synthesize a replacement output without re-running.
+    NODE_ESCALATED = "node_escalated"
     NODE_STREAM_TOKEN = "node_stream_token"
     NODE_LOG_LINE = "node_log_line"
     NODE_PROGRESS = "node_progress"

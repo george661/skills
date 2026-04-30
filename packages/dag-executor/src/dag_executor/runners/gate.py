@@ -35,8 +35,14 @@ class GateRunner(BaseRunner):
 
             # Set available names from resolved inputs. Drop "condition" from
             # the names dict — it's the expression text itself, not a value
-            # the expression should reference.
+            # the expression should reference. Also inject JSON/YAML-style
+            # lowercase boolean + null aliases so authors can write
+            # `$x == false` or `$x == null` naturally (matching the JSON the
+            # LLM emits) without hitting "Undefined variable: false".
             names = {k: v for k, v in (ctx.resolved_inputs or {}).items() if k != "condition"}
+            names.setdefault("true", True)
+            names.setdefault("false", False)
+            names.setdefault("null", None)
             evaluator.names = names
 
             # Explicitly disable dangerous functions

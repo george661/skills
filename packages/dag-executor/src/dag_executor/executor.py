@@ -3,11 +3,14 @@ import asyncio
 import copy
 import hashlib
 import json
+import logging
 import random
 import signal
 import subprocess
 import time
 import uuid
+
+logger = logging.getLogger(__name__)
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -253,6 +256,8 @@ class WorkflowExecutor:
         subprocess_registry: Optional["SubprocessRegistry"] = None,
         conversation_id: Optional[str] = None,
         db_path: Optional["Path"] = None,
+        prefilled_outputs: Optional[Dict[str, Dict[str, Any]]] = None,
+        prefilled_channel_writes: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> WorkflowResult:
         """Execute workflow from start to completion.
 
@@ -281,6 +286,19 @@ class WorkflowExecutor:
         # Generate run_id if not provided
         if run_id is None:
             run_id = str(uuid.uuid4())
+
+        # Apply explicit `default:` values from workflow_def.inputs so
+        # authors can declare sensible fallbacks without the runtime crashing
+        # with "Cannot resolve variable reference: $foo". We intentionally
+        # leave optional-but-no-default inputs absent — interrupts look up
+        # their resume_key in workflow_inputs to detect a prior resume, and
+        # silently filling those with "" would make every interrupt
+        # auto-complete on first execution.
+        if workflow_def.inputs:
+            inputs = dict(inputs)
+            for input_name, input_def in workflow_def.inputs.items():
+                if input_name not in inputs and input_def.default is not None:
+                    inputs[input_name] = input_def.default
 
         # Capture workflow start time once (reused in both event emission and checkpoint metadata)
         workflow_started_at = datetime.now(timezone.utc)
@@ -358,6 +376,49 @@ class WorkflowExecutor:
         # Initialize all nodes to PENDING status
         for node in workflow_def.nodes:
             ctx.node_statuses[node.id] = NodeStatus.PENDING
+
+        # Escalation fulfillment: seed prefilled outputs + channel writes so
+        # the escalated node is treated as already-complete and downstream
+        # nodes see the synthesized output the wrapping conversation
+        # supplied.
+        if prefilled_outputs:
+            for pnode_id, poutput in prefilled_outputs.items():
+                ctx.node_outputs[pnode_id] = poutput
+                ctx.node_statuses[pnode_id] = NodeStatus.COMPLETED
+                ctx.node_results[pnode_id] = NodeResult(
+                    status=NodeStatus.COMPLETED,
+                    output=poutput,
+                    started_at=datetime.now(timezone.utc),
+                    completed_at=datetime.now(timezone.utc),
+                )
+                # Persist as a node checkpoint so a subsequent resume sees
+                # the node as completed via the normal cache path.
+                if checkpoint_store is not None:
+                    import hashlib
+                    import json as _json
+                    hash_seed = _json.dumps(
+                        {"escalated": pnode_id, "output": poutput},
+                        sort_keys=True, default=str,
+                    ).encode()
+                    content_hash = (
+                        "escalated-" + hashlib.sha256(hash_seed).hexdigest()[:40]
+                    )
+                    checkpoint_store.save_node(
+                        workflow_def.name, run_id, pnode_id,
+                        ctx.node_results[pnode_id], content_hash,
+                    )
+        if prefilled_channel_writes and ctx.channel_store is not None:
+            for pnode_id, channel_values in prefilled_channel_writes.items():
+                for channel_key, channel_value in channel_values.items():
+                    try:
+                        ctx.channel_store.write(
+                            channel_key, channel_value, writer_node_id=pnode_id
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to write prefilled channel %s for %s: %s",
+                            channel_key, pnode_id, exc,
+                        )
 
         # Get topologically sorted layers
         layers = topological_sort_with_layers(workflow_def.nodes)
@@ -673,6 +734,23 @@ class WorkflowExecutor:
 
         node_id = node_def.id
 
+        # Short-circuit when the node was prefilled (escalation resume path).
+        # execute()'s prefilled_outputs sets ctx.node_statuses[node_id] to
+        # COMPLETED before layer execution starts; if we find it here we
+        # emit NODE_COMPLETED with a cache-hit marker and skip.
+        if ctx.node_statuses.get(node_id) == NodeStatus.COMPLETED:
+            prefilled_result = ctx.node_results.get(node_id)
+            if prefilled_result is not None and event_emitter:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.NODE_COMPLETED,
+                    workflow_id=workflow_def.name,
+                    node_id=node_id,
+                    status=NodeStatus.COMPLETED,
+                    metadata=ctx._with_parent({"prefilled": True}),
+                    timestamp=datetime.now(timezone.utc),
+                ))
+            return
+
         # Check if checkpointing is enabled for this node (respect node-level checkpoint flag)
         enable_checkpoint = checkpoint_store is not None and node_def.checkpoint is not False
 
@@ -709,6 +787,59 @@ class WorkflowExecutor:
                 ctx.node_statuses[node_id] = result.status
                 if result.output:
                     ctx.node_outputs[node_id] = result.output
+
+                # Replay channel writes from the cached output so downstream
+                # nodes reading those channels see the restored values. The
+                # live run's channel_store is freshly constructed on resume —
+                # without this replay, `$channel` references in downstream
+                # nodes resolve to None for every channel written by a
+                # cache-restored node.
+                #
+                # Bash nodes with output_format=json store the RAW
+                # {stdout, stderr} dict in the node checkpoint, not the
+                # parsed JSON. Mirror the parse step from the normal
+                # execution path (see post-execute parse near
+                # `if node_def.output_format == "json"`) before looking up
+                # channel keys — otherwise `seed` is never found because
+                # result.output only has `stdout` / `stderr`.
+                # NB: use ctx.channel_store, not the outer `channel_store`
+                # parameter — resume_workflow() doesn't pass one in, so the
+                # param is often None here even though ctx.channel_store was
+                # initialized earlier in execute().
+                live_channel_store = ctx.channel_store
+                if (
+                    live_channel_store is not None
+                    and workflow_def.state
+                    and isinstance(result.output, dict)
+                ):
+                    output_to_replay = result.output
+                    if (
+                        node_def.output_format == "json"
+                        and node_def.type == "bash"
+                        and "stdout" in result.output
+                    ):
+                        stdout = result.output.get("stdout", "")
+                        if stdout:
+                            try:
+                                parsed = json.loads(stdout.strip())
+                                if isinstance(parsed, dict):
+                                    output_to_replay = parsed
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                    for output_key, output_value in output_to_replay.items():
+                        if output_key in workflow_def.state:
+                            try:
+                                live_channel_store.write(
+                                    output_key, output_value, node_id
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to replay channel %s for cache-restored %s: %s",
+                                    output_key, node_id, exc,
+                                )
+                    # Keep ctx.node_outputs consistent with the parsed form
+                    # so `$seed_node.seed` variable references also resolve.
+                    ctx.node_outputs[node_id] = output_to_replay
 
                 # Emit NODE_COMPLETED event with cache_hit flag
                 if event_emitter:
@@ -833,7 +964,7 @@ class WorkflowExecutor:
 
         try:
             # Resolve variables in node definition
-            resolved_inputs = self._resolve_node_inputs(node_def, ctx)
+            resolved_inputs = self._resolve_node_inputs(node_def, ctx, workflow_def)
             
             # Get runner
             runner_class = get_runner(node_def.type)
@@ -1056,17 +1187,47 @@ class WorkflowExecutor:
                     timestamp=completed_at
                 ))
             elif result.status == NodeStatus.FAILED:
-                event_emitter.emit(WorkflowEvent(
-                    event_type=EventType.NODE_FAILED,
-                    workflow_id=workflow_def.name,
-                    node_id=node_id,
-                    status=NodeStatus.FAILED,
-                    duration_ms=duration_ms,
-                    model=node_def.model.value if node_def.model else None,
-                    dispatch=node_def.dispatch.value if node_def.dispatch else None,
-                    metadata=ctx._with_parent({"error": result.error} if result.error else {}),
-                    timestamp=completed_at
-                ))
+                # If the node asks for escalation, emit NODE_ESCALATED instead
+                # of NODE_FAILED so the dashboard/collector can treat this as a
+                # pause rather than a terminal failure.
+                if node_def.on_failure == OnFailure.ESCALATE:
+                    event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.NODE_ESCALATED,
+                        workflow_id=workflow_def.name,
+                        node_id=node_id,
+                        status=NodeStatus.ESCALATED,
+                        duration_ms=duration_ms,
+                        model=node_def.model.value if node_def.model else None,
+                        dispatch=node_def.dispatch.value if node_def.dispatch else None,
+                        metadata=ctx._with_parent({
+                            "error": result.error or "",
+                            "node_type": node_def.type,
+                            "output_format": (
+                                node_def.output_format.value
+                                if node_def.output_format else None
+                            ),
+                            "writes": list(node_def.writes or []),
+                            # Keep prompt/script trimmed so the event stream
+                            # isn't flooded — full text lives in the checkpoint.
+                            "prompt_preview": (
+                                (node_def.prompt or "")[:500]
+                                if node_def.prompt else None
+                            ),
+                        }),
+                        timestamp=completed_at
+                    ))
+                else:
+                    event_emitter.emit(WorkflowEvent(
+                        event_type=EventType.NODE_FAILED,
+                        workflow_id=workflow_def.name,
+                        node_id=node_id,
+                        status=NodeStatus.FAILED,
+                        duration_ms=duration_ms,
+                        model=node_def.model.value if node_def.model else None,
+                        dispatch=node_def.dispatch.value if node_def.dispatch else None,
+                        metadata=ctx._with_parent({"error": result.error} if result.error else {}),
+                        timestamp=completed_at
+                    ))
 
         # Save checkpoint after successful execution (data already computed above)
         if enable_checkpoint and checkpoint_store and result.status == NodeStatus.COMPLETED:
@@ -1074,6 +1235,52 @@ class WorkflowExecutor:
             checkpoint_store.save_node(
                 workflow_def.name, run_id, node_id, result, event_content_hash,
                 input_versions=event_input_versions,
+            )
+
+        # Save escalation checkpoint before handling the failure, so the wrapping
+        # conversation has everything it needs to synthesize a replacement.
+        if (
+            result.status == NodeStatus.FAILED
+            and node_def.on_failure == OnFailure.ESCALATE
+            and checkpoint_store is not None
+        ):
+            from dag_executor.checkpoint import EscalationCheckpoint
+
+            pending_nodes = [
+                nid for nid, status in ctx.node_statuses.items()
+                if status == NodeStatus.PENDING
+            ]
+            # stdout/stderr tails live in result.output for bash nodes; prompt
+            # runners put the full assistant response under result.output too.
+            stdout_tail = None
+            stderr_tail = None
+            if isinstance(result.output, dict):
+                raw_stdout = result.output.get("stdout")
+                raw_stderr = result.output.get("stderr")
+                if isinstance(raw_stdout, str):
+                    stdout_tail = raw_stdout[-2000:]
+                if isinstance(raw_stderr, str):
+                    stderr_tail = raw_stderr[-2000:]
+
+            escalation_checkpoint = EscalationCheckpoint(
+                node_id=node_id,
+                node_type=node_def.type,
+                error=result.error or "",
+                prompt=node_def.prompt,
+                script=node_def.script,
+                model=node_def.model.value if node_def.model else None,
+                dispatch=node_def.dispatch.value if node_def.dispatch else None,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                output_format=(
+                    node_def.output_format.value if node_def.output_format else None
+                ),
+                writes=list(node_def.writes or []),
+                workflow_state=ctx.workflow_state.copy(),
+                pending_nodes=pending_nodes,
+            )
+            checkpoint_store.save_escalation(
+                workflow_def.name, run_id, escalation_checkpoint
             )
 
         # Handle failure
@@ -1365,13 +1572,16 @@ class WorkflowExecutor:
     def _resolve_node_inputs(
         self,
         node_def: NodeDef,
-        ctx: ExecutionContext
+        ctx: ExecutionContext,
+        workflow_def: Optional[WorkflowDef] = None,
     ) -> Dict[str, Any]:
         """Resolve variable references in node inputs.
 
         Args:
             node_def: Node definition
             ctx: Execution context
+            workflow_def: Parent workflow (used to skip declared-input names
+                in bash scripts; the bash runner exports those as env vars).
 
         Returns:
             Resolved inputs dict
@@ -1409,6 +1619,13 @@ class WorkflowExecutor:
             skip_names = extract_bash_locals(node_def.script)
             if node_def.reads:
                 skip_names = skip_names | set(node_def.reads)
+            # Declared workflow inputs are exported as env vars by BashRunner,
+            # so `$foo` in a script is reliably resolvable in the subshell.
+            # Skipping them at substitution time also means optional-but-unset
+            # inputs don't crash the resolver with "Cannot resolve" — the
+            # author's `${foo:-}` bash fallback then fires correctly.
+            if workflow_def is not None and workflow_def.inputs:
+                skip_names = skip_names | set(workflow_def.inputs.keys())
 
         # Resolve variables
         resolved = resolve_variables(
@@ -1437,14 +1654,21 @@ class WorkflowExecutor:
         if node_def.on_failure == OnFailure.STOP:
             # Stop workflow execution
             ctx.stopped = True
-        
+
         elif node_def.on_failure == OnFailure.CONTINUE:
             # Do nothing, execution continues
             pass
-        
+
         elif node_def.on_failure == OnFailure.SKIP_DOWNSTREAM:
             # Mark all downstream nodes as skipped
             self._mark_downstream_skipped(node_def.id, nodes_map, ctx)
+
+        elif node_def.on_failure == OnFailure.ESCALATE:
+            # Pause the workflow — same mechanism as an interrupt. The
+            # wrapping conversation resolves the escalation by POSTing to
+            # the interrupt-resume endpoint with a synthesized output.
+            # NB: the escalation checkpoint is already saved in the caller.
+            ctx.interrupted = True
     
     def _mark_downstream_skipped(
         self,
@@ -1708,8 +1932,14 @@ class WorkflowExecutor:
 
         statuses = ctx.node_statuses.values()
 
-        # Check for interrupted nodes first (PAUSED takes priority)
-        if any(status == NodeStatus.INTERRUPTED for status in statuses):
+        # Check for interrupted nodes first (PAUSED takes priority).
+        # ctx.interrupted is also set by on_failure=escalate — a node with
+        # NodeStatus.FAILED but whose on_failure asked for a pause needs to
+        # transition the workflow to PAUSED, not FAILED, so the wrapping
+        # conversation can resume after synthesizing a replacement output.
+        if ctx.interrupted or any(
+            status == NodeStatus.INTERRUPTED for status in statuses
+        ):
             return WorkflowStatus.PAUSED
 
         if any(status == NodeStatus.FAILED for status in statuses):

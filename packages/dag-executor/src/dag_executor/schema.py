@@ -17,6 +17,11 @@ class NodeStatus(str, Enum):
     FAILED = "failed"
     SKIPPED = "skipped"
     INTERRUPTED = "interrupted"
+    # Node hit on_failure=escalate. The workflow pauses (same mechanism as
+    # INTERRUPTED) and waits for the wrapping conversation (or a human) to
+    # resume with a synthesized output that stands in for what the node
+    # would have produced. See docs/escalation.md.
+    ESCALATED = "escalated"
 
 
 class WorkflowStatus(str, Enum):
@@ -130,6 +135,13 @@ class OnFailure(str, Enum):
     STOP = "stop"  # Stop workflow execution
     CONTINUE = "continue"  # Continue workflow, mark node as failed
     SKIP_DOWNSTREAM = "skip_downstream"  # Skip nodes that depend on this one
+    # Pause the workflow and hand control to the wrapping conversation. The
+    # executor saves an escalation checkpoint with the node's prompt, error,
+    # and tail of streamed output, then emits NODE_ESCALATED and transitions
+    # to PAUSED. The wrapping agent (typically Opus/Sonnet) reads the
+    # checkpoint, performs the work inline, and resumes with a synthesized
+    # output via the same interrupt-resume endpoint.
+    ESCALATE = "escalate"
 
 
 class OutputFormat(str, Enum):
