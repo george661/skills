@@ -1,170 +1,143 @@
-"""Test run detail layout transformation (AC-1 + AC-8)."""
+"""Test unified feed layout (GW-5422).
+
+These assertions protect the two-pane shape, the deletion of TracePanel /
+old 3-column scaffolding, and the wiring of the new WorkflowProgressCard +
+StateSlideover + NodeScrollBus + unified ChatPanel feed.
+"""
 from pathlib import Path
 
 
-def test_run_graph_split_grid_rules_removed() -> None:
-    """Assert the pre-existing CSS grid rules on .run-graph-split are gone.
-
-    ResizableSplit adds `.run-split` to the same DOM element at runtime,
-    so the old `.run-graph-split { display: grid; ... }` rules became
-    dead code. Removing them avoids two display modes fighting on the
-    same element and keeps styles.css readable.
-    """
-    css_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "css"
-        / "styles.css"
-    )
-    content = css_path.read_text()
-
-    # The class stays as a querySelector hook in app.js, but must not
-    # carry a `display: grid` rule anymore.
-    assert ".run-graph-split {" not in content, (
-        ".run-graph-split must not define its own CSS rules — "
-        "layout now comes from .run-split applied by ResizableSplit"
-    )
-    # And the old @media override that scoped `.run-graph-split` should be gone.
-    assert "grid-template-columns: 1fr" not in content or ".run-graph-split" not in content.split(
-        "grid-template-columns: 1fr"
-    )[0].split("@media")[-1]
+STATIC = Path(__file__).parents[1] / "src" / "dag_dashboard" / "static"
+APP_JS = (STATIC / "js" / "app.js").read_text
+INDEX = (STATIC / "index.html").read_text
+STYLES = (STATIC / "css" / "styles.css").read_text
 
 
-def test_resizable_split_has_a_mount_selector() -> None:
-    """ResizableSplit must query for *some* mount class in app.js.
-
-    The current run-detail template (3-column grid: canvas + side + chat)
-    intentionally has no mount point — ResizableSplit is designed for two
-    panes, so mounting it on the 3-column layout would clobber the chat
-    column when `_buildStructure` wipes the container. GW-5422 will swap
-    the right two columns for a single conversation feed and introduce a
-    `.run-pane-split` (or similar) mount class at that point.
-
-    This test just guards that app.js still HAS the `querySelector` wire
-    so the dormant init doesn't get accidentally deleted during refactor.
-    """
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
-
-    assert "new window.ResizableSplit" in content, (
-        "ResizableSplit instantiation must remain in renderRunDetail so it "
-        "activates the moment GW-5422 introduces the 2-pane mount class"
-    )
-    assert "querySelector('.run-pane-split')" in content or \
-           "querySelector('.run-graph-split')" in content, (
-        "app.js must still look up a split mount point — the mount class "
-        "may change with layout iterations, but the wire-up must persist"
-    )
+def test_two_pane_split_layout_exists() -> None:
+    """app.js must render a .run-pane-split with .run-split-left-content + .run-split-right-content."""
+    content = APP_JS()
+    assert '"run-pane-split"' in content, "run-pane-split wrapper must be present"
+    assert "run-split-left-content" in content, "Left inner content wrapper must exist"
+    assert "run-split-right-content" in content, "Right inner content wrapper must exist"
+    assert 'querySelector(\'.run-pane-split\')' in content, \
+        "ResizableSplit must target .run-pane-split"
 
 
-def test_new_split_layout_added_to_css() -> None:
-    """Test that new split layout classes are added to CSS."""
-    css_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "css"
-        / "styles.css"
-    )
-    content = css_path.read_text()
-
-    # New split layout should be present
-    assert ".run-split" in content
-    assert ".run-split-divider" in content
+def test_old_three_column_layout_removed_from_app_js() -> None:
+    content = APP_JS()
+    for cls in (".run-graph-3col", ".run-graph-canvas", ".run-graph-side",
+                ".run-graph-chat", "id=\"run-chat-section\"",
+                "id=\"workflow-chat-container\"", "id=\"trace-container\""):
+        assert cls not in content, f"{cls} must no longer appear in app.js"
 
 
-def test_resizable_split_loaded_before_app_js() -> None:
-    """Test that resizable-split.js is loaded before app.js in index.html."""
-    html_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "index.html"
-    )
-    content = html_path.read_text()
-
-    # Check script loading order
-    assert "/js/resizable-split.js" in content
-    assert "/js/app.js" in content
-
-    # Verify order
-    split_pos = content.find("/js/resizable-split.js")
-    app_pos = content.find("/js/app.js")
-    assert split_pos < app_pos, "resizable-split.js must load before app.js"
+def test_old_three_column_layout_removed_from_css() -> None:
+    content = STYLES()
+    for cls in (".run-graph-3col", ".run-graph-canvas", ".run-graph-side",
+                ".run-graph-chat", ".run-chat-section", ".chat-section-rail",
+                ".trace-section-rail", ".workflow-chat-container"):
+        assert cls not in content, f"{cls} CSS rule must be deleted"
 
 
-def test_app_js_creates_split_instance() -> None:
-    """Test that app.js creates a ResizableSplit instance."""
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
+def test_trace_panel_deleted() -> None:
+    """trace-panel.js must be deleted and no script tag should reference it."""
+    assert not (STATIC / "js" / "trace-panel.js").exists(), \
+        "trace-panel.js must be deleted from disk"
+    html = INDEX()
+    assert "/js/trace-panel.js" not in html, \
+        "trace-panel.js script tag must be removed from index.html"
+    app_js = APP_JS()
+    assert "window.TracePanel" not in app_js, \
+        "app.js must not reference window.TracePanel"
+    assert "new window.TracePanel" not in app_js, \
+        "app.js must not instantiate TracePanel"
 
-    # Check for split instantiation
-    assert "ResizableSplit" in content
-    assert "new " in content or "new(" in content
+
+def test_trace_css_rules_all_deleted() -> None:
+    """No .trace-* CSS rule should remain after the TracePanel sunset."""
+    content = STYLES()
+    # Grep for any '.trace-' rule selector at the start of a line.
+    trace_rule_lines = [
+        line for line in content.splitlines()
+        if line.lstrip().startswith(".trace-")
+    ]
+    assert not trace_rule_lines, \
+        f"Expected zero .trace-* CSS rules, found {len(trace_rule_lines)}: {trace_rule_lines[:3]}"
+
+
+def test_workflow_feed_mount_exists() -> None:
+    """The right pane must mount a single #workflow-feed that ChatPanel owns."""
+    content = APP_JS()
+    assert 'id="workflow-feed"' in content, \
+        "Right pane must contain #workflow-feed (single unified feed mount)"
+    assert "new window.ChatPanel('workflow-feed'" in content, \
+        "ChatPanel must be instantiated on #workflow-feed in run mode"
+
+
+def test_state_slideover_mounted() -> None:
+    content = APP_JS()
+    assert "window.StateSlideover.mount" in content, \
+        "StateSlideover.mount must be called in renderRunDetail"
+    assert "state-slideover-mount" in content, \
+        "StateSlideover mount point must exist"
+    assert 'id="state-slideover-toggle"' in content, \
+        "State toggle button must exist in the left pane"
+
+
+def test_node_scroll_bus_wired_both_ways() -> None:
+    """DAG→feed and feed→DAG cross-selection must both be wired in app.js."""
+    content = APP_JS()
+    # DAG→feed: DAG click handler calls NodeScrollBus.trigger with source='dag'.
+    assert "NodeScrollBus.trigger" in content and "'dag'" in content, \
+        "DAG click must trigger NodeScrollBus with source='dag'"
+    # feed→DAG: subscriber flashes DAG nodes on card-origin triggers.
+    assert "NodeScrollBus.subscribe" in content, \
+        "Feed→DAG handler must subscribe to NodeScrollBus"
+
+
+def test_lifecycle_cleans_up_new_components() -> None:
+    """lifecycle.destroy must tear down every new component (no timer/subscription leaks)."""
+    content = APP_JS()
+    assert "chatPanel.destroy" in content, "ChatPanel.destroy must be called in lifecycle"
+    assert "StateSlideover.destroy" in content, "StateSlideover.destroy must be called in lifecycle"
+    assert "NodeScrollBus.clear" in content, "NodeScrollBus subscribers must be cleared in lifecycle"
+    # Keep PR #156's guarantees
+    assert "resizableSplit" in content and "destroy()" in content
+    assert "cancelAnimationFrame" in content and "animationId" in content
+
+
+def test_new_scripts_loaded_in_order() -> None:
+    """New JS modules must load before chat-panel.js (EventToMessages, NodeScrollBus,
+    WorkflowProgressCard are all used from ChatPanel)."""
+    content = INDEX()
+    for src in ("/js/node-scroll-bus.js", "/js/event-to-messages.js",
+                "/js/workflow-progress-card.js", "/js/state-slideover.js"):
+        assert src in content, f"{src} must be included"
+
+    chat_idx = content.index("/js/chat-panel.js")
+    app_idx = content.index("/js/app.js")
+    for src in ("/js/node-scroll-bus.js", "/js/event-to-messages.js",
+                "/js/workflow-progress-card.js"):
+        assert content.index(src) < chat_idx, \
+            f"{src} must load before chat-panel.js (ChatPanel uses it at instantiation time)"
+    assert content.index("/js/state-slideover.js") < app_idx, \
+        "state-slideover.js must load before app.js"
+    assert content.index("/js/resizable-split.js") < app_idx, \
+        "resizable-split.js must load before app.js"
+
+
+def test_unified_feed_css_classes_exist() -> None:
+    content = STYLES()
+    for cls in (".run-pane-split", ".workflow-feed", ".workflow-progress-card",
+                ".workflow-progress-card-head", ".workflow-progress-card-body",
+                ".workflow-progress-card--running", ".workflow-progress-card--completed",
+                ".workflow-progress-card--escalated", ".workflow-progress-card--interrupted",
+                ".state-slideover", ".state-slideover-panel", ".state-slideover--closed",
+                ".chat-terminal-banner"):
+        assert cls in content, f"Expected CSS rule {cls} to exist"
 
 
 def test_lifecycle_has_destroy_method() -> None:
-    """Test that app.js implements lifecycle.destroy() (AC-8)."""
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
-
-    # Check that lifecycle object with destroy method exists
+    """Preserve PR #156's AC-8 guarantee."""
+    content = APP_JS()
     assert "lifecycle" in content and "destroy:" in content
-
-
-def test_split_destroy_called() -> None:
-    """Test that app.js destroys the split instance on cleanup (AC-8)."""
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
-
-    # Check that resizableSplit.destroy() is called in lifecycle
-    assert "resizableSplit" in content and "destroy()" in content
-
-
-def test_animation_frame_cleanup() -> None:
-    """Test that requestAnimationFrame is cancelled on cleanup (AC-8 - fixes existing leak)."""
-    app_js_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "dag_dashboard"
-        / "static"
-        / "js"
-        / "app.js"
-    )
-    content = app_js_path.read_text()
-
-    # Check for cancelAnimationFrame call
-    assert "cancelAnimationFrame" in content
-    assert "animationId" in content

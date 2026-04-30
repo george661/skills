@@ -15,9 +15,12 @@ def test_index_html_includes_artifact_list_js() -> None:
 
 
 def test_index_html_has_artifacts_container() -> None:
-    # Container is dynamically created in app.js for SPA architecture
-    app_js = (STATIC_DIR / "js" / "app.js").read_text()
-    assert 'id="run-artifacts-container"' in app_js
+    # Container moved to state-slideover.js in GW-5422
+    # (eager mount - containers in DOM from page load, hidden via CSS)
+    state_slideover_js = (STATIC_DIR / "js" / "state-slideover.js").read_text()
+    assert 'id="run-artifacts-container"' in state_slideover_js, (
+        "Artifacts container must exist in StateSlideover (eager mount)"
+    )
 
 
 def test_artifact_list_fetches_aggregate_endpoint() -> None:
