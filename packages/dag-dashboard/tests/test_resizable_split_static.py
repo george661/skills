@@ -101,3 +101,31 @@ def test_resizable_split_mobile_breakpoint() -> None:
 
     # Check for mobile breakpoint (could be literal or template literal)
     assert ("max-width" in content and "1024" in content) or "mobileBreakpoint" in content
+
+
+def test_resizable_split_resolves_current_pane_classes() -> None:
+    """ResizableSplit must find the current GW-5422 pane classes.
+
+    The pre-GW-5422 layout used .run-graph-canvas / .run-graph-side. The
+    unified-feed layout renames these to .run-split-left-content /
+    .run-split-right-content. If ResizableSplit only knows the legacy
+    selectors, it early-returns with a warning and the divider silently
+    becomes non-draggable.
+    """
+    split_js_path = (
+        Path(__file__).parent.parent
+        / "src"
+        / "dag_dashboard"
+        / "static"
+        / "js"
+        / "resizable-split.js"
+    )
+    content = split_js_path.read_text()
+    assert ".run-split-left-content" in content, (
+        "ResizableSplit must know the GW-5422 left pane class "
+        "(run-split-left-content), not just the legacy run-graph-canvas"
+    )
+    assert ".run-split-right-content" in content, (
+        "ResizableSplit must know the GW-5422 right pane class "
+        "(run-split-right-content), not just the legacy run-graph-side"
+    )

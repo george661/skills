@@ -21,18 +21,33 @@ class ResizableSplit {
             minSplit: options.minSplit || 20,
             maxSplit: options.maxSplit || 80,
             storageKey: options.storageKey || 'dag-dashboard.run-detail.split',
-            mobileBreakpoint: options.mobileBreakpoint || 1024
+            mobileBreakpoint: options.mobileBreakpoint || 1024,
+            leftSelector: options.leftSelector || '.run-split-left-content',
+            rightSelector: options.rightSelector || '.run-split-right-content'
         };
-        
+
         this.isDragging = false;
         this.currentSplit = this._loadSplit();
-        
-        // Store original content
-        this.leftContent = container.querySelector('.run-graph-canvas');
-        this.rightContent = container.querySelector('.run-graph-side');
-        
+
+        // Store original content. Fall back to the container's direct children
+        // when neither selector matches — this keeps the divider working if a
+        // future layout rename outruns ResizableSplit's selector defaults.
+        this.leftContent = container.querySelector(this.options.leftSelector);
+        this.rightContent = container.querySelector(this.options.rightSelector);
         if (!this.leftContent || !this.rightContent) {
-            console.warn('ResizableSplit: could not find .run-graph-canvas and .run-graph-side');
+            const children = Array.from(container.children).filter(
+                (el) => el.nodeType === 1 && !el.classList.contains('run-split-divider')
+            );
+            if (children.length >= 2) {
+                this.leftContent = this.leftContent || children[0];
+                this.rightContent = this.rightContent || children[1];
+            }
+        }
+
+        if (!this.leftContent || !this.rightContent) {
+            console.warn(
+                `ResizableSplit: could not find panes (tried ${this.options.leftSelector} / ${this.options.rightSelector})`
+            );
             return;
         }
         

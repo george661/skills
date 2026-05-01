@@ -59,9 +59,34 @@ def test_poll_derives_terminal_from_node_statuses() -> None:
     """
     js = (STATIC_DIR / "js" / "app.js").read_text()
     # Must not rely on layoutData.status — layout.py doesn't emit it.
-    # Must derive from node status set.
-    assert "activeStatuses" in js, (
-        "Poll must track the set of active node statuses to detect terminal"
+    # Must derive from a named set of node statuses that are NOT yet terminal.
+    assert "waitingStatuses" in js or "activeStatuses" in js, (
+        "Poll must track the set of non-terminal node statuses"
     )
     # At least the primary active states must be checked.
     assert "'running'" in js and "'pending'" in js
+
+
+def test_poll_treats_escalated_and_interrupted_as_non_terminal() -> None:
+    """escalated / interrupted nodes mean the workflow is paused-for-input,
+    not terminal. Treating them as terminal caused the run-detail page to
+    stop polling on paused runs — timeline / channels / DAG never refreshed
+    after a resume until the user reloaded. The poll must keep running so
+    the UI picks up downstream nodes once the user submits a resume value.
+    """
+    js = (STATIC_DIR / "js" / "app.js").read_text()
+    # Find the status set used by the poll-path terminal-sweep heuristic.
+    anchor = js.find("waitingStatuses")
+    if anchor == -1:
+        anchor = js.find("activeStatuses")
+    assert anchor != -1, "Poll-path status set not found"
+    # Look at the Set literal declaration that follows.
+    set_start = js.find("new Set(", anchor)
+    set_end = js.find(")", set_start)
+    set_literal = js[set_start:set_end]
+    assert "'escalated'" in set_literal, (
+        "escalated must be treated as non-terminal (paused, awaiting input)"
+    )
+    assert "'interrupted'" in set_literal, (
+        "interrupted must be treated as non-terminal (paused, awaiting input)"
+    )
