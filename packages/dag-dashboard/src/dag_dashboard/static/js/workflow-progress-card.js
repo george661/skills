@@ -52,6 +52,14 @@
             this.channelSummaryEl = null;
             this.userExpanded = false;
             this.el = null;
+            // GW-5423 AC-5: virtualize inline log lines above threshold. Kept
+            // lazy so cards with few lines retain the naive DOM for easy
+            // inspection in DevTools.
+            this.VIRTUALIZE_THRESHOLD = 200;
+            this.MAX_LINES = 2000;
+            this._logRows = []; // buffer of line objects when virtualized
+            this._logContainer = null;
+            this._logVirtualizer = null;
             this._buildEl();
         }
 
@@ -142,16 +150,64 @@
         _onLogLine(meta) {
             const line = typeof meta.line === 'string' ? meta.line : '';
             const stream = meta.stream || 'stdout';
+            this.logLines += 1;
+
+            // GW-5423 AC-5: virtualize once we cross the threshold. Below it,
+            // keep the existing naive appendChild path so small cards stay
+            // debuggable.
+            if (!this._logVirtualizer && this.logLines > this.VIRTUALIZE_THRESHOLD && window.VirtualizedLogList) {
+                this._promoteToVirtualized();
+            }
+
+            if (this._logVirtualizer) {
+                this._logRows.push({ line, stream });
+                if (this._logRows.length > this.MAX_LINES) {
+                    this._logRows.shift();
+                }
+                this._logVirtualizer.setRows(this._logRows);
+                return;
+            }
+
             const lineEl = document.createElement('div');
             lineEl.className = `workflow-progress-card-line workflow-progress-card-line--${stream}`;
             lineEl.textContent = line;
             this.bodyEl.appendChild(lineEl);
-            this.logLines += 1;
-            // Cap runaway logs at 2000 lines to keep the DOM light.
-            if (this.logLines > 2000) {
+            if (this.logLines > this.MAX_LINES) {
                 const first = this.bodyEl.firstChild;
                 if (first) this.bodyEl.removeChild(first);
             }
+        }
+
+        /**
+         * Swap the card's body log lines into a VirtualizedLogList. Moves
+         * any already-rendered .workflow-progress-card-line children into
+         * the virtualizer's row buffer so history is preserved.
+         */
+        _promoteToVirtualized() {
+            const existing = Array.from(
+                this.bodyEl.querySelectorAll('.workflow-progress-card-line')
+            );
+            this._logRows = existing.map((el) => ({
+                line: el.textContent || '',
+                stream: el.classList.contains('workflow-progress-card-line--stderr') ? 'stderr' : 'stdout',
+            }));
+            existing.forEach((el) => el.remove());
+
+            this._logContainer = document.createElement('div');
+            this._logContainer.className = 'workflow-progress-card-logs';
+            // Insert at the top so channel chips and the summary stay below.
+            this.bodyEl.insertBefore(this._logContainer, this.bodyEl.firstChild);
+
+            this._logVirtualizer = new window.VirtualizedLogList({
+                container: this._logContainer,
+                rowHeight: 18,
+                threshold: this.VIRTUALIZE_THRESHOLD,
+                renderRow: (row) => (
+                    `<div class="workflow-progress-card-line workflow-progress-card-line--${row.stream}">` +
+                    escapeHtml(row.line) +
+                    `</div>`
+                ),
+            });
         }
 
         _onStreamToken(meta) {
@@ -399,6 +455,10 @@
             if (this.timerHandle) {
                 clearInterval(this.timerHandle);
                 this.timerHandle = null;
+            }
+            if (this._logVirtualizer) {
+                this._logVirtualizer.destroy();
+                this._logVirtualizer = null;
             }
             if (this.el && this.el.parentNode) {
                 this.el.parentNode.removeChild(this.el);

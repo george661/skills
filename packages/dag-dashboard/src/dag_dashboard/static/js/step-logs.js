@@ -14,7 +14,12 @@ class StepLogs {
     this.autoScroll = true;
     this.pausedByScroll = false;
     this.eventSource = null;
-    
+
+    // GW-5423 AC-5: virtualize lists >200 lines to keep DOM light.
+    this.VIRTUALIZE_THRESHOLD = 200;
+    this._virtualizer = null; // lazily instantiated when first crossing threshold
+    this._jumpBtn = null;
+
     if (!this.container) {
       throw new Error('StepLogs: container is required');
     }
@@ -41,13 +46,17 @@ class StepLogs {
             <span class="log-count">${this.lines.length} lines</span>
           </div>
         </div>
-        <div class="step-logs-list" id="step-logs-list-${this._safeId}">
-          <div class="step-logs-empty">Loading logs…</div>
+        <div class="step-logs-list-wrap">
+          <div class="step-logs-list" id="step-logs-list-${this._safeId}">
+            <div class="step-logs-empty">Loading logs…</div>
+          </div>
+          <button class="step-logs-jump-bottom hidden" id="step-logs-jump-${this._safeId}" type="button">Jump to bottom ↓</button>
         </div>
       </div>
     `;
 
     this.logsList = document.getElementById(`step-logs-list-${this._safeId}`);
+    this._jumpBtn = document.getElementById(`step-logs-jump-${this._safeId}`);
 
     this._attachEventListeners();
     this._loadHistoricalLogs();
@@ -70,10 +79,33 @@ class StepLogs {
       });
     });
 
-    // Scroll tracking for pause-on-scroll-up
+    // Scroll tracking for pause-on-scroll-up + jump-to-bottom affordance
     this.logsList.addEventListener('scroll', () => {
       this._onScroll();
     });
+
+    // GW-5423 AC-5: jump-to-bottom button.
+    if (this._jumpBtn) {
+      this._jumpBtn.addEventListener('click', () => {
+        this._resumeFollow();
+        this._updateJumpButton();
+      });
+    }
+  }
+
+  /**
+   * Show/hide the jump-to-bottom button based on scroll position.
+   * Button appears only when the user has scrolled >50px from the tail.
+   */
+  _updateJumpButton() {
+    if (!this._jumpBtn) return;
+    const container = this.logsList;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (distanceFromBottom > 50) {
+      this._jumpBtn.classList.remove('hidden');
+    } else {
+      this._jumpBtn.classList.add('hidden');
+    }
   }
 
   /**
@@ -172,7 +204,11 @@ class StepLogs {
   }
 
   /**
-   * Render all lines (with stream filter applied)
+   * Render all lines (with stream filter applied).
+   *
+   * GW-5423 AC-5: above 200 lines we delegate to VirtualizedLogList so only
+   * the visible window sits in the DOM. Below the threshold we render every
+   * line inline (keeps small streams easy to debug in DevTools).
    */
   _renderLines() {
     const filteredLines = this.lines.filter(line => {
@@ -180,32 +216,61 @@ class StepLogs {
       return line.stream === this.streamFilter;
     });
 
-    if (filteredLines.length === 0) {
-      this.logsList.innerHTML = '<div class="step-logs-empty">No logs match the filter</div>';
-      return;
-    }
-
-    this.logsList.innerHTML = filteredLines.map(line => `
-      <div class="log-line log-line-${line.stream}" data-sequence="${line.sequence}">
-        <span class="log-stream">[${line.stream}]</span>
-        <span class="log-text">${this._escapeHtml(line.line)}</span>
-      </div>
-    `).join('');
-
     // Update count badge
     const countBadge = this.container.querySelector('.log-count');
     if (countBadge) {
       countBadge.textContent = `${filteredLines.length} lines`;
     }
+
+    if (filteredLines.length === 0) {
+      this._teardownVirtualizer();
+      this.logsList.innerHTML = '<div class="step-logs-empty">No logs match the filter</div>';
+      return;
+    }
+
+    const renderRow = (line) => (
+      `<div class="log-line log-line-${line.stream}" data-sequence="${line.sequence}">` +
+      `<span class="log-stream">[${line.stream}]</span>` +
+      `<span class="log-text">${this._escapeHtml(line.line)}</span>` +
+      `</div>`
+    );
+
+    if (filteredLines.length > this.VIRTUALIZE_THRESHOLD && window.VirtualizedLogList) {
+      if (!this._virtualizer) {
+        this.logsList.innerHTML = '';
+        this._virtualizer = new window.VirtualizedLogList({
+          container: this.logsList,
+          rowHeight: 18,
+          threshold: this.VIRTUALIZE_THRESHOLD,
+          renderRow,
+        });
+      }
+      this._virtualizer.setRows(filteredLines);
+    } else {
+      this._teardownVirtualizer();
+      this.logsList.innerHTML = filteredLines.map(renderRow).join('');
+    }
   }
 
   /**
-   * Handle scroll events - pause auto-scroll if user scrolls up
+   * Release virtualizer so naive rendering can take over (e.g. filter reduced
+   * line count below threshold).
+   */
+  _teardownVirtualizer() {
+    if (this._virtualizer) {
+      this._virtualizer.destroy();
+      this._virtualizer = null;
+    }
+  }
+
+  /**
+   * Handle scroll events - pause auto-scroll if user scrolls up, toggle the
+   * jump-to-bottom affordance (GW-5423 AC-5).
    */
   _onScroll() {
     const container = this.logsList;
     const isAtBottom = (container.scrollHeight - container.scrollTop - container.clientHeight) < 50;
-    
+
     if (!isAtBottom && this.autoScroll) {
       this.pausedByScroll = true;
       this._showResumeButton();
@@ -213,6 +278,8 @@ class StepLogs {
       this.pausedByScroll = false;
       this._hideResumeButton();
     }
+
+    this._updateJumpButton();
   }
 
   /**

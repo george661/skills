@@ -931,7 +931,13 @@ async function renderRunDetail(runId) {
         let chatPanel;
         if (window.ChatPanel) {
             try {
-                chatPanel = new window.ChatPanel('workflow-feed', runId);
+                // GW-5423 AC-7: pass layout nodes so ChatPanel can build the
+                // chat-blocking node set (filters to node_type === 'prompt').
+                chatPanel = new window.ChatPanel('workflow-feed', {
+                    mode: 'run',
+                    runId,
+                    nodes: layoutData && layoutData.nodes ? layoutData.nodes : [],
+                });
                 if (typeof chatPanel.render === 'function') chatPanel.render();
             } catch (err) {
                 console.warn('ChatPanel failed to mount:', err);
@@ -1271,6 +1277,9 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
                         window.renderRetryButton(retryButtonContainer, runId, 'failed');
                     }
                 }
+
+                // AC-6: Run terminal sweep (stop polling + final REST fetch)
+                runTerminalSweep();
             }
         } catch (error) {
             console.error('Error parsing SSE event:', error, event.data);
@@ -1300,6 +1309,13 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
             }
 
             const layoutData = await layoutResp.json();
+
+            // AC-6: Check if workflow reached terminal status (safety net if SSE missed it)
+            const terminalStatuses = ['completed', 'failed', 'cancelled'];
+            if (layoutData.status && terminalStatuses.includes(layoutData.status)) {
+                runTerminalSweep();
+                return;
+            }
 
             // Re-render the whole DAG when node topology changes (e.g. the
             // initial layout returned 0 nodes because node_executions wasn't
@@ -1336,10 +1352,54 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
         } catch (error) {
             console.error('Error polling for updates:', error);
         }
-    }, 2000); // Poll every 2 seconds
+    }, 3000); // Poll every 3 seconds (AC-6: SSE + REST safety net)
+
+    // Track terminal status for cleanup and final sweep (AC-6)
+    let isTerminal = false;
+
+    // Terminal sweep: fetch layout + channels one final time, then stop polling
+    async function runTerminalSweep() {
+        if (isTerminal) return; // Already swept
+        isTerminal = true;
+        clearInterval(pollInterval);
+
+        try {
+            // Final REST fetch to catch any data SSE may have dropped
+            const [layoutResp, channelsResp] = await Promise.all([
+                fetch(`/api/workflows/${runId}/layout`),
+                fetch(`/api/workflows/${runId}/channels`)
+            ]);
+
+            if (layoutResp.ok) {
+                const layoutData = await layoutResp.json();
+                layoutData.nodes.forEach(node => {
+                    dagRenderer.updateNodeStatus(node.node_name, node.status);
+                });
+                setupExecutingBanner(layoutData.nodes);
+            }
+
+            if (channelsResp.ok) {
+                const channelsData = await channelsResp.json();
+                if (channelPanel && channelsData.channels) {
+                    channelPanel.update(channelsData.channels);
+                }
+            }
+
+            // Update chat terminal banner (AC-6)
+            if (chatPanel && chatPanel.setTerminalStatus) {
+                chatPanel.setTerminalStatus(true);
+            }
+        } catch (error) {
+            console.error('Error in terminal sweep:', error);
+        }
+    }
 
     // Create lifecycle object for cleanup (AC-8: force remount on runId change)
     const lifecycle = {
+        getRunStatus: () => {
+            // Expose run status for chat lock logic (AC-7)
+            return isTerminal ? 'terminal' : 'running';
+        },
         destroy: () => {
             // Clear interval
             clearInterval(pollInterval);
@@ -1384,6 +1444,11 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
             }
         }
     };
+
+    // Pass lifecycle to ChatPanel for getRunStatus access (AC-7)
+    if (chatPanel && chatPanel.setLifecycle) {
+        chatPanel.setLifecycle(lifecycle);
+    }
 
     // Cleanup on route change (hashchange away from this run)
     window.addEventListener('hashchange', () => {

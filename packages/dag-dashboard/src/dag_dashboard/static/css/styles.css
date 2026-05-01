@@ -4661,3 +4661,93 @@ select.form-control {
         align-self: flex-end;
     }
 }
+
+/* ------------------------------------------------------------------
+ * GW-5423 AC-5: virtualized log list + jump-to-bottom affordance
+ * ------------------------------------------------------------------ */
+
+.step-logs-list-wrap {
+    position: relative;
+}
+
+.step-logs-jump-bottom {
+    position: absolute;
+    right: 0.75rem;
+    bottom: 0.75rem;
+    padding: 0.4rem 0.75rem;
+    font-size: 0.8rem;
+    line-height: 1;
+    background: var(--primary, #2563eb);
+    color: white;
+    border: none;
+    border-radius: 999px;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    z-index: 5;
+    transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.step-logs-jump-bottom.hidden {
+    display: none;
+}
+
+.step-logs-jump-bottom:hover {
+    transform: translateY(-1px);
+}
+
+.virtualized-log-list {
+    overflow-y: auto;
+    /* Inner spacer divs handle height; keep container height consistent. */
+}
+
+.virtualized-log-list__spacer-top,
+.virtualized-log-list__spacer-bottom {
+    width: 100%;
+    flex-shrink: 0;
+}
+
+.virtualized-log-list__window {
+    /* Rows inside the window inherit log-line styling; no extra box here. */
+}
+
+.workflow-progress-card-logs {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+/* ------------------------------------------------------------------
+ * GW-5423 AC-7: chat input lock state
+ * ------------------------------------------------------------------ */
+
+.chat-input-form--locked .chat-input {
+    opacity: 0.55;
+    cursor: not-allowed;
+    background-color: var(--surface-muted, #f3f4f6);
+}
+
+.chat-input-form--locked .chat-send-btn {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.chat-input-lock-indicator {
+    margin: 0.25rem 0 0;
+    font-size: 0.85rem;
+    font-style: italic;
+    color: var(--text-secondary, #6b7280);
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.chat-input-lock-indicator::before {
+    content: '●';
+    color: var(--primary, #2563eb);
+    animation: chat-input-lock-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes chat-input-lock-pulse {
+    0%, 100% { opacity: 0.3; }
+    50%      { opacity: 1; }
+}
+

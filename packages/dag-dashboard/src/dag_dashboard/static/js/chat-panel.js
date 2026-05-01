@@ -22,7 +22,11 @@ class ChatPanel {
 
     // Constructor signatures:
     //   new ChatPanel(containerId, runId) — run mode (back-compat)
-    //   new ChatPanel(containerId, { mode, runId, conversationId }) — explicit
+    //   new ChatPanel(containerId, { mode, runId, conversationId, nodes }) — explicit
+    //
+    // `nodes`: layout nodes (each {id|node_name, node_type, status}) used to
+    // seed the chat-blocking set on mount. GW-5423 AC-7.
+    let initialNodes = [];
     if (typeof runIdOrOptions === 'string') {
       this.mode = 'run';
       this.runId = runIdOrOptions;
@@ -31,6 +35,7 @@ class ChatPanel {
       this.mode = runIdOrOptions.mode || 'run';
       this.runId = runIdOrOptions.runId || null;
       this.conversationId = runIdOrOptions.conversationId || null;
+      if (Array.isArray(runIdOrOptions.nodes)) initialNodes = runIdOrOptions.nodes;
     } else {
       throw new Error('Invalid constructor arguments');
     }
@@ -50,6 +55,105 @@ class ChatPanel {
     this._scrollSubscription = null;
     // Bound terminal banner flag.
     this._terminalShown = false;
+
+    // GW-5423 AC-7: chat input lock driven by prompt-node execution.
+    // `chatBlockingNodeIds` seeded from layoutData on mount (node_type ===
+    // 'prompt'). Lock is attached to a specific nodeId so we only unlock on
+    // that node's terminal event (or on workflow terminal).
+    this.chatBlockingNodeIds = new Set();
+    this._lockingNodeId = null;
+    this._unlockTimer = null;
+    this._lifecycle = null;
+    this._setChatBlockingNodes(initialNodes);
+  }
+
+  /**
+   * Recompute the set of nodeIds whose execution locks the chat input.
+   * Today: node type === 'prompt' (agent-mode invocations all satisfy this).
+   * If any of those nodes is already running when we re-seed, we lock to it
+   * so the indicator matches the current run state.
+   *
+   * Accepts layout nodes in either shape:
+   *   { node_name, node_data: { type }, status, ... }  (dag-dashboard /layout)
+   *   { id, node_type, status, ... }                     (synthetic / test shape)
+   *
+   * Node events flow through by node_name (see executor), so we key the set
+   * off node_name where available.
+   */
+  _setChatBlockingNodes(nodes) {
+    if (!Array.isArray(nodes)) return;
+    const blocking = new Set();
+    let runningBlocker = null;
+    for (const n of nodes) {
+      if (!n) continue;
+      const type = (n.node_data && n.node_data.type) || n.node_type;
+      if (type !== 'prompt') continue;
+      const id = n.node_name || n.id;
+      if (!id) continue;
+      blocking.add(id);
+      if (n.status === 'running' && !runningBlocker) runningBlocker = id;
+    }
+    this.chatBlockingNodeIds = blocking;
+    if (runningBlocker) {
+      this.setInputLocked(runningBlocker);
+    }
+  }
+
+  /**
+   * Called from app.js once the lifecycle object is built. Lets the chat
+   * panel re-derive the lock from current run status (e.g. after a
+   * navigation back to a still-running run).
+   */
+  setLifecycle(lifecycle) {
+    this._lifecycle = lifecycle;
+    if (!lifecycle || typeof lifecycle.getRunStatus !== 'function') return;
+    if (lifecycle.getRunStatus() === 'terminal') {
+      this.setInputUnlocked();
+    }
+  }
+
+  /**
+   * Lock the chat input while a prompt/agent node is executing.
+   * Idempotent. Safe to call with the same nodeId repeatedly.
+   */
+  setInputLocked(nodeId) {
+    this._lockingNodeId = nodeId || this._lockingNodeId;
+    if (this._unlockTimer) {
+      clearTimeout(this._unlockTimer);
+      this._unlockTimer = null;
+    }
+    if (!this.form || !this.input) return;
+    this.form.classList.add('chat-input-form--locked');
+    this.input.disabled = true;
+    const sendBtn = this.form.querySelector('.chat-send-btn');
+    if (sendBtn) sendBtn.disabled = true;
+    // Replace the rate-limit hint with the locked-state indicator.
+    let hint = this.form.querySelector('.chat-input-lock-indicator');
+    if (!hint) {
+      hint = document.createElement('p');
+      hint.className = 'chat-input-lock-indicator';
+      this.form.appendChild(hint);
+    }
+    hint.textContent = 'Agent is thinking…';
+  }
+
+  /**
+   * Unlock the chat input. Debounced by 100ms so a prompt node that
+   * start+completes within one frame doesn't make the textarea flash.
+   */
+  setInputUnlocked() {
+    if (this._unlockTimer) return;
+    this._unlockTimer = setTimeout(() => {
+      this._unlockTimer = null;
+      this._lockingNodeId = null;
+      if (!this.form || !this.input) return;
+      this.form.classList.remove('chat-input-form--locked');
+      this.input.disabled = false;
+      const sendBtn = this.form.querySelector('.chat-send-btn');
+      if (sendBtn) sendBtn.disabled = false;
+      const hint = this.form.querySelector('.chat-input-lock-indicator');
+      if (hint) hint.remove();
+    }, 100);
   }
 
   render() {
@@ -236,9 +340,51 @@ class ChatPanel {
   handleWorkflowEvent(payload) {
     if (this.mode !== 'run') return;
     if (!window.EventToMessages) return;
+
+    // GW-5423 AC-7: drive the chat input lock off node lifecycle events for
+    // the subset of nodes whose node_type is chat-blocking (populated from
+    // layoutData on mount). This runs BEFORE the feed dispatch so the lock
+    // state matches the progress card's visible state.
+    this._applyChatLockFromEvent(payload);
+
     const messages = window.EventToMessages.eventToMessages(payload, this._eventState);
     for (const msg of messages) {
       this._dispatchWorkflowMessage(msg);
+    }
+  }
+
+  /**
+   * GW-5423 AC-7: translate a workflow event into a lock/unlock transition.
+   * Unconditional unlock on workflow terminal so we don't strand the input.
+   */
+  _applyChatLockFromEvent(payload) {
+    if (!payload) return;
+    const type = payload.event_type;
+    const nodeId = payload.node_id;
+
+    switch (type) {
+      case 'node_started':
+        if (nodeId && this.chatBlockingNodeIds.has(nodeId)) {
+          this.setInputLocked(nodeId);
+        }
+        return;
+      case 'node_completed':
+      case 'node_failed':
+      case 'node_escalated':
+      case 'node_interrupted':
+      case 'node_skipped':
+        if (nodeId && nodeId === this._lockingNodeId) {
+          this.setInputUnlocked();
+        }
+        return;
+      case 'workflow_completed':
+      case 'workflow_failed':
+      case 'workflow_cancelled':
+      case 'workflow_interrupted':
+        this.setInputUnlocked();
+        return;
+      default:
+        return;
     }
   }
 
@@ -345,6 +491,13 @@ class ChatPanel {
       window.NodeScrollBus.unsubscribe(this._scrollSubscription);
       this._scrollSubscription = null;
     }
+    // GW-5423 AC-7: clear any pending unlock timer so we don't fire after
+    // the panel has been torn down (would throw on a null form).
+    if (this._unlockTimer) {
+      clearTimeout(this._unlockTimer);
+      this._unlockTimer = null;
+    }
+    this._lockingNodeId = null;
     for (const card of this.cards.values()) {
       try { card.destroy(); } catch (_) { /* best-effort */ }
     }
