@@ -27,12 +27,11 @@ def topological_sort_with_layers(nodes: List[Dict[str, Any]]) -> Dict[int, List[
 
     for node in nodes:
         node_name = node["node_name"]
-        depends_on = node.get("depends_on", [])
-        if depends_on:
-            for parent in depends_on:
-                if parent in graph:
-                    graph[parent].append(node_name)
-                    in_degree[node_name] += 1
+        depends_on = node.get("depends_on") or []
+        for parent in depends_on:
+            if parent in graph:
+                graph[parent].append(node_name)
+                in_degree[node_name] += 1
 
     # Find all root nodes (in-degree = 0)
     queue = deque([(name, 0) for name, deg in in_degree.items() if deg == 0])
@@ -131,7 +130,7 @@ def compute_layout(nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
     for node in layout_nodes:
         node_name = node["node_name"]
         node_data = node.get("node_data", {})
-        depends_on = node.get("depends_on", [])
+        depends_on = node.get("depends_on") or []
 
         # Check if node has conditional edges defined
         conditional_edges = node_data.get("edges")
@@ -226,7 +225,7 @@ def compute_failure_path(nodes: List[Dict[str, Any]]) -> set[str]:
     forward_deps: Dict[str, List[str]] = {}
     for node in nodes:
         node_name = node["node_name"]
-        depends_on = node.get("depends_on", [])
+        depends_on = node.get("depends_on") or []
         for parent in depends_on:
             if parent not in forward_deps:
                 forward_deps[parent] = []
