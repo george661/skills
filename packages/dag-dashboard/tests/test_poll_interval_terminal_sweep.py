@@ -49,3 +49,19 @@ def test_lifecycle_exposes_run_status() -> None:
     js = (STATIC_DIR / "js" / "app.js").read_text()
     assert "getRunStatus" in js
     assert "setLifecycle" in js, "ChatPanel must receive lifecycle after construction"
+
+
+def test_poll_derives_terminal_from_node_statuses() -> None:
+    """Poll-path terminal detection must derive from node statuses, not a
+    top-level layoutData.status field (which compute_layout does not emit).
+    The AC-6 measurement (kill SSE mid-run → UI terminal within 6s) depends
+    on the poll being able to detect terminal state on its own.
+    """
+    js = (STATIC_DIR / "js" / "app.js").read_text()
+    # Must not rely on layoutData.status — layout.py doesn't emit it.
+    # Must derive from node status set.
+    assert "activeStatuses" in js, (
+        "Poll must track the set of active node statuses to detect terminal"
+    )
+    # At least the primary active states must be checked.
+    assert "'running'" in js and "'pending'" in js

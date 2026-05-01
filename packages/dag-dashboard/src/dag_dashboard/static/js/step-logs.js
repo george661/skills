@@ -346,6 +346,9 @@ class StepLogs {
       this.eventSource.close();
       this.eventSource = null;
     }
+    // GW-5423 AC-5: release the virtualizer's scroll listener so repeated
+    // open/close of the node slide-over doesn't retain StepLogs instances.
+    this._teardownVirtualizer();
   }
 }
 

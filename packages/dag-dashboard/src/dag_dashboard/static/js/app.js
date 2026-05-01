@@ -1310,9 +1310,17 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
 
             const layoutData = await layoutResp.json();
 
-            // AC-6: Check if workflow reached terminal status (safety net if SSE missed it)
-            const terminalStatuses = ['completed', 'failed', 'cancelled'];
-            if (layoutData.status && terminalStatuses.includes(layoutData.status)) {
+            // AC-6: Check if the workflow reached terminal status (safety net
+            // if SSE missed the workflow_completed/failed/cancelled event).
+            // The /layout endpoint does not expose a top-level workflow status,
+            // so derive it from node statuses: a workflow is terminal when at
+            // least one node has been executed and no node is still active.
+            // Active = pending | running | queued | retrying | not-started.
+            const activeStatuses = new Set(['pending', 'running', 'queued', 'retrying', 'not-started']);
+            const nodes = Array.isArray(layoutData.nodes) ? layoutData.nodes : [];
+            const executedCount = nodes.filter((n) => n && n.status && !activeStatuses.has(n.status)).length;
+            const anyActive = nodes.some((n) => n && n.status && activeStatuses.has(n.status));
+            if (nodes.length > 0 && executedCount > 0 && !anyActive) {
                 runTerminalSweep();
                 return;
             }
