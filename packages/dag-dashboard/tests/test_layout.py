@@ -184,6 +184,29 @@ def test_compute_layout_empty():
     assert layout["edges"] == []
 
 
+def test_compute_layout_tolerates_null_depends_on():
+    # Regression: older node_executions rows (and any path that inserts
+    # without depends_on) surface as {"depends_on": None} from the DB.
+    # compute_layout → compute_failure_path would blow up on NoneType.
+    nodes = [
+        {"id": "r1:A", "run_id": "r1", "node_name": "A",
+         "status": "succeeded", "depends_on": None,
+         "started_at": "2024-01-01T00:00:00Z", "finished_at": "2024-01-01T00:01:00Z"},
+        {"id": "r1:B", "run_id": "r1", "node_name": "B",
+         "status": "running", "depends_on": ["A"],
+         "started_at": "2024-01-01T00:01:00Z", "finished_at": None},
+        {"id": "r1:C", "run_id": "r1", "node_name": "C",
+         "status": "pending", "depends_on": None,
+         "started_at": None, "finished_at": None},
+    ]
+
+    layout = compute_layout(nodes)
+
+    assert {n["node_name"] for n in layout["nodes"]} == {"A", "B", "C"}
+    # Edge from A→B via B's depends_on. A and C have no parents.
+    assert any(e["source"] == "A" and e["target"] == "B" for e in layout["edges"])
+
+
 def test_compute_failure_path_no_failures():
     """Test compute_failure_path returns empty set when all nodes completed."""
     from dag_dashboard.layout import compute_failure_path
