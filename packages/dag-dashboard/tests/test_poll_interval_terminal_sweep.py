@@ -90,3 +90,17 @@ def test_poll_treats_escalated_and_interrupted_as_non_terminal() -> None:
     assert "'interrupted'" in set_literal, (
         "interrupted must be treated as non-terminal (paused, awaiting input)"
     )
+    # Pin that the named set is actually consulted by the terminal-sweep gate,
+    # not just declared and then ignored. Look in a window after the Set decl
+    # for a `.has(` membership test followed by a `runTerminalSweep()` call
+    # inside the same if-block.
+    after_decl = js[set_end:set_end + 1000]
+    set_name = "waitingStatuses" if "waitingStatuses" in js[anchor:anchor + 50] else "activeStatuses"
+    assert f"{set_name}.has(" in after_decl, (
+        f"{set_name} must actually be consulted via .has(status) in the "
+        "terminal-sweep gate; declaring the set without using it is a no-op."
+    )
+    assert "runTerminalSweep()" in after_decl, (
+        "terminal-sweep gate must call runTerminalSweep() in the same block "
+        "that consults the status set"
+    )
