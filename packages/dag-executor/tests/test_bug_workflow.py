@@ -443,3 +443,249 @@ class TestGW5469PipelineModeTypeBug:
             f"Got {pipeline_mode!r} (type={type(pipeline_mode).__name__}).  "
             f"The jq --arg refactor yields str('false') which != bool(False)."
         )
+
+
+# ---------------------------------------------------------------------------
+# GW-5470: pipeline_mode type regression (confirmed same root cause as GW-5469)
+#
+# The jq --arg refactor in load_context and collect_evidence stores
+# pipeline_mode as a JSON string ("false") instead of a JSON boolean (false).
+#
+# GW-5470 extends the coverage to the collect_evidence node — the SECOND
+# call-site where `jq --arg pipeline_mode "$pipeline_mode"` reintroduces the
+# string type even after load_context has already emitted a string value.
+# The collect_evidence node reads evidence.pipeline_mode from the channel
+# (already a string at this point), stores it via --arg (which is a no-op
+# type-wise because it was already a string), and re-emits it.  The net
+# observable effect for downstream consumers is identical to GW-5469.
+#
+# Additional regression confirmed by the hypothesis:
+#   - variables._interpolate() passes string values verbatim (lowercase
+#     'false') while bool values go through repr() (titlecase 'False').
+#     Prompt nodes therefore receive an ambiguous token.
+#   - The mock layer in the existing suite uses flat-dict schema
+#     {'pipeline_mode': false} which diverges from the real evidence-wrapped
+#     schema {'evidence': {'pipeline_mode': ...}}, masking the regression.
+# ---------------------------------------------------------------------------
+
+
+class TestGW5470PipelineModeTypeBug:
+    """GW-5470: pipeline_mode must be a JSON boolean in both load_context and collect_evidence.
+
+    Exercises the REAL bash scripts (no mocking) for both nodes to confirm
+    the jq --arg type regression is present at each call-site.  All tests
+    FAIL against the current working-tree refactor and will PASS once
+    pipeline_mode is emitted as a JSON boolean (e.g. via --argjson or bare
+    shell interpolation).
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _run_single_node_workflow(self, node_id: str, inputs: dict) -> str:
+        """Run a stripped-down workflow containing only *node_id* and return
+        the raw stdout string from that node's result.
+
+        No mocks — the actual bash script from bug.yaml is executed.
+        """
+        import asyncio
+        import tempfile
+        import os as _os
+        import yaml as _yaml
+
+        fixture_path = Path(__file__).parent.parent / "workflows" / "bug.yaml"
+        with open(fixture_path) as f:
+            workflow_data = _yaml.safe_load(f)
+
+        workflow_data["nodes"] = [
+            n for n in workflow_data["nodes"] if n["id"] == node_id
+        ]
+        workflow_data.pop("outputs", None)
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+            _yaml.dump(workflow_data, tmp)
+            tmp_path = tmp.name
+
+        try:
+            from dag_executor.parser import load_workflow_from_string
+            from dag_executor.executor import WorkflowExecutor
+
+            with open(tmp_path) as f:
+                wf_def = load_workflow_from_string(f.read())
+
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(wf_def, inputs))
+
+            node_result = result.node_results[node_id]
+            assert node_result.status == NodeStatus.COMPLETED, (
+                f"{node_id} did not complete: {node_result.error}"
+            )
+            stdout: str = (node_result.output or {}).get("stdout", "")
+            assert stdout.strip(), f"{node_id} produced no stdout"
+            return stdout.strip()
+        finally:
+            _os.unlink(tmp_path)
+
+    def _run_two_node_workflow(self, inputs: dict) -> str:
+        """Run a stripped-down workflow with both load_context and collect_evidence
+        and return the raw stdout string from collect_evidence.
+
+        This mirrors the real execution path: load_context writes to the evidence
+        channel, then collect_evidence reads from it.  No mocks.
+        """
+        import asyncio
+        import tempfile
+        import os as _os
+        import yaml as _yaml
+
+        fixture_path = Path(__file__).parent.parent / "workflows" / "bug.yaml"
+        with open(fixture_path) as f:
+            workflow_data = _yaml.safe_load(f)
+
+        keep = {"load_context", "collect_evidence"}
+        workflow_data["nodes"] = [
+            n for n in workflow_data["nodes"] if n["id"] in keep
+        ]
+        workflow_data.pop("outputs", None)
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+            _yaml.dump(workflow_data, tmp)
+            tmp_path = tmp.name
+
+        try:
+            from dag_executor.parser import load_workflow_from_string
+            from dag_executor.executor import WorkflowExecutor
+
+            with open(tmp_path) as f:
+                wf_def = load_workflow_from_string(f.read())
+
+            executor = WorkflowExecutor()
+            result = asyncio.run(executor.execute(wf_def, inputs))
+
+            ce = result.node_results["collect_evidence"]
+            assert ce.status == NodeStatus.COMPLETED, (
+                f"collect_evidence did not complete: {ce.error}"
+            )
+            stdout: str = (ce.output or {}).get("stdout", "")
+            assert stdout.strip(), "collect_evidence produced no stdout"
+            return stdout.strip()
+        finally:
+            _os.unlink(tmp_path)
+
+    # ------------------------------------------------------------------
+    # load_context call-site (GW-5470 — mirrors GW-5469 for traceability)
+    # ------------------------------------------------------------------
+
+    def test_load_context_pipeline_mode_type_is_bool(self) -> None:
+        """GW-5470: load_context must emit pipeline_mode as a JSON boolean.
+
+        FAILS: jq --arg serialises '$pipeline_mode' as a JSON string regardless
+        of content.  json.loads(stdout)['evidence']['pipeline_mode'] returns
+        str('false'), not bool(False).
+        """
+        import json as _json
+
+        stdout = self._run_single_node_workflow(
+            "load_context", {"description": "GW-5470 repro"}
+        )
+        parsed = _json.loads(stdout)
+        assert "evidence" in parsed, (
+            f"GW-5470: load_context stdout missing top-level 'evidence' key. "
+            f"Got keys: {list(parsed.keys())}"
+        )
+        pipeline_mode = parsed["evidence"].get("pipeline_mode")
+        assert type(pipeline_mode) is bool, (  # noqa: E721
+            f"GW-5470: load_context evidence['pipeline_mode'] must be bool, "
+            f"got {type(pipeline_mode).__name__!r} = {pipeline_mode!r}.  "
+            f"Root cause: jq --arg unconditionally wraps the value as a JSON string."
+        )
+
+    def test_load_context_pipeline_mode_false_without_pipeline_url(self) -> None:
+        """GW-5470: Without pipeline_url, load_context must emit pipeline_mode=false (bool).
+
+        FAILS: str('false') is truthy — bool('false') is True — inverting the
+        intended semantics for every Python guard that evaluates the value.
+        """
+        import json as _json
+
+        stdout = self._run_single_node_workflow(
+            "load_context", {"description": "GW-5470 repro no url"}
+        )
+        parsed = _json.loads(stdout)
+        pipeline_mode = parsed["evidence"].get("pipeline_mode")
+        assert pipeline_mode is False, (
+            f"GW-5470: load_context evidence['pipeline_mode'] should be bool False "
+            f"when no pipeline_url is given, but got {pipeline_mode!r} "
+            f"(bool={bool(pipeline_mode)}).  "
+            f"jq --arg stores the string 'false' which is truthy."
+        )
+
+    # ------------------------------------------------------------------
+    # collect_evidence call-site (new coverage added by GW-5470)
+    # ------------------------------------------------------------------
+
+    def test_collect_evidence_pipeline_mode_type_is_bool(self) -> None:
+        """GW-5470: collect_evidence must re-emit pipeline_mode as a JSON boolean.
+
+        FAILS: collect_evidence reads pipeline_mode from the evidence channel
+        (already a string due to the load_context regression) and then passes
+        it through jq --arg again.  The output is still str('false').
+        json.loads(stdout)['evidence']['pipeline_mode'] must be bool(False).
+        """
+        import json as _json
+
+        stdout = self._run_two_node_workflow({"description": "GW-5470 collect repro"})
+        parsed = _json.loads(stdout)
+        assert "evidence" in parsed, (
+            f"GW-5470: collect_evidence stdout missing top-level 'evidence' key. "
+            f"Got keys: {list(parsed.keys())}"
+        )
+        pipeline_mode = parsed["evidence"].get("pipeline_mode")
+        assert type(pipeline_mode) is bool, (  # noqa: E721
+            f"GW-5470: collect_evidence evidence['pipeline_mode'] must be bool, "
+            f"got {type(pipeline_mode).__name__!r} = {pipeline_mode!r}.  "
+            f"Root cause: jq --arg at the collect_evidence call-site re-emits "
+            f"the value as a JSON string."
+        )
+
+    def test_collect_evidence_pipeline_mode_false_without_pipeline_url(self) -> None:
+        """GW-5470: Without pipeline_url, collect_evidence must preserve pipeline_mode=false (bool).
+
+        FAILS: str('false') is truthy, so `if pipeline_mode:` in any downstream
+        Python consumer (e.g. variables._interpolate) silently evaluates to True,
+        causing the workflow to behave as though it is in pipeline mode when it
+        is not.
+        """
+        import json as _json
+
+        stdout = self._run_two_node_workflow({"description": "GW-5470 collect repro no url"})
+        parsed = _json.loads(stdout)
+        pipeline_mode = parsed["evidence"].get("pipeline_mode")
+        assert pipeline_mode is False, (
+            f"GW-5470: collect_evidence evidence['pipeline_mode'] should be "
+            f"bool False when no pipeline_url is given, but got {pipeline_mode!r} "
+            f"(bool={bool(pipeline_mode)}).  "
+            f"The jq --arg refactor stores str('false') which is truthy, "
+            f"inverting the intended falsy semantics."
+        )
+
+    def test_collect_evidence_pipeline_mode_not_a_string(self) -> None:
+        """GW-5470: pipeline_mode in collect_evidence output must not be a string.
+
+        FAILS: The jq --arg refactor at both call-sites guarantees the value is
+        always a JSON string.  str('false') != bool(False), so equality gates
+        silently break.  This test makes the contract explicit: the value MUST
+        NOT be of type str.
+        """
+        import json as _json
+
+        stdout = self._run_two_node_workflow({"description": "GW-5470 string check"})
+        parsed = _json.loads(stdout)
+        pipeline_mode = parsed["evidence"].get("pipeline_mode")
+        assert not isinstance(pipeline_mode, str), (
+            f"GW-5470: evidence['pipeline_mode'] must not be a string; "
+            f"got {pipeline_mode!r}.  "
+            f"jq --arg serialises shell variables as JSON strings — use "
+            f"--argjson or bare shell interpolation to preserve the boolean type."
+        )
