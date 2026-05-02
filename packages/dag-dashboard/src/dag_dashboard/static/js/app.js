@@ -1314,13 +1314,19 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
             // if SSE missed the workflow_completed/failed/cancelled event).
             // The /layout endpoint does not expose a top-level workflow status,
             // so derive it from node statuses: a workflow is terminal when at
-            // least one node has been executed and no node is still active.
-            // Active = pending | running | queued | retrying | not-started.
-            const activeStatuses = new Set(['pending', 'running', 'queued', 'retrying', 'not-started']);
+            // least one node has been executed and no node is still waiting.
+            // `escalated`/`interrupted` are paused-for-input states, not
+            // terminal — downstream nodes may not yet be materialized while
+            // the user synthesizes a resume value, so keep polling so the
+            // timeline/channels/DAG refresh as the workflow resumes.
+            const waitingStatuses = new Set([
+                'pending', 'running', 'queued', 'retrying', 'not-started',
+                'escalated', 'interrupted',
+            ]);
             const nodes = Array.isArray(layoutData.nodes) ? layoutData.nodes : [];
-            const executedCount = nodes.filter((n) => n && n.status && !activeStatuses.has(n.status)).length;
-            const anyActive = nodes.some((n) => n && n.status && activeStatuses.has(n.status));
-            if (nodes.length > 0 && executedCount > 0 && !anyActive) {
+            const executedCount = nodes.filter((n) => n && n.status && !waitingStatuses.has(n.status)).length;
+            const anyWaiting = nodes.some((n) => n && n.status && waitingStatuses.has(n.status));
+            if (nodes.length > 0 && executedCount > 0 && !anyWaiting) {
                 runTerminalSweep();
                 return;
             }
