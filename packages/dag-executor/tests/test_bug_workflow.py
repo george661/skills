@@ -689,3 +689,199 @@ class TestGW5470PipelineModeTypeBug:
             f"jq --arg serialises shell variables as JSON strings — use "
             f"--argjson or bare shell interpolation to preserve the boolean type."
         )
+
+
+# ---------------------------------------------------------------------------
+# GW-5495: collect_evidence bash node returns hardcoded stub strings in
+# non-pipeline mode instead of real system evidence.
+#
+# Root cause: lines 124-126 of bug.yaml unconditionally assign:
+#   logs="Collected local logs"
+#   errors="Collected error traces"
+# These are never derived from any real source (journalctl, tail, docker
+# logs, syslog, etc.).  When analyze_root_cause receives a vague description
+# such as "stuff" combined with this zero-signal evidence it has no factual
+# grounding, causing it to time out or escalate.
+#
+# The tests below exercise the REAL collect_evidence bash script (no mocking)
+# and assert that the logs/errors fields contain system-derived content rather
+# than the known placeholder strings.  They FAIL against the current working
+# tree (stub strings are hardcoded) and will PASS only after the bash node is
+# updated to gather real system evidence.
+# ---------------------------------------------------------------------------
+
+
+class TestGW5495CollectEvidenceStubs:
+    """GW-5495: collect_evidence must return real evidence in non-pipeline mode.
+
+    Strategy: run the real load_context + collect_evidence bash scripts (no
+    mocking) with pipeline_url unset.  Inspect the raw stdout of
+    collect_evidence and assert that the ``logs`` and ``errors`` fields are
+    NOT the hardcoded placeholder strings.  The tests also assert that the
+    fields contain a non-empty, non-trivial value — i.e. something that a
+    real evidence-collection command (journalctl, tail, etc.) would produce.
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    # The exact placeholder strings embedded in bug.yaml lines 125-126.
+    _STUB_LOGS = "Collected local logs"
+    _STUB_ERRORS = "Collected error traces"
+
+    def _run_collect_evidence(self, description: str = "stuff") -> dict:
+        """Run the real load_context → collect_evidence pipeline without
+        pipeline_url (non-pipeline mode) and return the parsed evidence dict
+        from collect_evidence's stdout.
+
+        No mocks — the actual bash scripts in bug.yaml are executed.
+        """
+        import asyncio
+        import json as _json
+        import os as _os
+        import tempfile
+
+        import yaml as _yaml
+
+        fixture_path = Path(__file__).parent.parent / "workflows" / "bug.yaml"
+        with open(fixture_path) as f:
+            workflow_data = _yaml.safe_load(f)
+
+        # Keep only the two evidence-phase nodes so the test completes
+        # quickly and does not call LLM / Jira nodes.
+        keep = {"load_context", "collect_evidence"}
+        workflow_data["nodes"] = [
+            n for n in workflow_data["nodes"] if n["id"] in keep
+        ]
+        workflow_data.pop("outputs", None)
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+            _yaml.dump(workflow_data, tmp)
+            tmp_path = tmp.name
+
+        try:
+            from dag_executor.executor import WorkflowExecutor
+            from dag_executor.parser import load_workflow_from_string
+
+            with open(tmp_path) as f:
+                wf_def = load_workflow_from_string(f.read())
+
+            executor = WorkflowExecutor()
+            result = asyncio.run(
+                executor.execute(wf_def, {"description": description})
+            )
+
+            ce = result.node_results["collect_evidence"]
+            assert ce.status == NodeStatus.COMPLETED, (
+                f"collect_evidence did not complete: {ce.error}"
+            )
+            stdout: str = (ce.output or {}).get("stdout", "")
+            assert stdout.strip(), "collect_evidence produced no stdout"
+
+            parsed = _json.loads(stdout.strip())
+            assert "evidence" in parsed, (
+                f"GW-5495: collect_evidence stdout missing top-level 'evidence' key. "
+                f"Got keys: {list(parsed.keys())}"
+            )
+            return parsed["evidence"]
+        finally:
+            _os.unlink(tmp_path)
+
+    # ------------------------------------------------------------------
+    # Failing tests — all assertions break against the current working tree
+    # (hardcoded stubs) and will pass once the bash node gathers real data.
+    # ------------------------------------------------------------------
+
+    def test_collect_evidence_logs_not_stub(self) -> None:
+        """GW-5495: collect_evidence logs field must not be the hardcoded stub.
+
+        FAILS: bug.yaml line 125 hardcodes ``logs="Collected local logs"``.
+        The test asserts the returned value is NOT that string, meaning the
+        node must have executed a real log-collection command.
+        """
+        evidence = self._run_collect_evidence("stuff")
+        logs = evidence.get("logs", "")
+        assert logs != self._STUB_LOGS, (
+            f"GW-5495: collect_evidence returned the hardcoded stub string for "
+            f"logs: {logs!r}.  The non-pipeline code path (bug.yaml lines "
+            f"124-126) never invokes a real log-collection command "
+            f"(journalctl, tail, docker logs, etc.).  "
+            f"analyze_root_cause receives zero-signal evidence and cannot "
+            f"perform meaningful root-cause analysis."
+        )
+
+    def test_collect_evidence_errors_not_stub(self) -> None:
+        """GW-5495: collect_evidence errors field must not be the hardcoded stub.
+
+        FAILS: bug.yaml line 126 hardcodes ``errors="Collected error traces"``.
+        The test asserts the returned value is NOT that string.
+        """
+        evidence = self._run_collect_evidence("stuff")
+        errors = evidence.get("errors", "")
+        assert errors != self._STUB_ERRORS, (
+            f"GW-5495: collect_evidence returned the hardcoded stub string for "
+            f"errors: {errors!r}.  The non-pipeline code path never invokes a "
+            f"real error-trace collection command.  "
+            f"analyze_root_cause cannot reason from placeholder evidence."
+        )
+
+    def test_collect_evidence_logs_contains_real_content(self) -> None:
+        """GW-5495: collect_evidence logs must contain system-derived content.
+
+        FAILS: the stub string 'Collected local logs' is a single sentence
+        with no system-specific data.  Real log output (journalctl, tail,
+        syslog, application stderr) would contain timestamps, process names,
+        log levels, or other structured tokens.  This test checks for the
+        presence of at least one newline or a digit (timestamps, PIDs, etc.),
+        which any real log line would satisfy but the stub never would.
+        """
+        evidence = self._run_collect_evidence("stuff")
+        logs = evidence.get("logs", "")
+        has_real_content = "\n" in logs or any(ch.isdigit() for ch in logs)
+        assert has_real_content, (
+            f"GW-5495: collect_evidence logs field does not look like real "
+            f"system log output.  Got: {logs!r}.  "
+            f"Expected multi-line content or timestamps/PIDs from a real "
+            f"log-collection command (journalctl --lines, tail -n, etc.)."
+        )
+
+    def test_collect_evidence_errors_contains_real_content(self) -> None:
+        """GW-5495: collect_evidence errors must contain system-derived content.
+
+        FAILS: the stub string 'Collected error traces' has no diagnostic
+        value.  A real implementation would capture stderr, crash logs,
+        coredump summaries, or similar structured error output.
+        """
+        evidence = self._run_collect_evidence("stuff")
+        errors = evidence.get("errors", "")
+        has_real_content = "\n" in errors or any(ch.isdigit() for ch in errors)
+        assert has_real_content, (
+            f"GW-5495: collect_evidence errors field does not look like real "
+            f"error-trace output.  Got: {errors!r}.  "
+            f"Expected structured content from a real error-collection command."
+        )
+
+    def test_collect_evidence_non_pipeline_mode_not_stub_with_vague_description(
+        self,
+    ) -> None:
+        """GW-5495: A one-word description must not result in stub evidence.
+
+        FAILS: the root cause states that ``description='stuff'`` + stub
+        evidence causes analyze_root_cause to have no factual grounding.
+        This test reproduces the exact inputs from the bug report
+        (description='stuff', no pipeline_url, no source_issue) and asserts
+        that both logs and errors contain real data, not placeholders.
+        """
+        evidence = self._run_collect_evidence("stuff")
+        logs = evidence.get("logs", "")
+        errors = evidence.get("errors", "")
+        assert logs != self._STUB_LOGS and errors != self._STUB_ERRORS, (
+            f"GW-5495: With description='stuff' and no pipeline_url, "
+            f"collect_evidence returned stub placeholder values.  "
+            f"logs={logs!r}, errors={errors!r}.  "
+            f"This reproduces the exact scenario from the bug report: "
+            f"analyze_root_cause (dispatch=local, model=sonnet) receives "
+            f"zero-signal evidence and either times out at 600 s or escalates, "
+            f"producing no useful root_cause output."
+        )
