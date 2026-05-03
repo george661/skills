@@ -1,0 +1,48 @@
+[project]
+name = "promptc"
+version = "0.1.0"
+description = "Prompt composition language compiler for Claude agents"
+authors = [
+    {name = "General Wisdom", email = "engineering@generalwisdom.com"}
+]
+requires-python = ">=3.9"
+dependencies = [
+    "pydantic>=2.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "mypy>=1.0",
+    "ruff>=0.1"
+]
+
+[project.scripts]
+promptc = "promptc.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint]
+ignore = []
