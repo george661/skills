@@ -931,6 +931,15 @@ async function renderRunDetail(runId) {
         let chatPanel;
         if (window.ChatPanel) {
             try {
+                // GW-5492 AC-6: kick off the orchestrator status fetch in
+                // parallel with mount. Passing `orchestratorStatus: null`
+                // still lets ChatPanel re-fetch on its own; seeding when
+                // this promise resolves first avoids a flicker from the
+                // default "Reconnecting…" hint to "enabled".
+                const orchestratorStatusPromise = fetch(
+                    `/api/workflows/${runId}/orchestrator/status`
+                ).then(r => (r.ok ? r.json() : null)).catch(() => null);
+
                 // GW-5423 AC-7: pass layout nodes so ChatPanel can build the
                 // chat-blocking node set (filters to node_type === 'prompt').
                 chatPanel = new window.ChatPanel('workflow-feed', {
@@ -939,6 +948,17 @@ async function renderRunDetail(runId) {
                     nodes: layoutData && layoutData.nodes ? layoutData.nodes : [],
                 });
                 if (typeof chatPanel.render === 'function') chatPanel.render();
+
+                // When the fetch completes, nudge the panel so the state
+                // machine sees the real alive value (handleSSEMessage
+                // accepts the same shape as an orchestrator_ready event).
+                orchestratorStatusPromise.then(status => {
+                    if (status && chatPanel && typeof chatPanel.handleSSEMessage === 'function') {
+                        chatPanel.handleSSEMessage({
+                            type: status.alive ? 'orchestrator_ready' : 'orchestrator_stopped',
+                        });
+                    }
+                });
             } catch (err) {
                 console.warn('ChatPanel failed to mount:', err);
                 chatPanel = {
@@ -1227,6 +1247,17 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
                 } else if (chatPanel) {
                     // Otherwise route to workflow chat panel
                     chatPanel.handleSSEMessage(payload);
+                }
+            } else if (
+                // GW-5492 AC-6/AC-7: orchestrator lifecycle + token streaming
+                // events go straight to ChatPanel. Node-detail panel does
+                // not observe these (workflow-level concerns).
+                eventType === 'chat_message_token' ||
+                eventType === 'orchestrator_ready' ||
+                eventType === 'orchestrator_stopped'
+            ) {
+                if (chatPanel) {
+                    chatPanel.handleSSEMessage({ ...payload, type: eventType });
                 }
             } else if (eventType === 'node_progress' && payload.metadata && payload.metadata.attempt != null) {
                 // This is a retry event (not a token-stream event)

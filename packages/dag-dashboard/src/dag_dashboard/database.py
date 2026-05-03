@@ -185,6 +185,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     active INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_conv ON sessions(conversation_id);
+
+-- 13. orchestrator_sessions: Long-lived orchestrator subprocess tracking per conversation
+CREATE TABLE IF NOT EXISTS orchestrator_sessions (
+    conversation_id TEXT PRIMARY KEY,
+    session_uuid TEXT NOT NULL,
+    last_active TEXT NOT NULL,
+    status TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orch_sessions_last_active ON orchestrator_sessions(last_active);
 """
 
 

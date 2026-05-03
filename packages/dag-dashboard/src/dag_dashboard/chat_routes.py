@@ -16,6 +16,7 @@ from .queries import (
     get_conversation_row,
     list_conversations,
     list_runs_in_conversation,
+    get_conversation_id_from_run,
 )
 
 
@@ -85,6 +86,21 @@ def create_chat_router(db_path: Path) -> APIRouter:
                     "created_at": now
                 }
             )
+
+        # Route to orchestrator if available
+        if hasattr(request.app.state, "orchestrator_manager") and request.app.state.orchestrator_manager:
+            conversation_id = get_conversation_id_from_run(db_path, run_id)
+            if conversation_id:
+                try:
+                    await request.app.state.orchestrator_manager.route_message(
+                        conversation_id=conversation_id,
+                        run_id=run_id,
+                        message=message.content,
+                    )
+                except Exception as e:
+                    # Don't fail the request if orchestrator routing fails
+                    import logging
+                    logging.getLogger(__name__).error(f"Failed to route message to orchestrator: {e}")
 
         return {
             "id": msg_id,

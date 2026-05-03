@@ -39,6 +39,7 @@ def test_init_db_creates_all_tables(tmp_path: Path) -> None:
         'gate_decisions',
         'node_executions',
         'node_logs',
+        'orchestrator_sessions',
         'sessions',
         'slack_threads',
         'workflow_runs'
@@ -87,7 +88,7 @@ def test_init_db_is_idempotent(tmp_path: Path) -> None:
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence'")
     count = cursor.fetchone()[0]
-    assert count == 12  # Updated to 12 to include conversations and sessions tables
+    assert count == 13  # Updated to 13 to include conversations, sessions, and orchestrator_sessions tables
     conn.close()
 
 
