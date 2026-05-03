@@ -1627,3 +1627,62 @@ def get_conversation_id_from_run(db_path: Path, run_id: str) -> Optional[str]:
         return row[0] if row else None
     finally:
         conn.close()
+
+
+def upsert_orchestrator_session(
+    db_path: Path,
+    conversation_id: str,
+    session_uuid: str,
+    last_active: str,
+    status: str,
+    model: str,
+    created_at: str,
+) -> None:
+    """Insert or update an orchestrator session record."""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO orchestrator_sessions
+                (conversation_id, session_uuid, last_active, status, model, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(conversation_id) DO UPDATE SET
+                session_uuid = excluded.session_uuid,
+                last_active = excluded.last_active,
+                status = excluded.status,
+                model = excluded.model
+            """,
+            (conversation_id, session_uuid, last_active, status, model, created_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_orchestrator_session(
+    db_path: Path, conversation_id: str
+) -> Optional[Dict[str, Any]]:
+    """Get orchestrator session by conversation_id."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT * FROM orchestrator_sessions WHERE conversation_id = ?",
+            (conversation_id,)
+        )
+        row = cursor.fetchone()
+        return _row_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def delete_orchestrator_session(db_path: Path, conversation_id: str) -> None:
+    """Delete an orchestrator session record."""
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "DELETE FROM orchestrator_sessions WHERE conversation_id = ?",
+            (conversation_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
