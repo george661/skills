@@ -25,6 +25,8 @@ ENV_VAR_WHITELIST = frozenset({
     "TENANT_DOMAIN_PATH",
     "TENANT_DOCS_REPO",
     "TENANT_SMOKE_TEST_PATH",
+    "DOCS_REPO",
+    "DAILY_REPORTS_PATH",
     "DAG_EVENTS_DIR",
     "DAG_CREATE_ISSUES_BATCH",
     "DAG_DEPENDENCY_GRAPH",
@@ -35,6 +37,21 @@ ENV_VAR_WHITELIST = frozenset({
     "USER",
     "SHELL",
 })
+
+
+# Awk built-in field / record variable names. When workflow authors write
+# `awk '{print $NF}'` or `awk '{print $1,$3}'` inside a bash script, the
+# shell-level resolver must leave those tokens alone so awk can expand them.
+# Numeric field refs ($0..$9) are matched by a separate pattern.
+_AWK_BUILTINS = frozenset({
+    "NF", "NR", "FS", "OFS", "RS", "ORS", "FILENAME", "FNR",
+})
+_AWK_NUMERIC_REF = re.compile(r"^[0-9]+$")
+
+
+def _is_awk_builtin(name: str) -> bool:
+    """True if `name` is an awk built-in that the shell should leave literal."""
+    return name in _AWK_BUILTINS or bool(_AWK_NUMERIC_REF.match(name))
 
 
 class VariableResolutionError(Exception):
@@ -58,11 +75,11 @@ class VariableResolutionError(Exception):
 # Regex to match $variable or $node.field.nested or $function(args)
 VARIABLE_PATTERN = re.compile(r'\$([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*)')
 
-# Shell-style ${variable} form. Workflow authors naturally write ${description}
-# inside prompts and scripts (matches bash). We normalize to $description before
-# the main resolver runs. Dotted forms like ${node.field} are NOT supported
-# here — authors should use $node.field for those (matches YAML-level refs).
-BRACED_VARIABLE_PATTERN = re.compile(r'\$\{([a-zA-Z0-9_-]+)\}')
+# Shell-style ${variable} and ${node.field.nested} forms. Workflow authors
+# naturally write ${description} and ${creation_result.bug_key} inside prompts
+# and scripts (matches bash's brace syntax). We normalize to $description /
+# $creation_result.bug_key before the main resolver runs.
+BRACED_VARIABLE_PATTERN = re.compile(r'\$\{([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*)\}')
 
 
 def _interpolate(value: Any) -> str:
@@ -182,7 +199,9 @@ def _resolve_string(
     if len(matches) == 1 and matches[0].group(0) == result and not callable_matches:
         reference = matches[0].group(1)
         first_segment = reference.split(".")[0]
-        if first_segment not in skip:
+        if first_segment not in skip and not (
+            "." not in reference and _is_awk_builtin(reference)
+        ):
             return _resolve_reference(reference, node_outputs, workflow_inputs, channel_store)
 
     # Mixed content - perform string interpolation
@@ -190,8 +209,22 @@ def _resolve_string(
         full_match = match.group(0)  # e.g., "$node.output.field"
         reference = match.group(1)    # e.g., "node.output.field"
         first_segment = reference.split(".")[0]
+        # Awk built-in field refs (`$NF`, `$1`, ...) look like bare
+        # single-segment refs but belong to an embedded awk program.
+        # Leave them literal so awk expands them at runtime.
+        if "." not in reference and _is_awk_builtin(reference):
+            continue
         if first_segment in skip:
-            continue  # leave literal — bash will expand it
+            # Bare `$channel` stays literal — the bash runner injects the
+            # serialized value via env var. BUT dot-path refs like
+            # `$channel.field` MUST still be substituted: env-var injection
+            # gives bash the whole structured value, not the sub-field, and
+            # `$channel.field` in bash would concatenate the serialized
+            # value with the literal string ".field" (broken). Substitute
+            # here so authors can write `${channel.field}` in bash scripts
+            # and get the parsed sub-value inlined.
+            if "." not in reference:
+                continue  # leave `$bare_name` literal — bash will expand it
         resolved = _resolve_reference(reference, node_outputs, workflow_inputs, channel_store)
         # Convert resolved value to string for interpolation
         result = result.replace(full_match, _interpolate(resolved))
@@ -410,32 +443,27 @@ def extract_variable_references(value: Any) -> List[Tuple[str, str]]:
 
 
 def _remove_code_blocks(text: str) -> str:
-    """Remove triple-backtick code blocks and indented command examples from text.
+    """Remove triple-backtick code blocks from text.
 
-    Prompts often contain instructional code snippets with variable names that are
-    not actually resolved at workflow runtime. This function filters them out before
-    extracting variable references.
+    Prompts often contain instructional code snippets inside ```…``` fences
+    (shown to the LLM as example invocations) with variable names that are
+    not resolved at workflow runtime. Triple-backtick blocks are stripped
+    before extracting variable references.
+
+    We do NOT strip indented lines as "code examples" any more: YAML block
+    scalars (`script: |`, `prompt: |`) carry meaningful indentation, and
+    the prior heuristic silently hid every real reference inside a prompt
+    or bash script from the validator. Authors who want an indented literal
+    example that shouldn't be validated can put it inside a fenced block.
 
     Args:
         text: Input text potentially containing code blocks
 
     Returns:
-        Text with code blocks replaced by empty strings
+        Text with fenced code blocks replaced by empty strings
     """
     # Remove triple-backtick code blocks (```...```)
-    text = re.sub(r'```[^`]*```', '', text, flags=re.DOTALL)
-
-    # Remove indented code blocks (2+ spaces or tab at line start)
-    # Prompts use varying indentation levels for command examples
-    lines = text.split('\n')
-    filtered_lines = []
-    for line in lines:
-        # Skip lines that start with 2+ spaces or a tab (command examples in prompts)
-        if line.startswith('  ') or line.startswith('\t'):
-            continue
-        filtered_lines.append(line)
-
-    return '\n'.join(filtered_lines)
+    return re.sub(r'```[^`]*```', '', text, flags=re.DOTALL)
 
 
 def _collect_references(value: Any, refs: List[Tuple[str, str]]) -> None:
@@ -446,14 +474,38 @@ def _collect_references(value: Any, refs: List[Tuple[str, str]]) -> None:
         refs: List to append found references to (modified in place)
     """
     if isinstance(value, str):
-        # Filter out code blocks and indented command examples from the string
-        # These often contain instructional variable names not resolved at runtime
+        # Strip fenced code blocks (see _remove_code_blocks docstring).
         filtered_str = _remove_code_blocks(value)
 
-        matches = VARIABLE_PATTERN.finditer(filtered_str)
-        for match in matches:
-            reference = match.group(1)  # e.g., "node.output.field" or "input"
-            parts = reference.split('.', 1)
+        # Braced refs: ${foo} / ${foo.bar} — the closing brace is a hard
+        # boundary, so anything after it (including a literal `.tmp`) is NOT
+        # part of the reference. We extract these separately BEFORE the
+        # generic VARIABLE_PATTERN sweep, then blank out the ${...} spans so
+        # the unbraced pattern can't re-match and greedily extend past the
+        # closing brace.
+        braced_spans: List[Tuple[int, int]] = []
+        for match in BRACED_VARIABLE_PATTERN.finditer(filtered_str):
+            reference = match.group(1)
+            if "." not in reference and _is_awk_builtin(reference):
+                continue  # awk built-in written as ${NF} — skip
+            parts = reference.split(".", 1)
+            node_id = parts[0]
+            field_path = parts[1] if len(parts) > 1 else ""
+            refs.append((node_id, field_path))
+            braced_spans.append(match.span())
+
+        if braced_spans:
+            chars = list(filtered_str)
+            for start, end in braced_spans:
+                for i in range(start, end):
+                    chars[i] = " "
+            filtered_str = "".join(chars)
+
+        for match in VARIABLE_PATTERN.finditer(filtered_str):
+            reference = match.group(1)
+            if "." not in reference and _is_awk_builtin(reference):
+                continue  # $NF / $1 — awk built-in, not a workflow ref
+            parts = reference.split(".", 1)
             node_id = parts[0]
             field_path = parts[1] if len(parts) > 1 else ""
             refs.append((node_id, field_path))
