@@ -22,9 +22,11 @@ inputs:
   pipeline_url:
     type: string
     required: false
+    default: ""
   source_issue:
     type: string
     required: false
+    default: ""
 
 state:
   evidence:
@@ -59,22 +61,39 @@ nodes:
   - id: load_context
     name: Load Context
     type: bash
+    output_format: json
     writes:
       - evidence
     script: |
       # Check if pipeline mode (skip episodic search if set)
-      pipeline_mode="false"
-      if [ -n "$pipeline_url" ]; then
+      pipeline_url_val="${pipeline_url}"
+      source_issue_val="${source_issue}"
+      if [ -n "$pipeline_url_val" ]; then
         pipeline_mode="true"
+      else
+        pipeline_mode="false"
       fi
-      
-      # Output context
-      echo "{\"pipeline_mode\": $pipeline_mode, \"source_issue\": \"${source_issue:-}\", \"pipeline_url\": \"${pipeline_url:-}\"}"
+
+      # Emit the evidence channel payload as a top-level JSON key so the
+      # executor's output_format=json parser pushes the wrapped dict into
+      # the channel. pipeline_mode is emitted as a real JSON boolean via
+      # --argjson so the Python-side type of evidence pipeline_mode is bool;
+      # callers expecting truthy/falsy or equality-to-False semantics get
+      # them. Downstream bash refs to the dotted channel path render the
+      # bool through _interpolate Python-repr (True/False capitalised), so
+      # any shell that consumes the value must normalise before comparing
+      # (see collect_evidence below).
+      jq -nc \
+        --arg pipeline_url "$pipeline_url_val" \
+        --arg source_issue "$source_issue_val" \
+        --argjson pipeline_mode "$pipeline_mode" \
+        '{evidence: {pipeline_mode: $pipeline_mode, source_issue: $source_issue, pipeline_url: $pipeline_url}}'
 
   # Phase 2: Collect evidence
   - id: collect_evidence
     name: Collect Evidence
     type: bash
+    output_format: json
     depends_on:
       - load_context
     reads:
@@ -84,14 +103,47 @@ nodes:
     script: |
       # In pipeline mode, stub minimal evidence
       # In normal mode, collect logs/errors
-      pipeline_mode="${evidence_pipeline_mode:-false}"
-      
+      pipeline_mode_raw="${evidence.pipeline_mode}"
+      source_issue="${evidence.source_issue}"
+      pipeline_url="${evidence.pipeline_url}"
+
+      # The upstream evidence pipeline_mode is a real JSON boolean, but
+      # the resolver _interpolate() renders bools as Python repr
+      # (True/False, capitalised). Normalise to lowercase JSON-style tokens
+      # so this script and --argjson both see true/false.
+      case "$pipeline_mode_raw" in
+        True)  pipeline_mode="true" ;;
+        False) pipeline_mode="false" ;;
+        *)     pipeline_mode="$pipeline_mode_raw" ;;
+      esac
+
       if [ "$pipeline_mode" = "true" ]; then
-        echo "{\"logs\": \"Pipeline mode: logs collected from CI\", \"errors\": \"See pipeline_url for details\", \"pipeline_mode\": true}"
+        logs="Pipeline mode: logs collected from CI"
+        errors="See pipeline_url for details"
       else
         # Collect full evidence (stubbed for now - real implementation would gather system state)
-        echo "{\"logs\": \"Collected local logs\", \"errors\": \"Collected error traces\", \"pipeline_mode\": false}"
+        logs="Collected local logs"
+        errors="Collected error traces"
       fi
+
+      # Preserve the fields already on the `evidence` channel while adding
+      # logs/errors — the executor unwraps the top-level `evidence` key into
+      # the channel, so dot-path refs on the channel give downstream nodes
+      # access to logs / errors / pipeline_mode / source_issue / pipeline_url.
+      # pipeline_mode re-emits as a real JSON boolean via --argjson.
+      jq -nc \
+        --argjson pipeline_mode "$pipeline_mode" \
+        --arg source_issue "$source_issue" \
+        --arg pipeline_url "$pipeline_url" \
+        --arg logs "$logs" \
+        --arg errors "$errors" \
+        '{evidence: {
+           pipeline_mode: $pipeline_mode,
+           source_issue: $source_issue,
+           pipeline_url: $pipeline_url,
+           logs: $logs,
+           errors: $errors
+         }}'
 
   # Phase 3: Duplicate detection
   - id: duplicate_detection
@@ -138,6 +190,7 @@ nodes:
       - duplicate_gate
     model: sonnet
     dispatch: local
+    output_format: json
     # Local Sonnet can time out on long analyses. Pause the workflow and
     # hand the prompt to the wrapping conversation (Opus) instead of
     # failing the whole run.
@@ -168,6 +221,7 @@ nodes:
       - analyze_root_cause
     model: opus
     dispatch: inline
+    output_format: json
     reads:
       - evidence
       - root_cause
@@ -198,6 +252,7 @@ nodes:
       - create_bug_issue
     model: sonnet
     dispatch: local
+    output_format: json
     # Escalate on local-Sonnet failure so the wrapping conversation can
     # synthesize the verdict instead of failing the whole bug report.
     on_failure: escalate
@@ -208,15 +263,15 @@ nodes:
     writes:
       - test_result
     prompt: |
-      Create a failing test for bug ${creation_result_bug_key}.
-      
+      Create a failing test for bug ${creation_result.bug_key}.
+
       Root cause:
       ${root_cause}
-      
-      Pipeline mode: ${evidence_pipeline_mode}
-      
+
+      Pipeline mode: ${evidence.pipeline_mode}
+
       If pipeline_mode is true, skip test creation and output: {"test_branches": [], "skipped": true}
-      
+
       Otherwise, create a test branch with a failing test that reproduces the bug.
       Output as JSON: {"test_branches": ["<branch-name>"], "test_file": "<path>", "skipped": false}
 
@@ -231,8 +286,8 @@ nodes:
       - test_result
       - evidence
     script: |
-      bug_key="${creation_result_bug_key}"
-      source_issue="${source_issue:-}"
+      bug_key="${creation_result.bug_key}"
+      source_issue="${evidence.source_issue}"
       
       # Transition bug to To Do
       transitions=$(npx tsx ~/.claude/skills/jira/list_transitions.ts "{\"issue_key\": \"$bug_key\"}")
