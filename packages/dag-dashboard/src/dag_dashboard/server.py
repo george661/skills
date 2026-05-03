@@ -19,6 +19,7 @@ from .checkpoint_routes import router as checkpoint_router
 from .config import Settings
 from .drafts_routes import router as drafts_router
 from .validation_routes import router as validation_router
+from .orchestrator_routes import router as orchestrator_router
 from .database import ensure_dir, init_db
 from .event_collector import EventCollector
 from .notifier import SlackNotifier
@@ -117,14 +118,33 @@ def create_app(
         collector.start()
         app.state.collector = collector
 
+        # Initialize orchestrator manager if enabled
+        if settings and settings.orchestrator_enabled:
+            from .orchestrator_manager import OrchestratorManager
+            orchestrator_manager = OrchestratorManager(
+                db_path=db_path,
+                broadcaster=broadcaster,
+                max_concurrent=settings.orchestrator_max_concurrent,
+                idle_ttl_seconds=settings.orchestrator_idle_ttl_seconds,
+                model=settings.orchestrator_model,
+                dashboard_port=settings.port,
+            )
+            orchestrator_manager.set_loop(loop)
+            app.state.orchestrator_manager = orchestrator_manager
+            logger.info("Orchestrator manager initialized")
+        else:
+            app.state.orchestrator_manager = None
+
         logger.info(f"Event collector started, watching {events_dir}")
         logger.info(f"Chat relay initialized, pipe_root: {pipe_root}")
 
         yield
 
-        # Shutdown: stop collector and chat relay
+        # Shutdown: stop collector, chat relay, and orchestrator manager
         collector.stop()
         chat_relay.stop()
+        if app.state.orchestrator_manager:
+            await app.state.orchestrator_manager.stop_all()
         logger.info("Event collector and chat relay stopped")
 
     app = FastAPI(
@@ -201,6 +221,9 @@ def create_app(
     if settings:
         retry_router = create_retry_router(settings, db_path)
         app.include_router(retry_router)
+
+    # Register orchestrator routes
+    app.include_router(orchestrator_router)
 
     # Mount static files
     static_dir = Path(__file__).parent / "static"

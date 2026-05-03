@@ -72,6 +72,12 @@ class Settings(BaseSettings):
         description="Max log lines per node. Changes take effect on next dashboard restart."
     )
 
+    # Orchestrator settings
+    orchestrator_enabled: bool = Field(default=True, description="Enable long-lived workflow orchestrator chat")
+    orchestrator_max_concurrent: int = Field(default=8, description="Max concurrent orchestrator subprocesses")
+    orchestrator_idle_ttl_seconds: int = Field(default=1800, description="Idle TTL for orchestrator subprocess (30 min default)")
+    orchestrator_model: str = Field(default="claude-opus-4-7", description="Model for orchestrator instances")
+
     @model_validator(mode="after")
     def _parse_workflows_dirs_from_workflows_dir(self) -> "Settings":
         """Parse workflows_dir string into workflows_dirs list."""
