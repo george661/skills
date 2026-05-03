@@ -1,0 +1,19 @@
+name: Prompt Writes JSON Dict Channel Test
+config:
+  checkpoint_prefix: test
+  worktree: false
+
+state:
+  creation_result:
+    type: dict
+    default: null
+
+nodes:
+  - id: prompt1
+    name: JSON Prompt Emitting Channel Payload
+    type: prompt
+    prompt: "Create something and return a structured payload."
+    model: sonnet
+    output_format: json
+    writes:
+      - creation_result

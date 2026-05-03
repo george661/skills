@@ -46,15 +46,16 @@ nodes:
     type: prompt
     model: opus
     dispatch: inline
+    output_format: json
     writes:
       - refinement
     prompt: |
       Refine the user's issue description: ${description}
-      
+
       Produce:
       1. A clear, concise summary (50-80 chars)
       2. A detailed description with context
-      
+
       Output as JSON: {"refined_summary": "<summary>", "refined_description": "<description>"}
 
   # Phase 2: Classify issue type
@@ -65,24 +66,25 @@ nodes:
       - brainstorm_and_refine
     model: opus
     dispatch: inline
+    output_format: json
     reads:
       - refinement
     writes:
       - classification
     prompt: |
-      Classify this issue: ${refinement_refined_summary}
-      
-      Description: ${refinement_refined_description}
-      
+      Classify this issue: ${refinement.refined_summary}
+
+      Description: ${refinement.refined_description}
+
       Determine:
       1. Issue type: "Epic", "Epic-child", or "standalone"
       2. If Epic-child, what is the parent Epic key?
-      
+
       Search for potential parent Epics if needed:
       ```bash
       npx tsx ~/.claude/skills/jira/search_issues.ts '{"jql": "project = ${TENANT_PROJECT} AND issuetype = Epic AND text ~ \"<search-term>\"", "max_results": 5}'
       ```
-      
+
       Output as JSON: {"issue_type": "Epic|Epic-child|standalone", "parent_key": "GW-XXXX or null"}
 
   # Phase 3: Duplicate detection
@@ -93,19 +95,20 @@ nodes:
       - classify_issue_type
     model: opus
     dispatch: inline
+    output_format: json
     reads:
       - refinement
       - classification
     writes:
       - classification
     prompt: |
-      Search for duplicate issues for: ${refinement_refined_summary}
-      
+      Search for duplicate issues for: ${refinement.refined_summary}
+
       Use the issues router to search existing issues:
       ```bash
-      npx tsx ~/.claude/skills/jira/search_issues.ts '{"jql": "project = ${TENANT_PROJECT} AND text ~ \"${refinement_refined_summary}\"", "max_results": 5}'
+      npx tsx ~/.claude/skills/jira/search_issues.ts '{"jql": "project = ${TENANT_PROJECT} AND text ~ \"${refinement.refined_summary}\"", "max_results": 5}'
       ```
-      
+
       Determine if this is a duplicate of an existing issue.
       Output as JSON: {"is_duplicate": true/false, "duplicate_key": "GW-XXXX" or null, "reasoning": "why duplicate or not"}
 
@@ -131,10 +134,12 @@ nodes:
     writes:
       - creation_result
     script: |
-      summary="${refinement_refined_summary}"
-      description="${refinement_refined_description}"
-      issue_type="${classification_issue_type}"
-      parent_key="${classification_parent_key:-}"
+      summary="${refinement.refined_summary}"
+      description="${refinement.refined_description}"
+      issue_type="${classification.issue_type}"
+      parent_key="${classification.parent_key}"
+      # Guard against a missing parent_key (optional field).
+      : "${parent_key:=}"
       
       # Create issue
       if [ "$issue_type" = "Epic" ]; then

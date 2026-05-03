@@ -108,7 +108,7 @@ nodes:
       - ci_result
     on_failure: stop
     script: |
-      repo="${validation_criteria_repo}"
+      repo="${validation_criteria.repo}"
       
       # Wait for CI to complete
       ci_result=$(cd $PROJECT_ROOT && npx tsx ~/.claude/skills/ci/wait_for_ci.ts \
@@ -205,8 +205,8 @@ nodes:
       - merge_result
     checkpoint: true
     script: |
-      repo="${validation_criteria_repo}"
-      pr_num="${validation_criteria_pr_number}"
+      repo="${validation_criteria.repo}"
+      pr_num="${validation_criteria.pr_number}"
       method="${merge_method:-squash}"
 
       # Merge the PR
@@ -256,7 +256,7 @@ nodes:
       npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
         \"session_id\": \"${TENANT_NAMESPACE}\",
         \"task\": \"resolve-pr-${issue_key}\",
-        \"input\": {\"issue_key\": \"${issue_key}\", \"pr_number\": \"${validation_criteria_pr_number}\"},
+        \"input\": {\"issue_key\": \"${issue_key}\", \"pr_number\": \"${validation_criteria.pr_number}\"},
         \"output\": \"PR merged: $merge_commit\",
         \"reward\": 0.95,
         \"success\": true,

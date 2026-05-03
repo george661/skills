@@ -5,7 +5,7 @@
 Shared agent workflow components: commands, hooks, skills, agent/team configs, and Python packages.
 
 **GitHub:** george661/skills
-**Jira Label:** `repo-base-agents`
+**Jira Label:** `repo-skills`
 **Language:** Python (packages, hooks), Shell (scripts), Markdown (commands/skills), YAML (agents/teams)
 
 ## Validation Profile

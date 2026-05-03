@@ -106,16 +106,22 @@ nodes:
       Run these searches and aggregate results:
 
       1. Jira epics — derive 2-3 keywords from the idea, then:
-         cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
-           '{"jql": "project = ${TENANT_PROJECT} AND issuetype = Epic AND status != Done AND text ~ \"<keyword>\"", "fields": ["key","summary","status"]}'
+      ```bash
+      cd $PROJECT_ROOT && npx tsx ~/.claude/skills/jira/search_issues.ts \
+        '{"jql": "project = ${TENANT_PROJECT} AND issuetype = Epic AND status != Done AND text ~ \"<keyword>\"", "fields": ["key","summary","status"]}'
+      ```
 
       2. Roadmap initiatives — read the roadmap file and grep for the keywords:
-         docs_repo=$(jq -r '.docs_repo // "docs"' $PROJECT_ROOT/.claude/config/tenant.json)
-         rg -i "<keyword>" "$PROJECT_ROOT/$docs_repo/roadmap/roadmap.json"
+      ```bash
+      docs_repo=$(jq -r '.docs_repo // "docs"' $PROJECT_ROOT/.claude/config/tenant.json)
+      rg -i "<keyword>" "$PROJECT_ROOT/$docs_repo/roadmap/roadmap.json"
+      ```
 
       3. Recent PRPs — query agentdb for prior planning episodes:
-         npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts \
-           '{"task": "plan <keyword>", "k": 5}'
+      ```bash
+      npx tsx ~/.claude/skills/agentdb/reflexion_retrieve_relevant.ts \
+        '{"task": "plan <keyword>", "k": 5}'
+      ```
 
       Emit ONLY this JSON (no prose):
       {"overlaps": [

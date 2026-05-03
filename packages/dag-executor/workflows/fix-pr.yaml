@@ -105,8 +105,8 @@ nodes:
     writes:
       - review_comments
     script: |
-      repo="${pr_info_repo}"
-      pr_num="${pr_info_pr_number}"
+      repo="${pr_info.repo}"
+      pr_num="${pr_info.pr_number}"
       
       # Get PR details
       pr=$(npx tsx ~/.claude/skills/vcs/get_pull_request.ts \
@@ -172,8 +172,9 @@ nodes:
     writes:
       - fix_result
       - fix_attempts
+    output_format: json
     prompt: |
-      Apply fixes for the PR review comments in ${pr_info_repo} PR #${pr_info_pr_number}.
+      Apply fixes for the PR review comments in ${pr_info.repo} PR #${pr_info.pr_number}.
       
       Issue: ${issue_key}
       
@@ -232,7 +233,8 @@ nodes:
       - fix_result
     script: |
       # Stage only the files reported by apply_fixes (avoid `git add -A` per CLAUDE.md).
-      files_json="${fix_result_files_changed:-[]}"
+      files_json="${fix_result.files_changed}"
+      : "${files_json:=[]}"
       if echo "$files_json" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
         echo "$files_json" | jq -r '.[]' | while IFS= read -r f; do
           [ -n "$f" ] && git add -- "$f"
@@ -254,17 +256,21 @@ nodes:
     type: bash
     depends_on:
       - push_branch
+    reads:
+      - review_comments
+      - fix_result
     writes:
       - verification_result
     script: |
       # Grep changed files for patterns flagged in comments
       changed_files=$(git diff --name-only HEAD~1)
       residual_count=0
-      
+
       # Simple verification: check if we addressed all comments
       total_comments=$(echo "${review_comments}" | jq 'length')
-      addressed=$(echo "${fix_result_addressed_count}")
-      
+      addressed="${fix_result.addressed_count}"
+      : "${addressed:=0}"
+
       if [ "$addressed" -ge "$total_comments" ]; then
         echo "{\"verification_result\": {\"addressed\": true, \"residual_count\": 0}}"
       else
@@ -289,11 +295,13 @@ nodes:
     type: bash
     depends_on:
       - completion_verify
+    reads:
+      - pr_info
     script: |
       npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
         \"session_id\": \"${TENANT_NAMESPACE}\",
         \"task\": \"fix-pr-${issue_key}\",
-        \"input\": {\"issue_key\": \"${issue_key}\", \"pr_number\": \"${pr_info_pr_number}\"},
+        \"input\": {\"issue_key\": \"${issue_key}\", \"pr_number\": \"${pr_info.pr_number}\"},
         \"output\": \"Fixes applied\",
         \"reward\": 0.7,
         \"success\": true,
@@ -311,7 +319,7 @@ nodes:
       - verification_result
     script: |
       echo "=== Fix PR Manifest ==="
-      echo "Status: ${fix_result_status}"
-      echo "Addressed: ${fix_result_addressed_count}"
-      echo "Residual: ${verification_result_residual_count}"
-      echo "Files changed: ${fix_result_files_changed}"
+      echo "Status: ${fix_result.status}"
+      echo "Addressed: ${fix_result.addressed_count}"
+      echo "Residual: ${verification_result.residual_count}"
+      echo "Files changed: ${fix_result.files_changed}"

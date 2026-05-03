@@ -37,6 +37,13 @@ def extract_bash_locals(script: str) -> Set[str]:
     for_pattern = r'\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b'
     for match in re.finditer(for_pattern, script):
         locals_set.add(match.group(1))
+
+    # Pattern 2b: C-style for loop — for ((name=expr; ...; ...))
+    # Captures the initializer variable; `((name=expr))` also matches as a
+    # standalone arithmetic expression which is fine (same variable kind).
+    c_for_pattern = r'\bfor\s+\(\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*='
+    for match in re.finditer(c_for_pattern, script):
+        locals_set.add(match.group(1))
     
     # Pattern 3: While read (while read name)
     while_read_pattern = r'\bwhile\s+read\s+([A-Za-z_][A-Za-z0-9_]*)'

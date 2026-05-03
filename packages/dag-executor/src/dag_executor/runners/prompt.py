@@ -383,21 +383,41 @@ class PromptRunner(BaseRunner):
             # prose + markdown fences (e.g. ```json ... ```); try those paths
             # in order before giving up.
             output_dict = {}
+            parsed_json: Any = None
             if node.output_format == OutputFormat.JSON:
-                parsed = _extract_json_object(full_output)
-                if isinstance(parsed, dict):
-                    output_dict.update(parsed)
+                parsed_json = _extract_json_object(full_output)
+                if isinstance(parsed_json, dict):
+                    output_dict.update(parsed_json)
 
             # Always set response last to guarantee backward compat
             # (raw text wins if parsed JSON contains a "response" key)
             output_dict["response"] = full_output
 
-            # GW-5308: AC-14 — Populate writes keys
-            # For each key in node.writes, ensure it exists in output_dict.
-            # In JSON mode, setdefault preserves already-spread fields.
-            # In text mode, setdefault populates the key with full_output.
+            # GW-5460: AC — populate write-keys intelligently.
+            # For each key in node.writes:
+            #  (a) If the key is already present in output_dict (because the
+            #      JSON had a top-level field matching it — e.g. writes: [result]
+            #      and JSON == {"result": "ok"}), leave it alone.
+            #  (b) If output_format=json and the JSON parsed into a dict but
+            #      the key is NOT a top-level JSON field, treat the parsed
+            #      dict as the CHANNEL PAYLOAD — write the whole dict to the
+            #      channel key so downstream nodes can access sub-fields via
+            #      ${channel.field}. This is the natural mental model when a
+            #      prompt declares `writes: [creation_result]` and emits
+            #      `{"bug_key": ..., "summary": ...}` — the JSON IS the
+            #      creation_result payload.
+            #  (c) Otherwise (text mode, or JSON that didn't parse into a
+            #      dict), fall back to raw full_output.
             for key in (node.writes or []):
-                output_dict.setdefault(key, full_output)
+                if key in output_dict:
+                    continue
+                if (
+                    node.output_format == OutputFormat.JSON
+                    and isinstance(parsed_json, dict)
+                ):
+                    output_dict[key] = parsed_json
+                else:
+                    output_dict[key] = full_output
 
             return NodeResult(
                 status=NodeStatus.COMPLETED,

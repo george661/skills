@@ -81,16 +81,17 @@ nodes:
     retry:
       max_attempts: 2
       delay_ms: 0
+    output_format: json
     reads:
       - review_findings
     writes:
       - fix_result
     prompt: |
       Fix the critical issues identified in the implementation plan review for ${issue_key}.
-      
+
       Review findings:
       ${review_findings}
-      
+
       Address all critical issues and produce a revised plan section.
       Output as JSON: {"status": "FIXED"|"NEEDS_ESCALATION", "changes": "description of fixes", "revised_sections": "markdown"}
 
@@ -102,6 +103,7 @@ nodes:
       - fix_critical
     model: sonnet
     dispatch: local
+    output_format: json
     reads:
       - review_findings
       - fix_result
@@ -109,13 +111,13 @@ nodes:
       - fix_result
     prompt: |
       Fix the warning-level issues identified in the implementation plan review for ${issue_key}.
-      
+
       Review findings:
       ${review_findings}
-      
+
       Previous fixes:
       ${fix_result}
-      
+
       Address all warning issues and refine the revised plan.
       Output as JSON: {"status": "FIXED", "changes": "description of additional fixes", "complete_revised_plan": "full markdown"}
 
@@ -129,12 +131,13 @@ nodes:
       - fix_result
     script: |
       # Extract revised plan from fix_result
-      revised_plan="${fix_result_complete_revised_plan}"
-      
+      revised_plan="${fix_result.complete_revised_plan}"
+      fix_changes="${fix_result.changes}"
+
       # Build comment body
       body="## REVISED IMPLEMENTATION PLAN (v2)\n\n"
       body="${body}### Changes from v1:\n"
-      body="${body}${fix_result_changes}\n\n"
+      body="${body}${fix_changes}\n\n"
       body="${body}---\n\n"
       body="${body}${revised_plan}"
       
@@ -152,7 +155,7 @@ nodes:
       - fix_result
     script: |
       # Determine success based on fix status
-      status="${fix_result_status}"
+      status="${fix_result.status}"
       success="false"
       reward=0.5
       if [ "$status" = "FIXED" ]; then
