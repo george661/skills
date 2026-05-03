@@ -205,6 +205,10 @@ All settings are configured via environment variables with the `DAG_DASHBOARD_` 
 | `DAG_DASHBOARD_SLACK_WEBHOOK_URL` | — | Slack incoming webhook (mutually exclusive with bot token) |
 | `DAG_DASHBOARD_SLACK_BOT_TOKEN` | — | Slack bot token `xoxb-...` (enables threaded replies) |
 | `DAG_DASHBOARD_SLACK_CHANNEL_ID` | — | Slack channel id (required when using bot token) |
+| `DAG_DASHBOARD_ORCHESTRATOR_ENABLED` | `true` | Enable long-lived workflow orchestrator chat |
+| `DAG_DASHBOARD_ORCHESTRATOR_MAX_CONCURRENT` | `8` | Max concurrent orchestrator subprocesses |
+| `DAG_DASHBOARD_ORCHESTRATOR_IDLE_TTL_SECONDS` | `1800` | Idle TTL for orchestrator subprocess (30 min default) |
+| `DAG_DASHBOARD_ORCHESTRATOR_MODEL` | `claude-opus-4-7` | Model for orchestrator instances |
 
 ```bash
 DAG_DASHBOARD_PORT=9000 DAG_DASHBOARD_EVENTS_DIR=.dag-checkpoints dag-dashboard

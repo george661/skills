@@ -10,7 +10,7 @@ from pathlib import Path
 from queue import Queue, Empty
 from typing import Optional, Any
 
-from .queries import get_run
+from .queries import get_run, get_connection
 
 
 logger = logging.getLogger(__name__)
@@ -70,11 +70,28 @@ class OrchestratorRelay:
         run = get_run(self.db_path, self.run_id)
         if not run:
             raise ValueError(f"Run {self.run_id} not found")
-        
-        # TODO: Fetch last 10 events and channel keys from DB
-        # For now, use placeholders
-        events_json = json.dumps([], indent=2)
-        channel_keys_csv = ""
+
+        # Fetch last 10 events from DB
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT event_type, payload, created_at FROM events WHERE run_id = ? ORDER BY created_at DESC LIMIT 10",
+            (self.run_id,)
+        )
+        events = [
+            {"event_type": row[0], "payload": row[1], "created_at": row[2]}
+            for row in cursor.fetchall()
+        ]
+        events_json = json.dumps(events, indent=2)
+
+        # Fetch distinct channel keys
+        cursor.execute(
+            "SELECT DISTINCT channel_key FROM channel_states WHERE run_id = ?",
+            (self.run_id,)
+        )
+        channel_keys = [row[0] for row in cursor.fetchall()]
+        channel_keys_csv = ",".join(channel_keys)
+        conn.close()
         
         content = SYSTEM_PROMPT_TEMPLATE.format(
             run_id=self.run_id,

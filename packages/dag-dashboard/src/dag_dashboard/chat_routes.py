@@ -16,6 +16,7 @@ from .queries import (
     get_conversation_row,
     list_conversations,
     list_runs_in_conversation,
+    get_conversation_id_from_run,
 )
 
 
@@ -88,7 +89,6 @@ def create_chat_router(db_path: Path) -> APIRouter:
 
         # Route to orchestrator if available
         if hasattr(request.app.state, "orchestrator_manager") and request.app.state.orchestrator_manager:
-            from .queries import get_conversation_id_from_run
             conversation_id = get_conversation_id_from_run(db_path, run_id)
             if conversation_id:
                 try:
