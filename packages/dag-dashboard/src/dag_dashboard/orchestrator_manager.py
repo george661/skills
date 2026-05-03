@@ -4,13 +4,12 @@ import logging
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 from .orchestrator_relay import OrchestratorRelay
 from .queries import (
     get_orchestrator_session,
     upsert_orchestrator_session,
-    delete_orchestrator_session,
 )
 
 
@@ -23,7 +22,7 @@ class OrchestratorManager:
     def __init__(
         self,
         db_path: Path,
-        broadcaster,
+        broadcaster: Any,
         max_concurrent: int = 8,
         idle_ttl_seconds: int = 1800,
         model: str = "claude-opus-4-7",
@@ -35,12 +34,12 @@ class OrchestratorManager:
         self.idle_ttl_seconds = idle_ttl_seconds
         self.model = model
         self.dashboard_port = dashboard_port
-        
+
         self.relays: Dict[str, OrchestratorRelay] = {}
-        self.lru: OrderedDict = OrderedDict()
+        self.lru: "OrderedDict[str, bool]" = OrderedDict()
         self.lock = asyncio.Lock()
         self.event_loop: Optional[asyncio.AbstractEventLoop] = None
-        self.sweeper_task: Optional[asyncio.Task] = None
+        self.sweeper_task: "Optional[asyncio.Task[None]]" = None
     
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Capture event loop for run_coroutine_threadsafe in relays."""
@@ -105,6 +104,9 @@ class OrchestratorManager:
         session_uuid = session_row["session_uuid"] if session_row else None
         
         # Create relay
+        if not self.event_loop:
+            raise RuntimeError("Event loop not set - call set_loop() first")
+
         relay = OrchestratorRelay(
             conversation_id=conversation_id,
             run_id=run_id,
@@ -126,7 +128,7 @@ class OrchestratorManager:
         upsert_orchestrator_session(
             db_path=self.db_path,
             conversation_id=conversation_id,
-            session_uuid=relay.session_uuid,
+            session_uuid=relay.session_uuid or "",  # Should always be set after start()
             last_active=now,
             status="alive",
             model=self.model,
@@ -135,7 +137,7 @@ class OrchestratorManager:
         
         logger.info(f"Spawned orchestrator for {conversation_id}, pool size: {len(self.relays)}")
     
-    async def get_status(self, run_id: str, conversation_id: str) -> Dict:
+    async def get_status(self, run_id: str, conversation_id: str) -> Dict[str, Any]:
         """Get orchestrator status for a run."""
         async with self.lock:
             relay = self.relays.get(conversation_id)

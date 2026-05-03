@@ -58,8 +58,8 @@ class OrchestratorRelay:
         self.dashboard_port = dashboard_port
         self.session_uuid = session_uuid
         
-        self.process: Optional[subprocess.Popen] = None
-        self.message_queue: Queue = Queue()
+        self.process: Optional[subprocess.Popen[bytes]] = None
+        self.message_queue: "Queue[str]" = Queue()
         self.stdin_thread: Optional[threading.Thread] = None
         self.stdout_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
@@ -198,9 +198,12 @@ class OrchestratorRelay:
                 
                 try:
                     # Handle both bytes (real subprocess) and str (mocked StringIO)
+                    line_str: str
                     if isinstance(line, bytes):
-                        line = line.decode('utf-8')
-                    event = json.loads(line)
+                        line_str = line.decode('utf-8')
+                    else:
+                        line_str = line
+                    event = json.loads(line_str)
                     event_type = event.get("type")
                     
                     # Publish tokens and final messages, skip tool_use
@@ -233,8 +236,8 @@ class OrchestratorRelay:
                         )
                     # Skip tool_use and other internal events
                     
-                except json.JSONDecodeError as e:
-                    logger.debug(f"Non-JSON stdout line from orchestrator {self.conversation_id}: {line}")
+                except json.JSONDecodeError:
+                    logger.debug(f"Non-JSON stdout line from orchestrator {self.conversation_id}: {line!r}")
                 except Exception as e:
                     logger.error(f"Error processing stdout line for {self.conversation_id}: {e}")
             

@@ -1,4 +1,5 @@
 """API routes for orchestrator status queries."""
+from typing import Dict, Any
 from fastapi import APIRouter, HTTPException, Request
 from pathlib import Path
 
@@ -9,7 +10,7 @@ router = APIRouter(prefix="/api/workflows")
 
 
 @router.get("/{run_id}/orchestrator/status")
-async def get_orchestrator_status(run_id: str, request: Request):
+async def get_orchestrator_status(run_id: str, request: Request) -> Dict[str, Any]:
     """Get orchestrator status for a workflow run."""
     db_path = Path(request.app.state.settings.database_path)
     
@@ -28,5 +29,5 @@ async def get_orchestrator_status(run_id: str, request: Request):
     if not manager:
         return {"alive": False, "model": None, "idle_seconds": 0, "session_uuid": None}
     
-    status = await manager.get_status(run_id, conversation_id)
+    status: Dict[str, Any] = await manager.get_status(run_id, conversation_id)
     return status
