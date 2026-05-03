@@ -65,6 +65,19 @@ class ChatPanel {
     this._unlockTimer = null;
     this._lifecycle = null;
     this._setChatBlockingNodes(initialNodes);
+
+    // GW-5492 AC-6: orchestrator readiness state for workflow-level chat.
+    // Seeded from an optional status fetch passed in via the constructor
+    // options, then updated live via orchestrator_ready / orchestrator_stopped
+    // SSE events. Drives the 4-state _recomputeInputState() machine.
+    const seed = (typeof runIdOrOptions === 'object' && runIdOrOptions)
+      ? runIdOrOptions.orchestratorStatus
+      : null;
+    this._orchestratorAlive = !!(seed && seed.alive);
+    // Streaming assistant message being accumulated from chat_message_token
+    // events. Null when no turn is in progress.
+    this._streamingAssistantEl = null;
+    this._streamingAssistantBuffer = '';
   }
 
   /**
@@ -110,6 +123,10 @@ class ChatPanel {
     if (lifecycle.getRunStatus() === 'terminal') {
       this.setInputUnlocked();
     }
+    // GW-5492 AC-6: re-derive the orchestrator hint on lifecycle changes so
+    // the "Orchestrator available for post-mortem questions." copy appears
+    // the moment a run reaches terminal.
+    this._recomputeInputState();
   }
 
   /**
@@ -153,6 +170,9 @@ class ChatPanel {
       if (sendBtn) sendBtn.disabled = false;
       const hint = this.form.querySelector('.chat-input-lock-indicator');
       if (hint) hint.remove();
+      // GW-5492 AC-6: surface the orchestrator hint now that the
+      // prompt-node lock is released.
+      this._recomputeInputState();
     }, 100);
   }
 
@@ -195,6 +215,31 @@ class ChatPanel {
 
     this._setupScrollTracking();
     this._loadHistory();
+    // GW-5492 AC-6: render the initial orchestrator hint, and fetch the
+    // status endpoint in run mode so we converge on reality even when
+    // the constructor was not seeded with one.
+    if (this.mode === 'run' && this.runId) {
+      this._recomputeInputState();
+      this._fetchOrchestratorStatus();
+    }
+  }
+
+  /**
+   * GW-5492 AC-5/AC-6: fetch /api/workflows/{runId}/orchestrator/status to
+   * seed _orchestratorAlive when the constructor wasn't passed one (e.g.
+   * direct navigation, no prior in-flight request).
+   */
+  async _fetchOrchestratorStatus() {
+    if (!this.runId) return;
+    try {
+      const response = await fetch(`/api/workflows/${this.runId}/orchestrator/status`);
+      if (!response.ok) return;
+      const status = await response.json();
+      this._orchestratorAlive = !!status.alive;
+      this._recomputeInputState();
+    } catch (_) {
+      // Best-effort; the hint will show "Reconnecting…" by default.
+    }
   }
 
   _subscribeToScrollBus() {
@@ -324,11 +369,113 @@ class ChatPanel {
 
   /**
    * Handle an SSE chat_message event (back-compat name).
+   *
+   * GW-5492 AC-6/AC-7: also routes orchestrator_ready / orchestrator_stopped
+   * lifecycle events and chat_message_token streaming events. The router
+   * dispatches on payload.type so a single SSE ingress can feed all four
+   * event shapes the dashboard cares about.
    */
   handleSSEMessage(payload) {
+    if (!payload) return;
+    const type = payload.type;
+    if (type === 'orchestrator_ready') {
+      this._orchestratorAlive = true;
+      this._recomputeInputState();
+      return;
+    }
+    if (type === 'orchestrator_stopped') {
+      this._orchestratorAlive = false;
+      this._recomputeInputState();
+      return;
+    }
+    if (type === 'chat_message_token') {
+      this._appendStreamingToken(payload.content || '');
+      return;
+    }
+    // Terminate any in-progress streaming turn when the final assistant
+    // message arrives so the content gets persisted into the dedupe map.
+    if (type === 'chat_message' || payload.role === 'assistant') {
+      this._streamingAssistantEl = null;
+      this._streamingAssistantBuffer = '';
+    }
     if (payload.id && this.messages.has(payload.id)) return;
     if (payload.id) this.messages.set(payload.id, payload);
     this.renderMessage(payload);
+  }
+
+  /**
+   * GW-5492 AC-7: append a streaming token to the in-progress assistant
+   * bubble (creating it on the first token). Tokens render as they arrive
+   * so users see the orchestrator thinking in real time.
+   */
+  _appendStreamingToken(tokenContent) {
+    if (!this.messagesContainer) return;
+    if (!this._streamingAssistantEl) {
+      const empty = this.messagesContainer.querySelector('.chat-empty-state');
+      if (empty) empty.remove();
+      const messageDiv = document.createElement('div');
+      messageDiv.className = 'chat-message chat-message-assistant chat-message--streaming';
+      messageDiv.innerHTML = `
+        <div class="chat-message-header">
+          <span class="chat-message-role">assistant</span>
+        </div>
+        <div class="chat-message-content"></div>
+      `;
+      this.messagesContainer.appendChild(messageDiv);
+      this._streamingAssistantEl = messageDiv.querySelector('.chat-message-content');
+      this._streamingAssistantBuffer = '';
+    }
+    this._streamingAssistantBuffer += tokenContent;
+    // textContent prevents injected markup from streaming tokens; the final
+    // chat_message event renders the full content through the markdown path.
+    this._streamingAssistantEl.textContent = this._streamingAssistantBuffer;
+    if (this.isNearBottom) {
+      this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+    }
+  }
+
+  /**
+   * GW-5492 AC-6: 4-state truth table for the workflow-level chat input.
+   *
+   *   prompt-node-running  → locked (Agent is thinking…)  [AC-9 wins]
+   *   no prompt + alive    → enabled, hint cleared
+   *   no prompt + offline  → enabled + "Reconnecting orchestrator…"
+   *   run terminal         → enabled + "Orchestrator available for post-mortem questions."
+   *
+   * The prompt-node lock (AC-7 of GW-5423) always wins, so we short-circuit
+   * when _lockingNodeId is set. Every other transition re-derives the hint.
+   */
+  _recomputeInputState() {
+    if (!this.form || !this.input) return;
+    // Prompt-node lock wins — don't touch state.
+    if (this._lockingNodeId) return;
+
+    this.form.classList.remove('chat-input-form--locked');
+    this.input.disabled = false;
+    const sendBtn = this.form.querySelector('.chat-send-btn');
+    if (sendBtn) sendBtn.disabled = false;
+
+    let hintText = '';
+    const runStatus = (this._lifecycle && typeof this._lifecycle.getRunStatus === 'function')
+      ? this._lifecycle.getRunStatus()
+      : null;
+    if (runStatus === 'terminal') {
+      hintText = 'Orchestrator available for post-mortem questions.';
+    } else if (!this._orchestratorAlive) {
+      hintText = 'Reconnecting orchestrator…';
+    }
+
+    let hint = this.form.querySelector('.chat-input-orchestrator-hint');
+    if (hintText) {
+      if (!hint) {
+        hint = document.createElement('p');
+        hint.className = 'chat-input-orchestrator-hint';
+        this.form.appendChild(hint);
+      }
+      hint.textContent = hintText;
+    } else if (hint) {
+      hint.remove();
+    }
   }
 
   /**
