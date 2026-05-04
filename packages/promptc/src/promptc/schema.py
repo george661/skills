@@ -11,7 +11,7 @@ class for parse-output result wrappers (consumed by contract parser).
 """
 from __future__ import annotations
 
-from typing import Any, Generic, Literal, TypeVar, Union
+from typing import Any, Generic, Literal, Optional, TypeVar, Union
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 from typing_extensions import Annotated
@@ -48,10 +48,10 @@ class MetaDecl(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    doc_type: Literal["command", "skill", "reference"] | None = None
-    description: str | None = None
-    model: str | None = None
-    owner: str | None = None
+    doc_type: Optional[Literal["command", "skill", "reference"]] = None
+    description: Optional[str] = None
+    model: Optional[str] = None
+    owner: Optional[str] = None
     extras: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="before")
@@ -86,7 +86,7 @@ class InputDecl(BaseModel):
     type: Literal["string", "int", "float", "bool", "list", "object"]
     required: bool = True
     default: Any = None
-    description: str | None = None
+    description: Optional[str] = None
 
 
 class OutputDecl(BaseModel):
@@ -96,7 +96,7 @@ class OutputDecl(BaseModel):
 
     name: str
     type: Literal["string", "int", "float", "bool", "list", "object"]
-    description: str | None = None
+    description: Optional[str] = None
 
 
 class TextNode(BaseModel):
@@ -136,9 +136,9 @@ class RunNode(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kind: Literal["run"] = "run"
-    command: str | None = None
-    prompt_file: str | None = None
-    on_failure: str | None = None
+    command: Optional[str] = None
+    prompt_file: Optional[str] = None
+    on_failure: Optional[str] = None
     source_span: SourceSpan
 
 
@@ -150,7 +150,7 @@ class RefNode(BaseModel):
     kind: Literal["ref"] = "ref"
     file: str
     include: bool = False
-    section: str | None = None
+    section: Optional[str] = None
     source_span: SourceSpan
 
 
@@ -177,9 +177,9 @@ class Doc(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    path: str | None = None
-    doc_type: Literal["command", "skill", "reference"] | None = None
-    meta: MetaDecl | None = None
+    path: Optional[str] = None
+    doc_type: Optional[Literal["command", "skill", "reference"]] = None
+    meta: Optional[MetaDecl] = None
     inputs: list[InputDecl] = Field(default_factory=list)
     outputs: list[OutputDecl] = Field(default_factory=list)
     nodes: list[SchemaNode] = Field(default_factory=list)
@@ -217,9 +217,9 @@ class Doc(BaseModel):
         return "reference"
 
     @classmethod
-    def from_ast(cls, doc_node: ast_nodes.Node, path: str | None = None) -> Doc:
+    def from_ast(cls, doc_node: ast_nodes.Node, path: Optional[str] = None) -> Doc:
         """Convert parser's AST node to typed Doc model."""
-        meta: MetaDecl | None = None
+        meta: Optional[MetaDecl] = None
         inputs: list[InputDecl] = []
         outputs: list[OutputDecl] = []
         nodes: list[SchemaNode] = []
@@ -323,9 +323,9 @@ class ParseErrorInfo(BaseModel):
 
     code: str
     message: str
-    line: int | None = None
-    column: int | None = None
-    path: str | None = None
+    line: Optional[int] = None
+    column: Optional[int] = None
+    path: Optional[str] = None
 
 
 class ParseResult(BaseModel, Generic[T]):
@@ -334,7 +334,7 @@ class ParseResult(BaseModel, Generic[T]):
     model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
 
     success: bool
-    value: T | None = None
+    value: Optional[T] = None
     errors: list[ParseErrorInfo] = Field(default_factory=list)
 
 
@@ -346,7 +346,7 @@ class ValidationIssue(BaseModel):
     severity: Literal["error", "warning", "info"]
     code: str
     message: str
-    source_span: SourceSpan | None = None
+    source_span: Optional[SourceSpan] = None
 
 
 class ValidationReport(BaseModel):
