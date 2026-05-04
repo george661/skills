@@ -185,7 +185,7 @@ class Doc(BaseModel):
     nodes: list[SchemaNode] = Field(default_factory=list)
     source_span: SourceSpan
 
-    @computed_field  # type: ignore[misc]
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def tier(self) -> Literal["contract", "mixed", "reference"]:
         """Document tier: contract (meta+outputs), mixed (meta, no outputs), reference (no meta)."""
@@ -195,7 +195,7 @@ class Doc(BaseModel):
             return "contract"
         return "mixed"
 
-    @computed_field  # type: ignore[misc]
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def resolved_doc_type(self) -> Literal["command", "skill", "reference"]:
         """Resolved doc_type: explicit override wins, else path heuristic."""
