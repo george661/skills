@@ -69,6 +69,13 @@ class OrchestratorRelay:
         self.stdout_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.last_active = time.time()
+
+        # Streaming buffer: accumulates text_delta tokens during a turn so
+        # we can persist a partial record if the subprocess dies mid-reply
+        # (TTL eviction, crash, SIGKILL). Reset when a final "assistant"
+        # event lands or when we flush on exit.
+        self._pending_text_parts: list[str] = []
+        self._pending_started_at: Optional[str] = None
         
     def _build_system_prompt(self) -> str:
         """Build system prompt string with run context.
@@ -255,6 +262,14 @@ class OrchestratorRelay:
                             if delta.get("type") == "text_delta":
                                 text = delta.get("text", "")
                                 if text:
+                                    # Buffer for partial-flush-on-exit; stamp
+                                    # the turn start so a crash-flushed row
+                                    # has a stable created_at.
+                                    if not self._pending_text_parts:
+                                        self._pending_started_at = (
+                                            datetime.now(timezone.utc).isoformat()
+                                        )
+                                    self._pending_text_parts.append(text)
                                     asyncio.run_coroutine_threadsafe(
                                         self.broadcaster.publish(
                                             self.run_id,
@@ -280,6 +295,11 @@ class OrchestratorRelay:
                             text_parts.append(content)
                         text = "".join(text_parts)
                         if text:
+                            # Final assistant message supersedes the streaming
+                            # buffer — drop any accumulated tokens so
+                            # _flush_partial doesn't double-persist on shutdown.
+                            self._pending_text_parts = []
+                            self._pending_started_at = None
                             # Persist the assistant reply so a page reload
                             # (GET /api/workflows/{run_id}/chat/history) shows
                             # it alongside the operator messages. Operator
@@ -328,12 +348,53 @@ class OrchestratorRelay:
         except Exception as e:
             logger.error(f"stdout_reader thread error for {self.conversation_id}: {e}")
         finally:
+            # If the subprocess died (or we're being torn down) mid-stream,
+            # persist whatever tokens we accumulated so the partial reply
+            # survives a reload instead of disappearing silently.
+            self._flush_partial_if_any(reason="stream_ended_without_final_assistant")
             if self.process and self.process.stdout:
                 try:
                     self.process.stdout.close()
                 except Exception:
                     pass
-    
+
+    def _flush_partial_if_any(self, *, reason: str) -> None:
+        """Persist buffered tokens as a partial chat_messages row, then reset.
+
+        Called from the stdout reader's finally block so any accumulated
+        stream is preserved when the subprocess exits without emitting a
+        final "assistant" event (TTL eviction, crash, SIGKILL). Tagged
+        metadata.partial=true so the UI (or any consumer) can render an
+        "interrupted" affordance.
+        """
+        if not self._pending_text_parts:
+            return
+        text = "".join(self._pending_text_parts)
+        started_at = self._pending_started_at or datetime.now(timezone.utc).isoformat()
+        # Reset state BEFORE the DB call so a re-entrant error doesn't loop.
+        self._pending_text_parts = []
+        self._pending_started_at = None
+        try:
+            insert_chat_message(
+                self.db_path,
+                execution_id=None,
+                role="agent",
+                content=text,
+                created_at=started_at,
+                run_id=self.run_id,
+                conversation_id=self.conversation_id,
+                session_id=self.session_uuid,
+                metadata={"partial": True, "reason": reason},
+            )
+            logger.info(
+                f"Flushed partial orchestrator reply for {self.conversation_id} "
+                f"({len(text)} chars, reason={reason})"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to flush partial reply for {self.conversation_id}: {e}"
+            )
+
     def send_message(self, message: str) -> None:
         """Queue a user message to be sent to the orchestrator."""
         self.message_queue.put(message)

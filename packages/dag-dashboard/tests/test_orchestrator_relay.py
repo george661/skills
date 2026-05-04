@@ -651,3 +651,139 @@ def test_persistence_failure_does_not_break_sse_broadcast(mock_popen, tmp_path: 
     assert final[0]["content"] == "still delivered"
 
     loop.close()
+
+
+@patch('subprocess.Popen')
+def test_partial_reply_flushed_on_subprocess_exit(mock_popen, tmp_path: Path):
+    """Tokens streamed before a crash must be persisted on stdout_reader exit.
+
+    Scenario: subprocess emits some text_delta events, then stdout closes
+    without a final "assistant" event (simulates crash / TTL eviction /
+    SIGKILL). The relay must flush the accumulated text with
+    metadata.partial=true so the reply isn't lost on page reload.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run, insert_conversation, get_workflow_chat_history
+
+    insert_conversation(db_path, "conv-flush", "dashboard", "2026-05-04T00:00:00Z")
+    insert_run(
+        db_path=db_path, run_id="run-flush", workflow_name="wf", status="running",
+        started_at="2026-05-04T00:00:00Z", conversation_id="conv-flush",
+    )
+
+    # Two text_delta events, then stream ends (no assistant, no result).
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO(
+        '{"type":"system","subtype":"init","session_id":"s1"}\n'
+        '{"type":"stream_event","event":{"type":"content_block_delta",'
+        '"delta":{"type":"text_delta","text":"thinking about "}}}\n'
+        '{"type":"stream_event","event":{"type":"content_block_delta",'
+        '"delta":{"type":"text_delta","text":"your question"}}}\n'
+    )
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    broadcaster = Mock()
+    async def _publish(*args, **kwargs):
+        return None
+    broadcaster.publish = Mock(side_effect=_publish)
+
+    relay = OrchestratorRelay(
+        conversation_id="conv-flush", run_id="run-flush", db_path=db_path,
+        broadcaster=broadcaster, model=None, event_loop=loop, dashboard_port=8080,
+    )
+
+    import threading
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+    loop_thread = threading.Thread(target=_run_loop, daemon=True)
+    loop_thread.start()
+
+    relay.start()
+    time.sleep(0.3)  # reader exits after StringIO EOF, flush fires in finally
+    relay.stop()
+    loop.call_soon_threadsafe(loop.stop)
+    loop_thread.join(timeout=2)
+
+    history = get_workflow_chat_history(db_path, "run-flush")
+    agent_msgs = [m for m in history if m["role"] == "agent"]
+    assert len(agent_msgs) == 1, (
+        f"expected 1 flushed agent message, got {len(agent_msgs)}: {history}"
+    )
+    assert agent_msgs[0]["content"] == "thinking about your question"
+    # metadata is deserialized to a dict by _row_to_dict
+    meta = agent_msgs[0].get("metadata") or {}
+    assert meta.get("partial") is True
+    assert meta.get("reason") == "stream_ended_without_final_assistant"
+
+    loop.close()
+
+
+@patch('subprocess.Popen')
+def test_final_assistant_supersedes_partial_buffer(mock_popen, tmp_path: Path):
+    """A final "assistant" event must consume the streaming buffer so the
+    exit flush doesn't double-persist the same content.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run, insert_conversation, get_workflow_chat_history
+
+    insert_conversation(db_path, "conv-nodup", "dashboard", "2026-05-04T00:00:00Z")
+    insert_run(
+        db_path=db_path, run_id="run-nodup", workflow_name="wf", status="running",
+        started_at="2026-05-04T00:00:00Z", conversation_id="conv-nodup",
+    )
+
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO(
+        '{"type":"stream_event","event":{"type":"content_block_delta",'
+        '"delta":{"type":"text_delta","text":"Hi"}}}\n'
+        '{"type":"stream_event","event":{"type":"content_block_delta",'
+        '"delta":{"type":"text_delta","text":" there"}}}\n'
+        '{"type":"assistant","message":{"role":"assistant",'
+        '"content":[{"type":"text","text":"Hi there"}]}}\n'
+    )
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    broadcaster = Mock()
+    async def _publish(*args, **kwargs):
+        return None
+    broadcaster.publish = Mock(side_effect=_publish)
+
+    relay = OrchestratorRelay(
+        conversation_id="conv-nodup", run_id="run-nodup", db_path=db_path,
+        broadcaster=broadcaster, model=None, event_loop=loop, dashboard_port=8080,
+    )
+
+    import threading
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+    loop_thread = threading.Thread(target=_run_loop, daemon=True)
+    loop_thread.start()
+
+    relay.start()
+    time.sleep(0.3)
+    relay.stop()
+    loop.call_soon_threadsafe(loop.stop)
+    loop_thread.join(timeout=2)
+
+    history = get_workflow_chat_history(db_path, "run-nodup")
+    agent_msgs = [m for m in history if m["role"] == "agent"]
+    # Exactly one row — final assistant persisted, exit flush was a no-op.
+    assert len(agent_msgs) == 1, (
+        f"final assistant + exit flush double-wrote: {agent_msgs}"
+    )
+    # And it's the final one, not tagged partial
+    assert agent_msgs[0]["content"] == "Hi there"
+    meta = agent_msgs[0].get("metadata") or {}
+    assert not meta.get("partial"), "final row must not be flagged partial"
+
+    loop.close()
