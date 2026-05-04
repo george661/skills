@@ -67,6 +67,7 @@ class OrchestratorRelay:
         self.message_queue: "Queue[str]" = Queue()
         self.stdin_thread: Optional[threading.Thread] = None
         self.stdout_thread: Optional[threading.Thread] = None
+        self.stderr_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.last_active = time.time()
 
@@ -174,13 +175,19 @@ class OrchestratorRelay:
             bufsize=0,
         )
         
-        # Start threads
+        # Start threads. The stderr drain is critical: claude runs with
+        # --verbose, which produces a steady byte-stream to stderr. The OS
+        # pipe buffer is ~64 KB on macOS/Linux; once it fills the subprocess
+        # blocks on its next stderr write and the whole orchestrator freezes
+        # mid-reply. Drain it continuously.
         self.stdin_thread = threading.Thread(target=self._stdin_writer, daemon=True)
         self.stdout_thread = threading.Thread(target=self._stdout_reader, daemon=True)
-        
+        self.stderr_thread = threading.Thread(target=self._stderr_drain, daemon=True)
+
         self.stdin_thread.start()
         self.stdout_thread.start()
-        
+        self.stderr_thread.start()
+
         logger.info(f"Orchestrator {self.conversation_id} started with PID {self.process.pid}")
     
     def _stdin_writer(self) -> None:
@@ -221,7 +228,44 @@ class OrchestratorRelay:
                     self.process.stdin.close()
                 except Exception:
                     pass
-    
+
+    def _stderr_drain(self) -> None:
+        """Thread that drains subprocess stderr to prevent pipe-buffer deadlock.
+
+        With --verbose, claude writes a steady stream of diagnostic lines to
+        stderr. If nothing reads them, the OS pipe buffer (~64 KB) fills and
+        the subprocess blocks on its next stderr write — freezing the reply
+        mid-stream. Forward each line to the relay logger at DEBUG level so
+        the bytes are consumed and occasionally surfaced when someone is
+        actually looking.
+        """
+        if not self.process or not self.process.stderr:
+            return
+        try:
+            for line in iter(self.process.stderr.readline, b''):
+                if self.stop_event.is_set():
+                    break
+                if not line:
+                    continue
+                try:
+                    decoded = line.decode('utf-8', errors='replace').rstrip()
+                    if decoded:
+                        logger.debug(
+                            f"[orchestrator {self.conversation_id} stderr] {decoded}"
+                        )
+                except Exception:
+                    # Never let a decode error crash the drain — any error
+                    # here means the pipe fills and the subprocess freezes.
+                    pass
+        except Exception as e:
+            logger.error(f"stderr_drain thread error for {self.conversation_id}: {e}")
+        finally:
+            if self.process and self.process.stderr:
+                try:
+                    self.process.stderr.close()
+                except Exception:
+                    pass
+
     def _stdout_reader(self) -> None:
         """Thread that reads stdout and publishes events via broadcaster."""
         if not self.process or not self.process.stdout:
@@ -425,7 +469,9 @@ class OrchestratorRelay:
             self.stdin_thread.join(timeout=2)
         if self.stdout_thread and self.stdout_thread.is_alive():
             self.stdout_thread.join(timeout=2)
-        
+        if self.stderr_thread and self.stderr_thread.is_alive():
+            self.stderr_thread.join(timeout=2)
+
         self.process = None
         logger.info(f"Orchestrator {self.conversation_id} stopped")
     

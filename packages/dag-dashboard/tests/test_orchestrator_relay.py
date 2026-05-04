@@ -101,6 +101,7 @@ def test_user_message_serialized_as_stream_json(mock_popen, tmp_path: Path):
     mock_process = MagicMock()
     mock_process.stdin = mock_stdin
     mock_process.stdout = io.StringIO('{"type":"assistant","content":"test"}\n')
+    mock_process.stderr = io.BytesIO(b"")
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
     
@@ -179,6 +180,7 @@ def test_assistant_tokens_broadcast_as_sse(mock_popen, tmp_path: Path):
         '"content":[{"type":"text","text":"Hello world"}]}}\n'
         '{"type":"result","subtype":"success","result":"Hello world"}\n'
     )
+    mock_process.stderr = io.BytesIO(b"")
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
 
@@ -256,6 +258,7 @@ def test_graceful_shutdown_sigterm_then_sigkill(mock_popen, tmp_path: Path):
     mock_process = MagicMock()
     mock_process.stdin = io.BytesIO()
     mock_process.stdout = io.StringIO('')
+    mock_process.stderr = io.BytesIO(b"")
     mock_process.poll.return_value = None
     mock_process.terminate = Mock()
     mock_process.kill = Mock()
@@ -316,6 +319,7 @@ def test_tool_use_events_not_forwarded(mock_popen, tmp_path: Path):
         '{"type":"tool_use","name":"Bash","input":{"command":"ls"},"id":"t1"},'
         '{"type":"text","text":"Result"}]}}\n'
     )
+    mock_process.stderr = io.BytesIO(b"")
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
 
@@ -388,6 +392,7 @@ def test_claude_argv_includes_required_flags_for_stream_json(mock_popen, tmp_pat
     mock_process = MagicMock()
     mock_process.stdin = io.BytesIO()
     mock_process.stdout = io.StringIO('')
+    mock_process.stderr = io.BytesIO(b"")
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
 
@@ -430,6 +435,7 @@ def test_claude_argv_uses_inline_system_prompt(mock_popen, tmp_path: Path):
     mock_process = MagicMock()
     mock_process.stdin = io.BytesIO()
     mock_process.stdout = io.StringIO('')
+    mock_process.stderr = io.BytesIO(b"")
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
 
@@ -474,6 +480,7 @@ def test_claude_argv_omits_model_when_unset(mock_popen, tmp_path: Path):
     mock_process = MagicMock()
     mock_process.stdin = io.BytesIO()
     mock_process.stdout = io.StringIO('')
+    mock_process.stderr = io.BytesIO(b"")
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
 
@@ -505,6 +512,7 @@ def test_claude_argv_passes_model_when_set(mock_popen, tmp_path: Path):
     mock_process = MagicMock()
     mock_process.stdin = io.BytesIO()
     mock_process.stdout = io.StringIO('')
+    mock_process.stderr = io.BytesIO(b"")
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
 
@@ -551,6 +559,7 @@ def test_assistant_reply_is_persisted_to_chat_messages(mock_popen, tmp_path: Pat
         '{"type":"assistant","message":{"role":"assistant",'
         '"content":[{"type":"text","text":"Hello, operator."}]}}\n'
     )
+    mock_process.stderr = io.BytesIO(b"")
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
 
@@ -613,6 +622,7 @@ def test_persistence_failure_does_not_break_sse_broadcast(mock_popen, tmp_path: 
         '{"type":"assistant","message":{"role":"assistant",'
         '"content":[{"type":"text","text":"still delivered"}]}}\n'
     )
+    mock_process.stderr = io.BytesIO(b"")
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
 
@@ -682,6 +692,7 @@ def test_partial_reply_flushed_on_subprocess_exit(mock_popen, tmp_path: Path):
         '{"type":"stream_event","event":{"type":"content_block_delta",'
         '"delta":{"type":"text_delta","text":"your question"}}}\n'
     )
+    mock_process.stderr = io.BytesIO(b"")
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
 
@@ -748,6 +759,7 @@ def test_final_assistant_supersedes_partial_buffer(mock_popen, tmp_path: Path):
         '{"type":"assistant","message":{"role":"assistant",'
         '"content":[{"type":"text","text":"Hi there"}]}}\n'
     )
+    mock_process.stderr = io.BytesIO(b"")
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
 
@@ -786,4 +798,77 @@ def test_final_assistant_supersedes_partial_buffer(mock_popen, tmp_path: Path):
     meta = agent_msgs[0].get("metadata") or {}
     assert not meta.get("partial"), "final row must not be flagged partial"
 
+    loop.close()
+
+
+@patch('subprocess.Popen')
+def test_stderr_is_drained_to_prevent_pipe_deadlock(mock_popen, tmp_path: Path):
+    """stderr is fully consumed by a dedicated drain thread.
+
+    claude runs with --verbose and writes continuously to stderr. The OS
+    pipe buffer is ~64 KB; once full, the subprocess blocks on its next
+    stderr write and the orchestrator freezes mid-reply. The drain thread
+    must fully consume whatever claude emits so the pipe is never back-
+    pressured.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+    insert_run(
+        db_path=db_path, run_id="run-se", workflow_name="wf", status="running",
+        started_at="2026-05-04T00:00:00Z",
+    )
+
+    # Simulate claude emitting a large stderr stream. If the drain stops
+    # consuming, the subprocess would block — here we just verify every
+    # byte is read from the pipe end by the time the thread exits.
+    lines_written = 500
+    stderr_bytes = (b"verbose diagnostic line " + b"x" * 200 + b"\n") * lines_written
+
+    # Subclass BytesIO so we can count bytes actually returned by readline.
+    # The drain thread closes the stream in its finally block, so we can't
+    # rely on tell() after it exits. Tracking here gives us an independent
+    # observable that survives close().
+    class _CountingBytesIO(io.BytesIO):
+        def __init__(self, data: bytes) -> None:
+            super().__init__(data)
+            self.bytes_read_out = 0
+
+        def readline(self, size: int = -1) -> bytes:  # type: ignore[override]
+            line = super().readline(size)
+            self.bytes_read_out += len(line)
+            return line
+
+    mock_stderr = _CountingBytesIO(stderr_bytes)
+
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    # Empty BytesIO for stdout so the stdout reader exits cleanly rather
+    # than looping forever on StringIO's sentinel mismatch (readline()
+    # returns '' not b'', so iter(readline, b'') never terminates).
+    mock_process.stdout = io.BytesIO(b"")
+    mock_process.stderr = mock_stderr
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="c-se", run_id="run-se", db_path=db_path,
+        broadcaster=Mock(), model=None, event_loop=loop, dashboard_port=8080,
+    )
+
+    relay.start()
+    stderr_thread = relay.stderr_thread
+    assert stderr_thread is not None
+    # Wait for the drain thread to exhaust the BytesIO and exit on its own.
+    stderr_thread.join(timeout=3)
+    assert not stderr_thread.is_alive(), "stderr drain thread did not exit"
+
+    # Every byte the subprocess would have written must have been consumed.
+    assert mock_stderr.bytes_read_out == len(stderr_bytes), (
+        f"stderr not fully drained: read {mock_stderr.bytes_read_out}, "
+        f"wrote {len(stderr_bytes)}"
+    )
+
+    relay.stop()
     loop.close()
