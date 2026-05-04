@@ -81,3 +81,19 @@ def test_chat_message_request_whitespace_only():
         )
     # After stripping, it's empty
     assert "at least 1 character" in str(exc_info.value).lower() or "min_length" in str(exc_info.value).lower()
+
+
+def test_chat_message_request_operator_username_optional():
+    """GW-5497: operator_username must be optional until login ships.
+
+    The dashboard UI has no login yet. Gating chat on a required username field
+    forces a ``prompt()`` dialog that blocks every first-use flow. Once a login
+    feature exists, callers can populate this from the authenticated session.
+    """
+    # Omitting entirely must not raise
+    msg = ChatMessageRequest(content="no username present")
+    assert msg.operator_username is None
+
+    # Explicit None must also be accepted
+    msg2 = ChatMessageRequest(content="explicit none", operator_username=None)
+    assert msg2.operator_username is None

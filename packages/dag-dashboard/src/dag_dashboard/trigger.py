@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 import yaml
 
 from .config import Settings
-from .queries import insert_run
+from .queries import get_conversation_row, insert_conversation, insert_run
 from .rate_limit import RateLimiter  # Back-compat re-export
 
 
@@ -27,11 +27,20 @@ class TriggerRequest(BaseModel):
         default=None,
         description="Override model tier for all prompt nodes (unless strict_model=true)"
     )
+    conversation_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional existing conversation ID to continue. Must reference an "
+            "existing row in `conversations`. When omitted a fresh conversation "
+            "is minted per run so the orchestrator chat (GW-5492) is reachable."
+        ),
+    )
 
 
 class TriggerResponse(BaseModel):
     """Response model for trigger endpoint."""
     run_id: str
+    conversation_id: str
 
 
 def verify_hmac_signature(request: Request, body: bytes, secret: str) -> None:
@@ -220,7 +229,31 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
         from datetime import datetime, timezone
         started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-        # Insert run into database with trigger_source
+        # Resolve conversation: reuse if the caller supplied a known id, otherwise
+        # mint a fresh one. This is what wires the run to the GW-5492 orchestrator —
+        # without a conversation_id on workflow_runs, chat_routes.py skips
+        # orchestrator_manager.route_message and the chat never reaches the LLM.
+        if request_body.conversation_id:
+            existing = get_conversation_row(db_path, request_body.conversation_id)
+            if not existing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Unknown conversation_id '{request_body.conversation_id}'. "
+                        "Omit the field to mint a new conversation."
+                    ),
+                )
+            conversation_id = request_body.conversation_id
+        else:
+            conversation_id = str(uuid4())
+            insert_conversation(
+                db_path=db_path,
+                conversation_id=conversation_id,
+                origin="dashboard",
+                created_at=started_at,
+            )
+
+        # Insert run into database with trigger_source and conversation_id
         insert_run(
             db_path=db_path,
             run_id=run_id,
@@ -228,7 +261,8 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
             status="pending",
             started_at=started_at,
             inputs=request_body.inputs,
-            trigger_source=request_body.source
+            trigger_source=request_body.source,
+            conversation_id=conversation_id,
         )
 
         # Spawn dag-executor subprocess (non-blocking)
@@ -247,11 +281,16 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
         # watches) and polls {events_dir}/{run_id}.cancel for cancel markers.
         child_env = {**os.environ, "DAG_EVENTS_DIR": str(settings.events_dir.resolve())}
 
-        # Build dag-exec command
+        # Build dag-exec command. --conversation + --db enable the executor's
+        # session-continuity path (see executor.py:_get_or_mint_session) so
+        # prompt nodes can resume a single Claude session across the run and
+        # the orchestrator chat can join the same conversation.
         dag_exec_args = [
             "dag-exec",
             str(workflow_file),  # Pass resolved file path, not workflow name
             "--run-id", run_id,
+            "--conversation", conversation_id,
+            "--db", str(db_path),
         ]
 
         # Add model override if provided
@@ -272,6 +311,6 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
             env=child_env,
         )
 
-        return TriggerResponse(run_id=run_id)
+        return TriggerResponse(run_id=run_id, conversation_id=conversation_id)
 
     return router
