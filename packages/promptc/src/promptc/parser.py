@@ -9,11 +9,14 @@ Supports:
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+from pathlib import Path
 from typing import Any
 
 from promptc.ast_nodes import Node, SourceSpan
 from promptc.config import ParserConfig
-from promptc.errors import LimitExceededError, ParseError
+from promptc.errors import LimitExceededError, ParseError, TimeoutError
 
 # Tag patterns
 TAG_OPEN = re.compile(r'\{%\s*([a-zA-Z_][a-zA-Z0-9_-]*)\s*')
@@ -23,7 +26,7 @@ TAG_END = re.compile(r'\{%\s*/([a-zA-Z_][a-zA-Z0-9_-]*)\s*%\}')
 
 # Attribute patterns (simple and safe - not vulnerable to ReDoS)
 ATTR_NAME = re.compile(r'([a-zA-Z_][a-zA-Z0-9_-]*)\s*=\s*')
-STRING_VALUE = re.compile(r'"([^"]*)"')
+STRING_VALUE = re.compile(r'"((?:[^\\"]|\\.)*)"')
 BOOL_VALUE = re.compile(r'(true|false)\b')
 NUMBER_VALUE = re.compile(r'(-?\d+(?:\.\d+)?)\b')
 ARRAY_VALUE = re.compile(r'\[([^\]]*)\]')
@@ -36,12 +39,14 @@ class Parser:
         self.config = config or ParserConfig()
         self._tag_count = 0
         self._node_count = 0
+        self._path: str | None = None
 
-    def parse(self, source: str) -> list[Node]:
+    def parse(self, source: str, path: str | None = None) -> list[Node]:
         """Parse source text into a list of AST nodes.
 
         Args:
             source: Prompt composition source text
+            path: Optional file path for error reporting
 
         Returns:
             List of top-level AST nodes
@@ -52,6 +57,7 @@ class Parser:
         """
         self._tag_count = 0
         self._node_count = 0
+        self._path = path
 
         nodes: list[Node] = []
         pos = 0
@@ -85,6 +91,15 @@ class Parser:
                 line = new_line
                 col = new_col
             else:
+                # Check for orphan closing tag at top level
+                end_match = TAG_END.match(source, pos)
+                if end_match:
+                    orphan_tag = end_match.group(1)
+                    raise self._error(
+                        f"Unexpected closing tag: {orphan_tag} has no matching opening tag",
+                        line,
+                        col
+                    )
                 # Consume text until next tag or EOF
                 next_tag = source.find("{%", pos)
                 if next_tag == -1:
@@ -124,7 +139,7 @@ class Parser:
         # Skip past tag name
         match = TAG_OPEN.match(source, pos)
         if not match:
-            raise ParseError("Invalid tag syntax", line, col)
+            raise self._error("Invalid tag syntax", line, col)
 
         pos += len(match.group(0))
         col += len(match.group(0))
@@ -161,31 +176,40 @@ class Parser:
             pos += 2
             col += 2
         else:
-            raise ParseError("Expected %} or /%}", line, col)
+            raise self._error("Expected %} or /%}", line, col)
 
         # Parse children until closing tag
         children: list[Node] = []
         while pos < len(source):
             # Check for closing tag
             end_match = TAG_END.match(source, pos)
-            if end_match and end_match.group(1) == tag_name:
-                end_len = len(end_match.group(0))
-                pos += end_len
-                col += end_len
+            if end_match:
+                closing_tag_name = end_match.group(1)
+                if closing_tag_name == tag_name:
+                    end_len = len(end_match.group(0))
+                    pos += end_len
+                    col += end_len
 
-                self._check_node_limit()
-                return (
-                    Node(
-                        kind=tag_name,
-                        attrs=attrs,
-                        children=children,
-                        body=None,
-                        source_span=SourceSpan(start_line, start_col, line, col)
-                    ),
-                    pos,
-                    line,
-                    col
-                )
+                    self._check_node_limit()
+                    return (
+                        Node(
+                            kind=tag_name,
+                            attrs=attrs,
+                            children=children,
+                            body=None,
+                            source_span=SourceSpan(start_line, start_col, line, col)
+                        ),
+                        pos,
+                        line,
+                        col
+                    )
+                else:
+                    # Mismatched closing tag
+                    raise self._error(
+                        f"Mismatched closing tag: expected {tag_name}, got {closing_tag_name}",
+                        line,
+                        col
+                    )
 
             # Parse child node
             next_tag = TAG_OPEN.match(source, pos)
@@ -202,7 +226,7 @@ class Parser:
                 # Text content
                 next_tag_pos = source.find("{%", pos)
                 if next_tag_pos == -1:
-                    raise ParseError(f"Unclosed tag: {tag_name}", line, col)
+                    raise self._error(f"Unclosed tag: {tag_name}", line, col)
 
                 text = source[pos:next_tag_pos]
                 if text:
@@ -224,7 +248,7 @@ class Parser:
                     ))
                 pos = next_tag_pos
 
-        raise ParseError(f"Unclosed tag: {tag_name}", start_line, start_col)
+        raise self._error(f"Unclosed tag: {tag_name}", start_line, start_col)
 
     def _parse_raw_block(
         self, source: str, pos: int, line: int, col: int
@@ -235,7 +259,7 @@ class Parser:
         # Skip past {% raw %}
         open_match = TAG_OPEN.match(source, pos)
         if not open_match or open_match.group(1) != "raw":
-            raise ParseError("Expected {% raw %}", line, col)
+            raise self._error("Expected {% raw %}", line, col)
 
         pos += len(open_match.group(0))
         col += len(open_match.group(0))
@@ -249,13 +273,13 @@ class Parser:
             pos += 2
             col += 2
         else:
-            raise ParseError("Expected %}", line, col)
+            raise self._error("Expected %}", line, col)
 
-        # Find {% /raw %}
-        end_marker = "{% /raw %}"
+        # Find {% endraw %}
+        end_marker = "{% endraw %}"
         end_pos = source.find(end_marker, pos)
         if end_pos == -1:
-            raise ParseError("Unclosed {% raw %} block", start_line, start_col)
+            raise self._error("Unclosed {% raw %} block", start_line, start_col)
 
         # Extract body
         body = source[pos:end_pos]
@@ -310,33 +334,42 @@ class Parser:
             col += len(attr_match.group(0))
 
             # Parse value
-            value, value_len = self._parse_attribute_value(source, pos)
+            value, value_len = self._parse_attribute_value(source, pos, line, col)
             attrs[attr_name] = value
             pos += value_len
             col += value_len
 
         return attrs, pos, line, col
 
-    def _parse_attribute_value(self, source: str, pos: int) -> tuple[Any, int]:
+    def _parse_attribute_value(self, source: str, pos: int, line: int, col: int) -> tuple[Any, int]:
         """Parse a single attribute value."""
-        # String
-        match = STRING_VALUE.match(source, pos)
+        # String (with timeout protection)
+        match = self._regex_match_with_timeout(STRING_VALUE, source, pos)
         if match:
-            return match.group(1), len(match.group(0))
+            # Unescape \" and \\
+            value = match.group(1)
+            value = value.replace(r'\"', '"').replace(r'\\', '\\')
+            return value, len(match.group(0))
 
         # Array
-        match = ARRAY_VALUE.match(source, pos)
+        match = self._regex_match_with_timeout(ARRAY_VALUE, source, pos)
         if match:
             array_content = match.group(1)
-            # Parse array elements
+            # Parse array elements - must be double-quoted strings
             elements = []
             if array_content.strip():
                 for elem in array_content.split(','):
                     elem = elem.strip()
-                    if elem.startswith('"') and elem.endswith('"'):
-                        elements.append(elem[1:-1])
-                    else:
-                        elements.append(elem)
+                    if elem.startswith('"') and elem.endswith('"') and len(elem) >= 2:
+                        # Unescape the string value
+                        unescaped = elem[1:-1].replace(r'\"', '"').replace(r'\\', '\\')
+                        elements.append(unescaped)
+                    elif elem:  # Non-empty but not properly quoted
+                        raise self._error(
+                            f"Array elements must be double-quoted strings, got: {elem}",
+                            line,
+                            col
+                        )
             return elements, len(match.group(0))
 
         # Boolean
@@ -350,24 +383,121 @@ class Parser:
             val = match.group(1)
             return float(val) if '.' in val else int(val), len(match.group(0))
 
-        raise ParseError("Invalid attribute value", 0, pos)
+        raise self._error("Invalid attribute value", line, col)
 
     def _check_tag_limit(self) -> None:
         """Check if tag count limit is exceeded."""
         self._tag_count += 1
-        if self._tag_count > self.config.max_tags:
+        if self._tag_count > self.config.max_tags_per_file:
             raise LimitExceededError(
                 "Tag count limit exceeded",
-                self.config.max_tags,
+                self.config.max_tags_per_file,
                 self._tag_count
             )
 
     def _check_node_limit(self) -> None:
         """Check if AST node limit is exceeded."""
         self._node_count += 1
-        if self._node_count > self.config.max_nodes:
+        if self._node_count > self.config.max_ast_nodes:
             raise LimitExceededError(
                 "AST node limit exceeded",
-                self.config.max_nodes,
+                self.config.max_ast_nodes,
                 self._node_count
             )
+
+    def _error(self, message: str, line: int, col: int) -> ParseError:
+        """Create a ParseError with path information."""
+        return ParseError(message, line, col, self._path)
+
+    def _regex_match_with_timeout(
+        self, pattern: re.Pattern[str], source: str, pos: int
+    ) -> re.Match[str] | None:
+        """Execute regex match with timeout protection against ReDoS.
+
+        Args:
+            pattern: Compiled regex pattern
+            source: Source string to match against
+            pos: Position to start matching
+
+        Returns:
+            Match object or None if no match
+
+        Raises:
+            TimeoutError: If match exceeds configured timeout
+        """
+        def do_match() -> re.Match[str] | None:
+            return pattern.match(source, pos)
+
+        timeout_seconds = self.config.regex_timeout_ms / 1000.0
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(do_match)
+            try:
+                return future.result(timeout=timeout_seconds)
+            except FuturesTimeoutError:
+                raise TimeoutError(
+                    f"Regex match exceeded timeout at position {pos}",
+                    self.config.regex_timeout_ms
+                )
+
+
+def parse(path: str | Path) -> Node:
+    """Parse a promptc file into a document AST node.
+
+    Args:
+        path: Path to the promptc file
+
+    Returns:
+        Document node with children representing the parsed content
+
+    Raises:
+        ParseError: Invalid syntax
+        LimitExceededError: Tag or node count exceeded
+    """
+    path_obj = Path(path)
+    source = path_obj.read_text(encoding='utf-8')
+    parser = Parser()
+    children = parser.parse(source, path=str(path_obj))
+
+    # Calculate document span
+    lines = source.split('\n')
+    end_line = len(lines)
+    end_col = len(lines[-1]) if lines else 1
+
+    return Node(
+        kind="document",
+        attrs={},
+        children=children,
+        body=None,
+        source_span=SourceSpan(1, 1, end_line, end_col)
+    )
+
+
+def parse_str(text: str, *, path: str | None = None) -> Node:
+    """Parse a promptc string into a document AST node.
+
+    Args:
+        text: Promptc source text
+        path: Optional file path for error reporting
+
+    Returns:
+        Document node with children representing the parsed content
+
+    Raises:
+        ParseError: Invalid syntax
+        LimitExceededError: Tag or node count exceeded
+    """
+    parser = Parser()
+    children = parser.parse(text, path=path)
+
+    # Calculate document span
+    lines = text.split('\n')
+    end_line = len(lines)
+    end_col = len(lines[-1]) if lines else 1
+
+    return Node(
+        kind="document",
+        attrs={},
+        children=children,
+        body=None,
+        source_span=SourceSpan(1, 1, end_line, end_col)
+    )

@@ -8,6 +8,6 @@ from dataclasses import dataclass
 class ParserConfig:
     """Configuration options for the parser."""
 
-    max_tags: int = 1000
-    max_nodes: int = 5000
+    max_tags_per_file: int = 1000
+    max_ast_nodes: int = 5000
     regex_timeout_ms: int = 100

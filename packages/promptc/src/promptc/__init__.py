@@ -4,10 +4,11 @@ from __future__ import annotations
 from promptc.ast_nodes import Node, SourceSpan
 from promptc.config import ParserConfig
 from promptc.errors import LimitExceededError, ParseError, TimeoutError
-from promptc.parser import Parser
+from promptc.parser import parse, parse_str
 
 __all__ = [
-    "Parser",
+    "parse",
+    "parse_str",
     "ParserConfig",
     "Node",
     "SourceSpan",

@@ -5,11 +5,16 @@ from __future__ import annotations
 class ParseError(Exception):
     """Structured parse error with line and column information."""
 
-    def __init__(self, message: str, line: int, column: int) -> None:
-        super().__init__(f"Parse error at line {line}, column {column}: {message}")
+    def __init__(self, message: str, line: int, column: int, path: str | None = None) -> None:
         self.message = message
         self.line = line
         self.column = column
+        self.path = path
+
+        if path:
+            super().__init__(f"{path}:{line}:{column}: {message}")
+        else:
+            super().__init__(f"Parse error at line {line}, column {column}: {message}")
 
 
 class LimitExceededError(Exception):
