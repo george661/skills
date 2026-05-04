@@ -522,3 +522,132 @@ def test_claude_argv_passes_model_when_set(mock_popen, tmp_path: Path):
     assert argv[idx + 1] == "global.anthropic.claude-opus-4-7[1m]"
 
     loop.close()
+
+
+@patch('subprocess.Popen')
+def test_assistant_reply_is_persisted_to_chat_messages(mock_popen, tmp_path: Path):
+    """Final assistant messages must be inserted into chat_messages so a page
+    reload (GET /api/workflows/{run_id}/chat/history) shows them alongside
+    operator turns.
+
+    Operator messages are already persisted by chat_routes.post_chat; the
+    assistant side lives in the relay because that's where the reply is
+    assembled from stream-json blocks.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run, insert_conversation, get_workflow_chat_history
+
+    insert_conversation(db_path, "conv-p1", "dashboard", "2026-05-04T00:00:00Z")
+    insert_run(
+        db_path=db_path, run_id="run-p1", workflow_name="wf", status="running",
+        started_at="2026-05-04T00:00:00Z", conversation_id="conv-p1",
+    )
+
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO(
+        '{"type":"system","subtype":"init","session_id":"s1"}\n'
+        '{"type":"assistant","message":{"role":"assistant",'
+        '"content":[{"type":"text","text":"Hello, operator."}]}}\n'
+    )
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    broadcaster = Mock()
+    async def _publish(*args, **kwargs):
+        return None
+    broadcaster.publish = Mock(side_effect=_publish)
+
+    relay = OrchestratorRelay(
+        conversation_id="conv-p1", run_id="run-p1", db_path=db_path,
+        broadcaster=broadcaster, model=None, event_loop=loop, dashboard_port=8080,
+    )
+
+    import threading
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+    loop_thread = threading.Thread(target=_run_loop, daemon=True)
+    loop_thread.start()
+
+    relay.start()
+    time.sleep(0.3)
+    relay.stop()
+    loop.call_soon_threadsafe(loop.stop)
+    loop_thread.join(timeout=2)
+
+    history = get_workflow_chat_history(db_path, "run-p1")
+    # Exactly one agent message with the assembled text.
+    agent_msgs = [m for m in history if m["role"] == "agent"]
+    assert len(agent_msgs) == 1, (
+        f"expected 1 persisted agent message, got {len(agent_msgs)}: {history}"
+    )
+    assert agent_msgs[0]["content"] == "Hello, operator."
+    # Conversation + session linkage persisted so conversation-view queries work.
+    assert agent_msgs[0]["conversation_id"] == "conv-p1"
+    assert agent_msgs[0]["session_id"] == relay.session_uuid
+
+    loop.close()
+
+
+@patch('subprocess.Popen')
+def test_persistence_failure_does_not_break_sse_broadcast(mock_popen, tmp_path: Path):
+    """If insert_chat_message blows up, the SSE broadcast must still fire.
+
+    Persistence is best-effort; a DB-write failure (e.g. transient lock) must
+    not drop the live user-visible response.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+    insert_run(
+        db_path=db_path, run_id="run-p2", workflow_name="wf", status="running",
+        started_at="2026-05-04T00:00:00Z",
+    )
+
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO(
+        '{"type":"assistant","message":{"role":"assistant",'
+        '"content":[{"type":"text","text":"still delivered"}]}}\n'
+    )
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    broadcaster = Mock()
+    async def _publish(*args, **kwargs):
+        return None
+    broadcaster.publish = Mock(side_effect=_publish)
+
+    relay = OrchestratorRelay(
+        conversation_id="conv-p2", run_id="run-p2", db_path=db_path,
+        broadcaster=broadcaster, model=None, event_loop=loop, dashboard_port=8080,
+    )
+
+    import threading
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+    loop_thread = threading.Thread(target=_run_loop, daemon=True)
+    loop_thread.start()
+
+    # Force insert_chat_message to explode
+    with patch("dag_dashboard.orchestrator_relay.insert_chat_message",
+               side_effect=RuntimeError("db locked")):
+        relay.start()
+        time.sleep(0.3)
+        relay.stop()
+
+    loop.call_soon_threadsafe(loop.stop)
+    loop_thread.join(timeout=2)
+
+    # Broadcast still happened despite the failed persist.
+    payloads = [c.args[1] for c in broadcaster.publish.call_args_list if len(c.args) >= 2]
+    final = [p for p in payloads if p.get("type") == "chat_message"]
+    assert len(final) == 1, f"expected 1 chat_message broadcast, got {len(final)}"
+    assert final[0]["content"] == "still delivered"
+
+    loop.close()

@@ -5,11 +5,12 @@ import logging
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from queue import Queue, Empty
 from typing import Optional, Any
 
-from .queries import get_run, get_connection
+from .queries import get_run, get_connection, insert_chat_message
 
 
 logger = logging.getLogger(__name__)
@@ -279,6 +280,31 @@ class OrchestratorRelay:
                             text_parts.append(content)
                         text = "".join(text_parts)
                         if text:
+                            # Persist the assistant reply so a page reload
+                            # (GET /api/workflows/{run_id}/chat/history) shows
+                            # it alongside the operator messages. Operator
+                            # turns are persisted in chat_routes.post_chat;
+                            # the assistant side lives in the relay because
+                            # that's where the reply is assembled.
+                            now = datetime.now(timezone.utc).isoformat()
+                            try:
+                                insert_chat_message(
+                                    self.db_path,
+                                    execution_id=None,
+                                    role="agent",
+                                    content=text,
+                                    created_at=now,
+                                    run_id=self.run_id,
+                                    conversation_id=self.conversation_id,
+                                    session_id=self.session_uuid,
+                                )
+                            except Exception as e:
+                                # Persistence is best-effort — never drop the
+                                # SSE broadcast because the DB write failed.
+                                logger.error(
+                                    f"Failed to persist assistant message for "
+                                    f"{self.conversation_id}: {e}"
+                                )
                             asyncio.run_coroutine_threadsafe(
                                 self.broadcaster.publish(
                                     self.run_id,
@@ -287,6 +313,7 @@ class OrchestratorRelay:
                                         "role": "assistant",
                                         "content": text,
                                         "conversation_id": self.conversation_id,
+                                        "created_at": now,
                                     },
                                 ),
                                 self.event_loop,

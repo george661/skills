@@ -61,6 +61,11 @@ def create_chat_router(db_path: Path) -> APIRouter:
                 detail="Rate limit exceeded: max 10 messages per minute"
             )
 
+        # Look up conversation_id once so both persistence and orchestrator
+        # routing see a consistent linkage. GW-5497 guarantees this is
+        # populated for any run triggered from the dashboard.
+        conversation_id = get_conversation_id_from_run(db_path, run_id)
+
         # Insert message
         now = datetime.now(timezone.utc).isoformat()
         msg_id = insert_chat_message(
@@ -70,7 +75,8 @@ def create_chat_router(db_path: Path) -> APIRouter:
             content=message.content,
             created_at=now,
             run_id=run_id,
-            operator_username=message.operator_username
+            operator_username=message.operator_username,
+            conversation_id=conversation_id,
         )
 
         # Broadcast via SSE if broadcaster available
@@ -88,19 +94,21 @@ def create_chat_router(db_path: Path) -> APIRouter:
             )
 
         # Route to orchestrator if available
-        if hasattr(request.app.state, "orchestrator_manager") and request.app.state.orchestrator_manager:
-            conversation_id = get_conversation_id_from_run(db_path, run_id)
-            if conversation_id:
-                try:
-                    await request.app.state.orchestrator_manager.route_message(
-                        conversation_id=conversation_id,
-                        run_id=run_id,
-                        message=message.content,
-                    )
-                except Exception as e:
-                    # Don't fail the request if orchestrator routing fails
-                    import logging
-                    logging.getLogger(__name__).error(f"Failed to route message to orchestrator: {e}")
+        if (
+            hasattr(request.app.state, "orchestrator_manager")
+            and request.app.state.orchestrator_manager
+            and conversation_id
+        ):
+            try:
+                await request.app.state.orchestrator_manager.route_message(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    message=message.content,
+                )
+            except Exception as e:
+                # Don't fail the request if orchestrator routing fails
+                import logging
+                logging.getLogger(__name__).error(f"Failed to route message to orchestrator: {e}")
 
         return {
             "id": msg_id,
