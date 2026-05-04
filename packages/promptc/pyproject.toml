@@ -42,7 +42,7 @@ python_functions = ["test_*"]
 
 [tool.ruff]
 line-length = 100
-select = ["E", "F", "W", "I"]
 
 [tool.ruff.lint]
+select = ["E", "F", "W", "I"]
 ignore = []
