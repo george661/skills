@@ -25,7 +25,7 @@ class OrchestratorManager:
         broadcaster: Any,
         max_concurrent: int = 8,
         idle_ttl_seconds: int = 1800,
-        model: str = "claude-opus-4-7",
+        model: Optional[str] = None,
         dashboard_port: int = 8080,
     ):
         self.db_path = db_path
@@ -131,7 +131,9 @@ class OrchestratorManager:
             session_uuid=relay.session_uuid or "",  # Should always be set after start()
             last_active=now,
             status="alive",
-            model=self.model,
+            # model=None means "inherit ANTHROPIC_MODEL"; record that literal
+            # marker so the orchestrator_sessions row is self-describing.
+            model=self.model or "env:ANTHROPIC_MODEL",
             created_at=session_row["created_at"] if session_row else now,
         )
         

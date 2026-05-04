@@ -76,7 +76,16 @@ class Settings(BaseSettings):
     orchestrator_enabled: bool = Field(default=True, description="Enable long-lived workflow orchestrator chat")
     orchestrator_max_concurrent: int = Field(default=8, description="Max concurrent orchestrator subprocesses")
     orchestrator_idle_ttl_seconds: int = Field(default=1800, description="Idle TTL for orchestrator subprocess (30 min default)")
-    orchestrator_model: str = Field(default="claude-opus-4-7", description="Model for orchestrator instances")
+    orchestrator_model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Model for orchestrator instances. When unset the subprocess "
+            "inherits ANTHROPIC_MODEL from the environment — required under "
+            "CLAUDE_CODE_USE_BEDROCK=1 where the model id must be a Bedrock "
+            "inference profile (e.g. 'global.anthropic.claude-opus-4-7[1m]'). "
+            "Set explicitly only to override."
+        ),
+    )
 
     @model_validator(mode="after")
     def _parse_workflows_dirs_from_workflows_dir(self) -> "Settings":

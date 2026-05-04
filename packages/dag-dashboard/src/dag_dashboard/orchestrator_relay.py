@@ -3,7 +3,6 @@ import asyncio
 import json
 import logging
 import subprocess
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -44,7 +43,7 @@ class OrchestratorRelay:
         run_id: str,
         db_path: Path,
         broadcaster: Any,
-        model: str,
+        model: Optional[str],
         event_loop: asyncio.AbstractEventLoop,
         dashboard_port: int,
         session_uuid: Optional[str] = None,
@@ -53,6 +52,11 @@ class OrchestratorRelay:
         self.run_id = run_id
         self.db_path = db_path
         self.broadcaster = broadcaster
+        # model=None means "inherit from ANTHROPIC_MODEL env". We forward --model
+        # only when explicitly set, because hardcoded defaults like
+        # "claude-opus-4-7" don't resolve under CLAUDE_CODE_USE_BEDROCK=1 where
+        # the model id must be a Bedrock inference profile (e.g.
+        # "global.anthropic.claude-opus-4-7[1m]").
         self.model = model
         self.event_loop = event_loop
         self.dashboard_port = dashboard_port
@@ -65,8 +69,13 @@ class OrchestratorRelay:
         self.stop_event = threading.Event()
         self.last_active = time.time()
         
-    def _build_system_prompt(self) -> Path:
-        """Build system prompt file with run context."""
+    def _build_system_prompt(self) -> str:
+        """Build system prompt string with run context.
+
+        Returns the rendered prompt so it can be passed inline via --system-prompt.
+        The claude 2.x CLI does not accept --system-prompt-file; only the inline
+        form exists, so we render a string here rather than a temp file.
+        """
         run = get_run(self.db_path, self.run_id)
         if not run:
             raise ValueError(f"Run {self.run_id} not found")
@@ -92,8 +101,8 @@ class OrchestratorRelay:
         channel_keys = [row[0] for row in cursor.fetchall()]
         channel_keys_csv = ",".join(channel_keys)
         conn.close()
-        
-        content = SYSTEM_PROMPT_TEMPLATE.format(
+
+        return SYSTEM_PROMPT_TEMPLATE.format(
             run_id=self.run_id,
             workflow_name=run.get("workflow_name", "unknown"),
             status=run.get("status", "unknown"),
@@ -102,42 +111,41 @@ class OrchestratorRelay:
             channel_keys_csv=channel_keys_csv,
             port=self.dashboard_port,
         )
-        
-        # Write to temp file
-        temp_file = tempfile.NamedTemporaryFile(
-            mode='w',
-            suffix='.system-prompt.txt',
-            delete=False,
-            prefix=f"orchestrator-{self.conversation_id}-"
-        )
-        temp_file.write(content)
-        temp_file.close()
-        
-        return Path(temp_file.name)
     
     def start(self) -> None:
-        """Spawn the Claude subprocess and start reader/writer threads."""
+        """Spawn the Claude subprocess and start reader/writer threads.
+
+        Command construction follows the claude 2.x CLI contract:
+        - ``--print`` is required for ``--input-format=stream-json`` (non-interactive).
+        - ``--verbose`` is required with ``--output-format=stream-json``.
+        - ``--system-prompt`` takes an inline string; no ``-file`` variant exists.
+        - ``--model`` is omitted unless explicitly configured so the process
+          inherits ANTHROPIC_MODEL (necessary for Bedrock which rejects bare
+          model names like "claude-opus-4-7").
+        """
         if self.process is not None:
             logger.warning(f"Orchestrator for {self.conversation_id} already started")
             return
-        
-        # Build system prompt
-        system_prompt_path = self._build_system_prompt()
-        
-        # Build command
+
+        system_prompt = self._build_system_prompt()
+
         cmd = [
             "claude",
             "--bare",
-            "--model", self.model,
+            "--print",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",  # Emit content_block_delta for token streaming
             "--replay-user-messages",
             "--permission-mode", "dontAsk",
-            "--system-prompt-file", str(system_prompt_path),
+            "--system-prompt", system_prompt,
             "--allowedTools", "Bash,Read,Grep,Glob",
-            "--verbose",
         ]
-        
+
+        if self.model:
+            cmd.extend(["--model", self.model])
+
         if self.session_uuid:
             cmd.extend(["--resume", self.session_uuid])
         else:
@@ -179,8 +187,14 @@ class OrchestratorRelay:
                 except Empty:
                     continue
                 
-                # Encode as stream-json user event
-                event = {"type": "user", "message": message}
+                # Encode as stream-json user event. The claude 2.x CLI expects
+                # the payload's ``message`` field to be a full message object
+                # (role + content), not a bare string — bare strings produce
+                # "Expected message role 'user', got 'undefined'" and abort.
+                event = {
+                    "type": "user",
+                    "message": {"role": "user", "content": message},
+                }
                 line = json.dumps(event) + "\n"
                 
                 try:
@@ -222,37 +236,63 @@ class OrchestratorRelay:
                         line_str = line
                     event = json.loads(line_str)
                     event_type = event.get("type")
-                    
-                    # Publish tokens and final messages, skip tool_use
-                    if event_type == "token":
-                        # Publish token event
-                        asyncio.run_coroutine_threadsafe(
-                            self.broadcaster.publish(
-                                self.run_id,
-                                {
-                                    "type": "chat_message_token",
-                                    "content": event.get("content", ""),
-                                    "conversation_id": self.conversation_id,
-                                }
-                            ),
-                            self.event_loop
-                        )
+
+                    # Publish tokens and final assistant messages.
+                    #
+                    # Event shapes emitted by claude 2.x --output-format=stream-json:
+                    #   - {"type":"stream_event","event":{"type":"content_block_delta",
+                    #       "delta":{"type":"text_delta","text":"..."}}}   ← streaming tokens
+                    #   - {"type":"assistant","message":{"content":[
+                    #       {"type":"text","text":"..."},{"type":"tool_use",...}]}}
+                    #   - {"type":"system","subtype":"init"|"status",...}  ← skip
+                    #   - {"type":"user",...}  ← --replay-user-messages echo, skip
+                    #   - {"type":"result",...}  ← turn-end, skip
+                    if event_type == "stream_event":
+                        inner = event.get("event") or {}
+                        if inner.get("type") == "content_block_delta":
+                            delta = inner.get("delta") or {}
+                            if delta.get("type") == "text_delta":
+                                text = delta.get("text", "")
+                                if text:
+                                    asyncio.run_coroutine_threadsafe(
+                                        self.broadcaster.publish(
+                                            self.run_id,
+                                            {
+                                                "type": "chat_message_token",
+                                                "content": text,
+                                                "conversation_id": self.conversation_id,
+                                            },
+                                        ),
+                                        self.event_loop,
+                                    )
                     elif event_type == "assistant":
-                        # Publish final message event
-                        asyncio.run_coroutine_threadsafe(
-                            self.broadcaster.publish(
-                                self.run_id,
-                                {
-                                    "type": "chat_message",
-                                    "role": "assistant",
-                                    "content": event.get("content", ""),
-                                    "conversation_id": self.conversation_id,
-                                }
-                            ),
-                            self.event_loop
-                        )
-                    # Skip tool_use and other internal events
-                    
+                        # Concatenate all text blocks in the message; skip tool_use blocks.
+                        msg = event.get("message") or {}
+                        content = msg.get("content") or []
+                        text_parts: list[str] = []
+                        if isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    text_parts.append(block.get("text", ""))
+                        elif isinstance(content, str):
+                            # Defensive: some CLI versions or tests emit a bare string.
+                            text_parts.append(content)
+                        text = "".join(text_parts)
+                        if text:
+                            asyncio.run_coroutine_threadsafe(
+                                self.broadcaster.publish(
+                                    self.run_id,
+                                    {
+                                        "type": "chat_message",
+                                        "role": "assistant",
+                                        "content": text,
+                                        "conversation_id": self.conversation_id,
+                                    },
+                                ),
+                                self.event_loop,
+                            )
+                    # Skip system/user/result/tool_use/etc.
+
                 except json.JSONDecodeError:
                     logger.debug(f"Non-JSON stdout line from orchestrator {self.conversation_id}: {line!r}")
                 except Exception as e:

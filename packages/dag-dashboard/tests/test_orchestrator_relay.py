@@ -4,6 +4,7 @@ import json
 import io
 import asyncio
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock, call
 from dag_dashboard.orchestrator_relay import OrchestratorRelay
@@ -61,13 +62,12 @@ def test_build_system_prompt_renders_template(tmp_path: Path):
         dashboard_port=8080,
     )
     
-    # Build system prompt
-    prompt_path = relay._build_system_prompt()
-    
-    # Verify file exists and contains expected fields
-    assert prompt_path.exists()
-    content = prompt_path.read_text()
-    
+    # Build system prompt — returns a rendered string (the claude CLI does not
+    # accept --system-prompt-file, only inline --system-prompt, so there's no
+    # temp file to write to).
+    content = relay._build_system_prompt()
+
+    assert isinstance(content, str)
     assert "run-123" in content
     assert "test-workflow" in content
     assert "completed" in content
@@ -136,7 +136,15 @@ def test_user_message_serialized_as_stream_json(mock_popen, tmp_path: Path):
     # Should be JSON lines format
     lines = [line for line in stdin_data.strip().split('\n') if line]
     assert len(lines) > 0
-    
+
+    # GW-5497: user events must use the nested {role, content} message shape.
+    # A bare string in `message` causes claude 2.x to abort with
+    # "Expected message role 'user', got 'undefined'".
+    payload = json.loads(lines[-1])
+    assert payload["type"] == "user"
+    assert payload["message"]["role"] == "user"
+    assert payload["message"]["content"] == "Hello orchestrator"
+
     loop.close()
 
 
@@ -156,45 +164,76 @@ def test_assistant_tokens_broadcast_as_sse(mock_popen, tmp_path: Path):
         started_at="2026-05-03T12:00:00Z",
     )
 
-    # Mock process with canned stream-json output
+    # Mock process with canned stream-json output using the real claude 2.x
+    # event shapes: stream_event/content_block_delta for tokens, and a final
+    # assistant message whose content is a list of text blocks.
     mock_process = MagicMock()
     mock_process.stdin = io.BytesIO()
     mock_process.stdout = io.StringIO(
-        '{"type":"token","content":"Hello"}\n'
-        '{"type":"token","content":" world"}\n'
-        '{"type":"assistant","content":"Hello world"}\n'
+        '{"type":"system","subtype":"init","session_id":"s1"}\n'
+        '{"type":"stream_event","event":{"type":"content_block_delta",'
+        '"delta":{"type":"text_delta","text":"Hello"}}}\n'
+        '{"type":"stream_event","event":{"type":"content_block_delta",'
+        '"delta":{"type":"text_delta","text":" world"}}}\n'
+        '{"type":"assistant","message":{"role":"assistant",'
+        '"content":[{"type":"text","text":"Hello world"}]}}\n'
+        '{"type":"result","subtype":"success","result":"Hello world"}\n'
     )
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
-    
+
     loop = asyncio.new_event_loop()
     broadcaster = Mock()
-    broadcaster.publish = Mock()
-    
+    # publish must be awaitable for run_coroutine_threadsafe to accept it.
+    async def _publish(*args, **kwargs):
+        return None
+    broadcaster.publish = Mock(side_effect=_publish)
+
     relay = OrchestratorRelay(
         conversation_id="conv-123",
         run_id="run-123",
         db_path=db_path,
         broadcaster=broadcaster,
-        model="claude-opus-4-7",
+        model=None,  # Inherit ANTHROPIC_MODEL in the real path
         event_loop=loop,
         dashboard_port=8080,
     )
-    
+
+    # Drive the event loop in a background thread so run_coroutine_threadsafe
+    # from the stdout reader can schedule coroutines onto it.
+    import threading
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    loop_thread = threading.Thread(target=_run_loop, daemon=True)
+    loop_thread.start()
+
     relay.start()
-    
+
     # Give reader thread time to process
     import time
-    time.sleep(0.2)
-    
+    time.sleep(0.3)
+
     relay.stop()
-    
-    # Verify broadcaster.publish was called for tokens
+    loop.call_soon_threadsafe(loop.stop)
+    loop_thread.join(timeout=2)
+
+    # Verify broadcaster.publish was called — two token events + one final message.
     assert broadcaster.publish.called
-    # Should have token events and final message event
     calls = broadcaster.publish.call_args_list
-    assert len(calls) >= 2  # At least some tokens
-    
+    assert len(calls) >= 3, f"expected >=3 publish calls (2 tokens + 1 final), got {len(calls)}"
+
+    # The published payloads should contain the text from the stream.
+    payloads = [c.args[1] for c in calls]
+    token_payloads = [p for p in payloads if p.get("type") == "chat_message_token"]
+    assert any(p["content"] == "Hello" for p in token_payloads)
+    assert any(p["content"] == " world" for p in token_payloads)
+    final = [p for p in payloads if p.get("type") == "chat_message"]
+    assert final and final[0]["content"] == "Hello world"
+    assert final[0]["role"] == "assistant"
+
     loop.close()
 
 
@@ -267,49 +306,219 @@ def test_tool_use_events_not_forwarded(mock_popen, tmp_path: Path):
         started_at="2026-05-03T12:00:00Z",
     )
 
-    # Mock process with canned stream-json containing tool_use
+    # Mock process with canned stream-json containing a tool_use block inside
+    # an assistant message, followed by a clean assistant text message.
+    # The relay's parser must skip tool_use blocks when concatenating text.
     mock_process = MagicMock()
     mock_process.stdin = io.BytesIO()
     mock_process.stdout = io.StringIO(
-        '{"type":"tool_use","name":"Bash","input":{"command":"ls"}}\n'
-        '{"type":"token","content":"Result"}\n'
+        '{"type":"assistant","message":{"role":"assistant","content":['
+        '{"type":"tool_use","name":"Bash","input":{"command":"ls"},"id":"t1"},'
+        '{"type":"text","text":"Result"}]}}\n'
     )
     mock_process.poll.return_value = None
     mock_popen.return_value = mock_process
 
     loop = asyncio.new_event_loop()
     broadcaster = Mock()
-    broadcaster.publish = Mock()
+    async def _publish(*args, **kwargs):
+        return None
+    broadcaster.publish = Mock(side_effect=_publish)
 
     relay = OrchestratorRelay(
         conversation_id="conv-123",
         run_id="run-123",
         db_path=db_path,
         broadcaster=broadcaster,
-        model="claude-opus-4-7",
+        model=None,
         event_loop=loop,
         dashboard_port=8080,
     )
 
+    import threading
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+    loop_thread = threading.Thread(target=_run_loop, daemon=True)
+    loop_thread.start()
+
     relay.start()
-
-    # Give reader thread time to process
-    import time
     time.sleep(0.2)
+    relay.stop()
+    loop.call_soon_threadsafe(loop.stop)
+    loop_thread.join(timeout=2)
 
+    # Only the text block should have been forwarded; tool_use is filtered out.
+    calls = broadcaster.publish.call_args_list
+    payloads = [c.args[1] for c in calls if len(c.args) >= 2]
+    for p in payloads:
+        # No payload should carry tool_use shape
+        assert p.get("type") != "tool_use"
+        assert "input" not in p
+    # Exactly one chat_message event, content is "Result" (tool_use block excluded)
+    final_msgs = [p for p in payloads if p.get("type") == "chat_message"]
+    assert len(final_msgs) == 1
+    assert final_msgs[0]["content"] == "Result"
+
+    loop.close()
+
+
+# ---------------------------------------------------------------------------
+# GW-5497: claude 2.x CLI contract regression guards
+# ---------------------------------------------------------------------------
+
+
+@patch('subprocess.Popen')
+def test_claude_argv_includes_required_flags_for_stream_json(mock_popen, tmp_path: Path):
+    """The argv must carry --print, --verbose, --input/output-format=stream-json.
+
+    claude 2.x rejects --input-format=stream-json without --print, and
+    --output-format=stream-json without --verbose. If either is missing the
+    subprocess exits with ~0 silently, which is what blocked the orchestrator
+    in the first end-to-end attempt.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+    insert_run(
+        db_path=db_path, run_id="run-1", workflow_name="wf", status="running",
+        started_at="2026-05-04T00:00:00Z",
+    )
+
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO('')
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="c-1", run_id="run-1", db_path=db_path,
+        broadcaster=Mock(), model=None, event_loop=loop, dashboard_port=8080,
+    )
+    relay.start()
     relay.stop()
 
-    # Verify broadcaster.publish was NOT called for tool_use
-    # It may be called for the token, but not for tool_use
-    calls = broadcaster.publish.call_args_list
-    for call in calls:
-        args, kwargs = call
-        if len(args) >= 2:
-            event_data = args[1]
-            # Ensure no tool_use events were published
-            assert event_data.get("type") != "tool_use"
-            # Ensure no payloads contain tool_use data
-            if "name" in event_data:
-                assert event_data.get("name") != "Bash"
+    argv = mock_popen.call_args.args[0]
+    for flag in ("--print", "--verbose", "--bare",
+                 "--input-format", "stream-json",
+                 "--output-format", "stream-json",
+                 "--permission-mode", "dontAsk",
+                 "--include-partial-messages",
+                 "--replay-user-messages"):
+        assert flag in argv, f"missing {flag!r} in argv: {argv}"
+
+    loop.close()
+
+
+@patch('subprocess.Popen')
+def test_claude_argv_uses_inline_system_prompt(mock_popen, tmp_path: Path):
+    """--system-prompt must carry the rendered string, not a file path.
+
+    Earlier versions passed --system-prompt-file <path>, which claude 2.x does
+    not recognize (the flag does not exist). Inline --system-prompt is the
+    only accepted form.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+    insert_run(
+        db_path=db_path, run_id="run-2", workflow_name="wf", status="running",
+        started_at="2026-05-04T00:00:00Z",
+    )
+
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO('')
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="c-2", run_id="run-2", db_path=db_path,
+        broadcaster=Mock(), model=None, event_loop=loop, dashboard_port=8080,
+    )
+    relay.start()
+    relay.stop()
+
+    argv = mock_popen.call_args.args[0]
+    assert "--system-prompt-file" not in argv
+    idx = argv.index("--system-prompt")
+    prompt_value = argv[idx + 1]
+    # The value must be the rendered prompt, which names the run and conversation.
+    assert "run-2" in prompt_value
+    assert "c-2" in prompt_value
+    # It must not look like a file path we would have passed in the old contract.
+    assert not prompt_value.endswith(".txt")
+
+    loop.close()
+
+
+@patch('subprocess.Popen')
+def test_claude_argv_omits_model_when_unset(mock_popen, tmp_path: Path):
+    """model=None must translate to "no --model flag" so ANTHROPIC_MODEL wins.
+
+    Hardcoded names like "claude-opus-4-7" don't resolve under
+    CLAUDE_CODE_USE_BEDROCK=1 — the Bedrock model id is an inference profile
+    such as "global.anthropic.claude-opus-4-7[1m]". Omitting --model lets the
+    env var drive the choice.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+    insert_run(
+        db_path=db_path, run_id="run-3", workflow_name="wf", status="running",
+        started_at="2026-05-04T00:00:00Z",
+    )
+
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO('')
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="c-3", run_id="run-3", db_path=db_path,
+        broadcaster=Mock(), model=None, event_loop=loop, dashboard_port=8080,
+    )
+    relay.start()
+    relay.stop()
+
+    argv = mock_popen.call_args.args[0]
+    assert "--model" not in argv, f"--model should be absent when model=None: {argv}"
+
+    loop.close()
+
+
+@patch('subprocess.Popen')
+def test_claude_argv_passes_model_when_set(mock_popen, tmp_path: Path):
+    """When an explicit model is supplied, --model must appear with that value."""
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+    insert_run(
+        db_path=db_path, run_id="run-4", workflow_name="wf", status="running",
+        started_at="2026-05-04T00:00:00Z",
+    )
+
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO('')
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="c-4", run_id="run-4", db_path=db_path,
+        broadcaster=Mock(), model="global.anthropic.claude-opus-4-7[1m]",
+        event_loop=loop, dashboard_port=8080,
+    )
+    relay.start()
+    relay.stop()
+
+    argv = mock_popen.call_args.args[0]
+    idx = argv.index("--model")
+    assert argv[idx + 1] == "global.anthropic.claude-opus-4-7[1m]"
 
     loop.close()
