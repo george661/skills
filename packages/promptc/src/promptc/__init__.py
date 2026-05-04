@@ -5,6 +5,22 @@ from promptc.ast_nodes import Node, SourceSpan
 from promptc.config import ParserConfig
 from promptc.errors import LimitExceededError, ParseError, TimeoutError
 from promptc.parser import parse, parse_str
+from promptc.schema import (
+    Doc,
+    InputDecl,
+    MetaDecl,
+    OutputDecl,
+    ParseErrorInfo,
+    ParseResult,
+    PhaseNode,
+    RawNode,
+    RefNode,
+    RunNode,
+    TextNode,
+    ValidationIssue,
+    ValidationReport,
+    WhenNode,
+)
 
 __all__ = [
     "parse",
@@ -15,4 +31,19 @@ __all__ = [
     "ParseError",
     "LimitExceededError",
     "TimeoutError",
+    # Schema models
+    "Doc",
+    "MetaDecl",
+    "InputDecl",
+    "OutputDecl",
+    "PhaseNode",
+    "RunNode",
+    "RefNode",
+    "WhenNode",
+    "TextNode",
+    "RawNode",
+    "ParseErrorInfo",
+    "ParseResult",
+    "ValidationIssue",
+    "ValidationReport",
 ]
