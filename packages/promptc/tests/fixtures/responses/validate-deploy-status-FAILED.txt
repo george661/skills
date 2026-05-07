@@ -1,0 +1,25 @@
+Based on the analysis, here's the deployment status:
+
+**Phase 3: Output Result**
+
+The PR for GW-4860 was merged on April 8, 2026 (commit f817101), and the CI build-and-test job (#77) ran immediately after. However, **the build failed**, which prevented the deploy-dev job from triggering.
+
+The most recent successful deployment to dev was build #40 on March 15, 2026 - **before the PR was merged**. This means the fix is not yet deployed.
+
+```
+DEPLOY_STATUS: FAILED
+REPO: gw-jwt-demo
+PIPELINE: gw-jwt-demo
+BUILD_ID: 4605766
+BUILD_STATUS: failed
+ENV_URL: https://demo.dev.generalwisdom.com
+DEPLOY_GAP_REASON: build-and-test job #77 failed after PR merge, preventing deploy-dev from triggering. Last successful deployment (build #40) was on March 15, before the April 8 PR merge.
+```
+
+**Build Timeline:**
+- **March 15, 2026**: Last successful deploy-dev (build #40) ✅
+- **April 8, 2026**: PR #23 merged (commit f817101) to fix CI
+- **April 8, 2026**: build-and-test #77 ran but **FAILED** ❌
+- **No deploy-dev triggered** since build-and-test must pass first
+
+**Next Steps:** The build-and-test failure needs to be investigated and resolved before the code can be deployed to the dev environment.

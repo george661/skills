@@ -1,0 +1,24 @@
+The commit is on main. Let me verify the environment target (should be dev based on standard workflow):
+
+## Phase 3: Output Result
+
+Based on my analysis:
+
+1. **Repository**: gw-spa (identified from pr:gw-spa/941 label)
+2. **PR #941**: Merged to main on April 15, 2026 at 18:29:59 UTC (merge commit: ac06d766)
+3. **Most recent deploy-dev build**: #385 (ID: 5382627) completed April 14, 2026 at 19:44:16 EDT
+4. **Deployment gap**: ~18.75 hours between last deployment and PR merge
+5. **Target environment**: dev (no env-* label specified, using default)
+6. **Environment URL**: https://dev.generalwisdom.com
+
+The code has been merged to main but **has NOT been deployed** to the dev environment yet. A new deploy-dev build needs to run to deploy the changes.
+
+```
+DEPLOY_STATUS: NEEDS_DEPLOY
+REPO: gw-spa
+PIPELINE: gw-spa
+BUILD_ID: 5382627
+BUILD_STATUS: succeeded
+ENV_URL: https://dev.generalwisdom.com
+DEPLOY_GAP_REASON: PR #941 merged to main on 2026-04-15 18:29:59 UTC, but most recent deploy-dev build #385 completed 2026-04-14 19:44:16 EDT (~18.75 hours before merge). Commit ac06d766 is on origin/main but not yet deployed.
+```

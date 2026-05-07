@@ -1,0 +1,20 @@
+Now I can analyze the deployment status. Based on the builds and repository information:
+
+**Analysis:**
+- Repository: gw-functions (from "repo-gw-functions" label)  
+- Environment: dev (no env-* labels found, defaulting to dev)
+- Pipeline status: Several deployment jobs running, with some succeeded and some still "started" (in progress)
+- Most recent deployment activity shows "deploy-user-functions-dev" (build 3843675) is still "started"
+
+**Phase 3: Output Result**
+
+```
+DEPLOY_STATUS: IN_PROGRESS
+REPO: gw-functions
+PIPELINE: gw-functions
+BUILD_ID: 3843675
+BUILD_STATUS: started
+ENV_URL: https://api.dev.generalwisdom.com
+```
+
+**Explanation:** The gw-functions pipeline has multiple deployment jobs in progress. While some individual function deployments have succeeded (like deploy-api-gateway-dev and deploy-analytics-functions-dev), the deploy-user-functions-dev build (ID 3843675) is still running ("started" status). Since the overall pipeline deployment is not fully complete, the status is IN_PROGRESS.
