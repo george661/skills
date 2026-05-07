@@ -304,6 +304,62 @@ class TestParseResultShape:
         assert result.errors[0].code == "E001"
 
 
+class TestOutputDeclExtensions:
+    """Test new OutputDecl fields: values, pattern, required_when."""
+
+    def test_output_decl_enum_with_values(self) -> None:
+        """OutputDecl with type=enum and values list should roundtrip."""
+        from promptc.schema import OutputDecl
+
+        decl = OutputDecl(name="status", type="enum", values=["PENDING", "DEPLOYED"])
+        assert decl.type == "enum"
+        assert decl.values == ["PENDING", "DEPLOYED"]
+
+    def test_output_decl_pattern_optional(self) -> None:
+        """OutputDecl with pattern should roundtrip."""
+        from promptc.schema import OutputDecl
+
+        decl = OutputDecl(name="sha", type="string", pattern=r"^[0-9a-f]{40}$")
+        assert decl.pattern == r"^[0-9a-f]{40}$"
+
+    def test_output_decl_required_when_optional(self) -> None:
+        """OutputDecl with required_when should roundtrip."""
+        from promptc.schema import OutputDecl
+
+        decl = OutputDecl(name="url", type="string", required_when='status == "DEPLOYED"')
+        assert decl.required_when == 'status == "DEPLOYED"'
+
+    def test_contract_parse_result_roundtrip(self) -> None:
+        """ContractParseResult should roundtrip with all fields."""
+        from promptc.schema import ContractParseResult, ParseErrorInfo
+
+        result = ContractParseResult(
+            fields={"status": "DEPLOYED", "sha": "abc123"},
+            errors=[ParseErrorInfo(code="type_mismatch", message="bad type", field="count")],
+            warnings=["unknown field: extra"],
+            raw="STATUS: DEPLOYED\nSHA: abc123\nextra: foo",
+            strategy="line-scan",
+        )
+        assert result.strategy == "line-scan"
+        assert result.fields == {"status": "DEPLOYED", "sha": "abc123"}
+        assert len(result.errors) == 1
+        assert result.errors[0].field == "count"
+        assert len(result.warnings) == 1
+        assert result.raw.startswith("STATUS:")
+
+    def test_parse_error_info_field_optional(self) -> None:
+        """ParseErrorInfo.field should be optional (backward compatible)."""
+        from promptc.schema import ParseErrorInfo
+
+        # Without field
+        err1 = ParseErrorInfo(code="E001", message="test")
+        assert err1.field is None
+
+        # With field
+        err2 = ParseErrorInfo(code="required_missing", message="missing", field="status")
+        assert err2.field == "status"
+
+
 class TestValidationReportShape:
     """Test ValidationReport and issue filtering."""
 

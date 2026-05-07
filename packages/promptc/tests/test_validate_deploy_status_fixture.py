@@ -15,7 +15,6 @@ from pathlib import Path
 
 from promptc import load, render
 
-
 # Fixture paths
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 FIXTURE_PATH = FIXTURE_DIR / "validate-deploy-status.md"

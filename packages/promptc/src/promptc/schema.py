@@ -95,8 +95,11 @@ class OutputDecl(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
-    type: Literal["string", "int", "float", "bool", "list", "object"]
+    type: Literal["string", "int", "float", "bool", "list", "object", "enum"]
     description: Optional[str] = None
+    values: Optional[list[str]] = None  # For type="enum": allowed values
+    pattern: Optional[str] = None  # Regex pattern for string validation
+    required_when: Optional[str] = None  # Expression evaluated against outputs
 
 
 class TextNode(BaseModel):
@@ -375,6 +378,7 @@ class ParseErrorInfo(BaseModel):
     line: Optional[int] = None
     column: Optional[int] = None
     path: Optional[str] = None
+    field: Optional[str] = None  # For output contract parse errors
 
 
 class ParseResult(BaseModel, Generic[T]):
@@ -385,6 +389,26 @@ class ParseResult(BaseModel, Generic[T]):
     success: bool
     value: Optional[T] = None
     errors: list[ParseErrorInfo] = Field(default_factory=list)
+
+
+class ContractParseResult(BaseModel):
+    """Result of parse_output() — spec §"Output parsing semantics".
+
+    Strategy values:
+    - "json": A fenced JSON block covered the contract (all declared fields present).
+    - "line-scan": No JSON block covered the contract; used regex line-scan fallback.
+    - "none": No JSON block and no line-scan matches; all fields missing.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    fields: dict[str, Any]  # Successfully extracted and type-coerced outputs
+    # Errors: required_missing, type_mismatch, enum_invalid, etc.
+    errors: list[ParseErrorInfo] = Field(default_factory=list)
+    # Warnings: Unknown JSON keys, JSON block ignored, etc.
+    warnings: list[str] = Field(default_factory=list)
+    raw: str  # Original response text for debugging
+    strategy: Literal["json", "line-scan", "none"]  # Which strategy
 
 
 class ValidationIssue(BaseModel):
