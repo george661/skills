@@ -12,11 +12,14 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from promptc.ast_nodes import Node, SourceSpan
 from promptc.config import ParserConfig
 from promptc.errors import LimitExceededError, ParseError, TimeoutError
+
+if TYPE_CHECKING:
+    from promptc.schema import Doc
 
 # Tag patterns
 TAG_OPEN = re.compile(r'\{%\s*([a-zA-Z_][a-zA-Z0-9_-]*)\s*')
@@ -480,6 +483,27 @@ def parse(path: str | Path) -> Node:
         body=None,
         source_span=SourceSpan(1, 1, end_line, end_col)
     )
+
+
+def load(path: str | Path) -> Doc:
+    """Load and parse a promptc file into a typed Doc model.
+
+    This is a convenience function that composes parse() and Doc.from_ast().
+
+    Args:
+        path: Path to the promptc file
+
+    Returns:
+        Doc model with typed schema nodes
+
+    Raises:
+        ParseError: Invalid syntax
+        LimitExceededError: Tag or node count exceeded
+    """
+    from promptc.schema import Doc
+
+    ast_node = parse(path)
+    return Doc.from_ast(ast_node, path=str(Path(path)))
 
 
 def parse_str(text: str, *, path: str | None = None) -> Node:

@@ -289,6 +289,32 @@ def _render_dict_node(node_dict: dict[str, Any], context: dict[str, Any]) -> str
         content = node_dict.get("content") or node_dict.get("body", "")
         return str(content) if content else ""
 
+    elif kind == "run":
+        # Reconstruct RunNode from AST dict representation
+        from promptc.schema import RunNode
+        # Extract attributes from attrs dict
+        attrs = node_dict.get("attrs", {})
+        # Assemble body from text children (paired form)
+        children = node_dict.get("children", [])
+        body_parts = [c.get("body", "") for c in children if c.get("kind") == "text"]
+        body_text = "".join(body_parts).strip() if body_parts else None
+
+        # Build RunNode with extracted data
+        run_node = RunNode(
+            skill=attrs.get("skill"),
+            tool=attrs.get("tool"),
+            bash=attrs.get("bash"),
+            command=attrs.get("command"),
+            prompt_file=attrs.get("prompt_file"),
+            id=attrs.get("id"),
+            capture=attrs.get("capture"),
+            timeout_ms=attrs.get("timeout_ms"),
+            on_failure=attrs.get("on_failure"),
+            body=body_text,
+            source_span=node_dict.get("source_span", {}),
+        )
+        return _render_run_node(run_node, context)
+
     # For other node types, we'd need to reconstruct them
     # For now, return empty (children of Phase/When are typically just text)
     return ""
