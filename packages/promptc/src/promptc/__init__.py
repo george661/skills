@@ -5,7 +5,7 @@ from promptc.ast_nodes import Node, SourceSpan
 from promptc.config import ParserConfig
 from promptc.errors import LimitExceededError, ParseError, RenderError, TimeoutError
 from promptc.expression import ExpressionError, evaluate
-from promptc.parser import parse, parse_str
+from promptc.parser import load, parse, parse_str
 from promptc.renderer import render
 from promptc.schema import (
     Doc,
@@ -25,6 +25,7 @@ from promptc.schema import (
 )
 
 __all__ = [
+    "load",
     "parse",
     "parse_str",
     "render",

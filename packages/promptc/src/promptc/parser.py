@@ -482,6 +482,28 @@ def parse(path: str | Path) -> Node:
     )
 
 
+def load(path: str | Path):
+    """Load and parse a promptc file into a typed Doc model.
+
+    This is a convenience function that composes parse() and Doc.from_ast().
+
+    Args:
+        path: Path to the promptc file
+
+    Returns:
+        Doc model with typed schema nodes
+
+    Raises:
+        ParseError: Invalid syntax
+        LimitExceededError: Tag or node count exceeded
+    """
+    # Import here to avoid circular dependency
+    from promptc.schema import Doc
+
+    ast_node = parse(path)
+    return Doc.from_ast(ast_node, path=str(Path(path)))
+
+
 def parse_str(text: str, *, path: str | None = None) -> Node:
     """Parse a promptc string into a document AST node.
 
