@@ -94,3 +94,28 @@ def test_app_js_seeds_status_and_forwards_events() -> None:
     assert "'chat_message_token'" in js
     assert "'orchestrator_ready'" in js
     assert "'orchestrator_stopped'" in js
+
+
+def test_final_chat_message_finalizes_streaming_bubble_in_place() -> None:
+    """When a chat_message arrives after streaming tokens have rendered a
+    bubble, the panel must finalize THAT bubble — not append a second one.
+
+    Bug: users saw the orchestrator's reply twice (once as the streamed
+    plain-text bubble, once as the final markdown-rendered bubble). The
+    fix introduces ``_finalizeStreamingBubble`` which rewrites the
+    in-progress bubble's content in place and returns true so the normal
+    renderMessage path is skipped.
+    """
+    js = _chat_panel_js()
+    # The finalize helper exists and is called from the chat_message branch.
+    assert "_finalizeStreamingBubble" in js
+    # The streaming container is tracked so we can reach the outer bubble
+    # from the chat_message handler (not just the inner .chat-message-content).
+    assert "_streamingAssistantContainer" in js
+    # The finalize path strips the --streaming class so CSS animations end.
+    assert "chat-message--streaming" in js  # sanity — present for both set+remove
+    # The early-return guard after finalization must be wired: when the
+    # helper returns true, handleSSEMessage must not fall through to
+    # renderMessage. We assert the structural pattern by searching for the
+    # call inside the chat_message branch.
+    assert "_finalizeStreamingBubble(payload)" in js

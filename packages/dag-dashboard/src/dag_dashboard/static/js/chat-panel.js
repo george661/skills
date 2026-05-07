@@ -75,9 +75,12 @@ class ChatPanel {
       : null;
     this._orchestratorAlive = !!(seed && seed.alive);
     // Streaming assistant message being accumulated from chat_message_token
-    // events. Null when no turn is in progress.
+    // events. Null when no turn is in progress. The container holds the
+    // outer bubble so the final chat_message event can finalize it in
+    // place instead of creating a second bubble (duplicate reply bug).
     this._streamingAssistantEl = null;
     this._streamingAssistantBuffer = '';
+    this._streamingAssistantContainer = null;
   }
 
   /**
@@ -388,15 +391,60 @@ class ChatPanel {
       this._appendStreamingToken(payload.content || '');
       return;
     }
-    // Terminate any in-progress streaming turn when the final assistant
-    // message arrives so the content gets persisted into the dedupe map.
+    // The final assistant message may arrive after streaming tokens have
+    // already rendered an in-progress bubble via _appendStreamingToken.
+    // In that case, finalize that bubble in place (swap in markdown-
+    // rendered content, drop the --streaming class) rather than rendering
+    // a second bubble — otherwise users see the reply twice.
     if (type === 'chat_message' || payload.role === 'assistant') {
+      if (this._finalizeStreamingBubble(payload)) {
+        if (payload.id) this.messages.set(payload.id, payload);
+        return;
+      }
       this._streamingAssistantEl = null;
       this._streamingAssistantBuffer = '';
+      this._streamingAssistantContainer = null;
     }
     if (payload.id && this.messages.has(payload.id)) return;
     if (payload.id) this.messages.set(payload.id, payload);
     this.renderMessage(payload);
+  }
+
+  /**
+   * If a streaming assistant bubble exists from earlier chat_message_token
+   * events, rewrite its content with the final message and reset streaming
+   * state. Returns true when a bubble was finalized so the caller skips
+   * rendering a duplicate.
+   */
+  _finalizeStreamingBubble(payload) {
+    const bubble = this._streamingAssistantContainer;
+    if (!bubble) return false;
+    // Render final content through the same markdown path renderMessage uses
+    // for agent role, so links/code blocks/etc. show up in the final reply.
+    const contentEl = bubble.querySelector('.chat-message-content');
+    if (contentEl) {
+      const text = payload.content || '';
+      if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+        contentEl.innerHTML = DOMPurify.sanitize(marked.parse(text));
+      } else {
+        contentEl.textContent = text;
+      }
+    }
+    // Append a timestamp if we have one and none was rendered yet.
+    if (payload.created_at) {
+      const header = bubble.querySelector('.chat-message-header');
+      if (header && !header.querySelector('.chat-message-time')) {
+        const ts = document.createElement('span');
+        ts.className = 'chat-message-time';
+        ts.textContent = new Date(payload.created_at).toLocaleTimeString();
+        header.appendChild(ts);
+      }
+    }
+    bubble.classList.remove('chat-message--streaming');
+    this._streamingAssistantEl = null;
+    this._streamingAssistantBuffer = '';
+    this._streamingAssistantContainer = null;
+    return true;
   }
 
   /**
@@ -418,6 +466,7 @@ class ChatPanel {
         <div class="chat-message-content"></div>
       `;
       this.messagesContainer.appendChild(messageDiv);
+      this._streamingAssistantContainer = messageDiv;
       this._streamingAssistantEl = messageDiv.querySelector('.chat-message-content');
       this._streamingAssistantBuffer = '';
     }
