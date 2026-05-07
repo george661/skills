@@ -101,7 +101,12 @@ class Parser:
                         col
                     )
                 # Consume text until next tag or EOF
-                next_tag = source.find("{%", pos)
+                # GW-5475: Skip past current position to avoid infinite loop on malformed tags
+                # Only skip if we're AT a {% that doesn't match TAG_OPEN (e.g., {% $var %})
+                if source[pos:pos+2] == "{%":
+                    next_tag = source.find("{%", pos + 2)
+                else:
+                    next_tag = source.find("{%", pos)
                 if next_tag == -1:
                     text = source[pos:]
                     pos = len(source)
@@ -224,7 +229,12 @@ class Parser:
                 children.append(child)
             else:
                 # Text content
-                next_tag_pos = source.find("{%", pos)
+                # GW-5475: Skip past current position to avoid infinite loop on malformed tags
+                # Only skip if we're AT a {% that doesn't match TAG_OPEN (e.g., {% $var %})
+                if source[pos:pos+2] == "{%":
+                    next_tag_pos = source.find("{%", pos + 2)
+                else:
+                    next_tag_pos = source.find("{%", pos)
                 if next_tag_pos == -1:
                     raise self._error(f"Unclosed tag: {tag_name}", line, col)
 
