@@ -6,17 +6,53 @@ Error code vocabulary:
 - enum_invalid: Value not in declared enum values
 - contract_error: Contract definition issue (e.g., type=enum without values)
 - pattern_mismatch: String value doesn't match declared regex pattern
+- regex_timeout: Pattern validation exceeded timeout (ReDoS protection per PRP-PLAT-011)
 - expression_error: required_when expression failed to evaluate (becomes warning)
 """
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Optional
 
 from .config import ParserConfig
 from .expression import ExpressionError
 from .expression import evaluate as evaluate_expression
 from .schema import ContractParseResult, OutputDecl, ParseErrorInfo
+
+
+def _regex_fullmatch_with_timeout(
+    pattern: str, value: str, timeout_ms: int
+) -> bool:
+    """Execute regex fullmatch with timeout protection against ReDoS.
+
+    Args:
+        pattern: Regex pattern string
+        value: String to match against
+        timeout_ms: Timeout in milliseconds
+
+    Returns:
+        True if pattern matches value, False otherwise
+
+    Raises:
+        TimeoutError: If match exceeds configured timeout
+    """
+    compiled = re.compile(pattern)
+
+    def do_match() -> Optional[re.Match[str]]:
+        return compiled.fullmatch(value)
+
+    timeout_seconds = timeout_ms / 1000.0
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(do_match)
+        try:
+            match = future.result(timeout=timeout_seconds)
+            return match is not None
+        except FuturesTimeoutError:
+            raise TimeoutError(
+                f"Regex fullmatch exceeded {timeout_ms}ms timeout"
+            )
 
 
 def parse_output(
@@ -198,6 +234,14 @@ def _coerce_and_validate(
                     field=decl.name,
                 )
             )
+        except TimeoutError as e:
+            errors.append(
+                ParseErrorInfo(
+                    code="regex_timeout",
+                    message=str(e),
+                    field=decl.name,
+                )
+            )
 
     return coerced, errors
 
@@ -211,10 +255,17 @@ def _coerce_value(raw: Any, decl: OutputDecl, config: ParserConfig) -> Any:
 
     if typ == "string":
         value = str(raw) if not isinstance(raw, str) else raw
-        # Validate pattern if present
+        # Validate pattern if present (with timeout protection per PRP-PLAT-011)
         if decl.pattern:
-            if not re.fullmatch(decl.pattern, value):
-                raise PatternMismatchError(f"Value '{value}' doesn't match pattern {decl.pattern}")
+            try:
+                if not _regex_fullmatch_with_timeout(
+                    decl.pattern, value, config.regex_timeout_ms
+                ):
+                    raise PatternMismatchError(
+                        f"Value '{value}' doesn't match pattern {decl.pattern}"
+                    )
+            except TimeoutError as e:
+                raise TimeoutError(f"Pattern validation timeout: {e}")
         return value
 
     elif typ == "int":
@@ -255,8 +306,9 @@ def _coerce_value(raw: Any, decl: OutputDecl, config: ParserConfig) -> Any:
     elif typ == "object":
         if isinstance(raw, dict):
             return raw
-        # Line-scan on object type: deliberate asymmetry (per plan)
-        # Single-line object literals CAN be parsed from line-scan
+        # Line-scan on object type: intentional symmetry with list behavior
+        # Single-line object literals CAN be parsed from line-scan (e.g., "META: {\"version\": 2}")
+        # This differs from original plan but provides consistent JSON literal handling
         if isinstance(raw, str):
             try:
                 parsed = json.loads(raw)

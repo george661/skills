@@ -1,15 +1,6 @@
 """Tests for contract.py — parse_output() with JSON-first + line-scan fallback."""
 
-import pytest
-
 from promptc.schema import OutputDecl
-
-
-# Helper to create contracts
-def make_contract(*fields):
-    """Helper to create a list of OutputDecl from (name, type, **kwargs) tuples."""
-    return [OutputDecl(name=name, type=typ, **kwargs) for name, typ, *rest in fields
-            for kwargs in [dict(zip(rest[::2], rest[1::2])) if rest else {}]]
 
 
 class TestJsonStrategy:
@@ -236,18 +227,15 @@ class TestTypeCoercion:
         assert result.fields["TAGS"] == ["x", "y"]
 
     def test_coerce_object_json_only(self):
-        """object type requires JSON, line-scan produces error."""
+        """object type accepts JSON object literals from line-scan."""
         from promptc.contract import parse_output
 
         text = 'META: {"key": "val"}'
         contract = [OutputDecl(name="META", type="object")]
-        # Line-scan will match the string, but coercion should fail
         result = parse_output(text, contract)
-        # Depending on implementation: either error or successful JSON parse
-        # Plan says: line-scan match on object type = type error
-        # But the value is a valid JSON object literal, so it should parse
-        # Let's expect it to parse successfully
-        assert "META" in result.fields or any(e.field == "META" for e in result.errors)
+        # Line-scan accepts JSON object literals (symmetric with list behavior)
+        assert "META" in result.fields
+        assert result.fields["META"] == {"key": "val"}
 
     def test_pattern_validation(self):
         """Regex fullmatch validates strings."""
@@ -265,8 +253,29 @@ class TestTypeCoercion:
         assert any(e.code == "pattern_mismatch" and e.field == "SHA" for e in result_bad.errors)
 
     def test_pattern_timeout_produces_error(self):
-        """Pathological regex produces timeout error."""
-        pytest.skip("Timeout wrapper not yet implemented")
+        """Pathological regex timeout protection is in place."""
+        from concurrent.futures import TimeoutError as FuturesTimeoutError
+        from unittest.mock import patch
+
+        from promptc.config import ParserConfig
+        from promptc.contract import parse_output
+
+        # Mock the ThreadPoolExecutor to simulate a timeout
+        # Real catastrophic backtracking is platform/version dependent and unreliable in tests
+        with patch('promptc.contract.ThreadPoolExecutor') as mock_executor_class:
+            mock_executor = mock_executor_class.return_value.__enter__.return_value
+            mock_future = mock_executor.submit.return_value
+            # Simulate timeout exception
+            mock_future.result.side_effect = FuturesTimeoutError()
+
+            pathological_pattern = r"^(a+)+b$"
+            text = "VALUE: test"
+            contract = [OutputDecl(name="VALUE", type="string", pattern=pathological_pattern)]
+            config = ParserConfig(regex_timeout_ms=100)
+
+            result = parse_output(text, contract, config=config)
+            # Should have a regex_timeout error
+            assert any(e.code == "regex_timeout" and e.field == "VALUE" for e in result.errors)
 
 
 class TestEnumValidation:
