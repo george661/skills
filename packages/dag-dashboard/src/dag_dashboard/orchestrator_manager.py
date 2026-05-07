@@ -27,6 +27,7 @@ class OrchestratorManager:
         idle_ttl_seconds: int = 1800,
         model: Optional[str] = None,
         dashboard_port: int = 8080,
+        allow_edits: bool = False,
     ):
         self.db_path = db_path
         self.broadcaster = broadcaster
@@ -34,6 +35,7 @@ class OrchestratorManager:
         self.idle_ttl_seconds = idle_ttl_seconds
         self.model = model
         self.dashboard_port = dashboard_port
+        self.allow_edits = allow_edits
 
         self.relays: Dict[str, OrchestratorRelay] = {}
         self.lru: "OrderedDict[str, bool]" = OrderedDict()
@@ -185,6 +187,7 @@ class OrchestratorManager:
             event_loop=self.event_loop,
             dashboard_port=self.dashboard_port,
             session_uuid=session_uuid,
+            allow_edits=self.allow_edits,
         )
         relay.start()
         

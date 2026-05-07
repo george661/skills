@@ -86,6 +86,18 @@ class Settings(BaseSettings):
             "Set explicitly only to override."
         ),
     )
+    orchestrator_allow_edits: bool = Field(
+        default=True,
+        description=(
+            "When true, the orchestrator's tool allowlist includes Write + Edit "
+            "so it can propose + apply fixes to workflow YAML and workflow-local "
+            "code directly from the chat. The system prompt carries scope rules "
+            "(work under path-like channel values; never edit "
+            "packages/dag-dashboard/src/**; no git commit/push/reset). Set to "
+            "false to pin the orchestrator back to analyst-only (Bash, Read, "
+            "Grep, Glob)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _parse_workflows_dirs_from_workflows_dir(self) -> "Settings":

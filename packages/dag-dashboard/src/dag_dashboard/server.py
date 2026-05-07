@@ -128,6 +128,7 @@ def create_app(
                 idle_ttl_seconds=settings.orchestrator_idle_ttl_seconds,
                 model=settings.orchestrator_model,
                 dashboard_port=settings.port,
+                allow_edits=settings.orchestrator_allow_edits,
             )
             orchestrator_manager.set_loop(loop)
             app.state.orchestrator_manager = orchestrator_manager

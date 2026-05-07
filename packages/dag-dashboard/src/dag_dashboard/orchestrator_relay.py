@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from queue import Queue, Empty
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .queries import get_run, get_connection
 
@@ -16,17 +16,30 @@ from .queries import get_run, get_connection
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT_TEMPLATE = """
-You are a read-only workflow orchestrator analyst for run {run_id} (workflow: {workflow_name}, status: {status}, conversation: {conversation_id}).
+SYSTEM_PROMPT_BASE = """
+You are a workflow orchestrator assistant for run {run_id} (workflow: {workflow_name}, status: {status}, conversation: {conversation_id}).
 
 Recent events (last 10):
 {events_json}
 
-Available channels: {channel_keys_csv}
+Channel state (most recent value per channel):
+{channels_json}
 
 You can query run details via: curl http://127.0.0.1:{port}/api/workflows/{run_id}/...
+"""
 
+SYSTEM_PROMPT_READONLY_FOOTER = """
 Tool allowlist: Bash, Read, Grep, Glob. No Write, no Edit. Your role is analyst only — observe, report, explain. Do not modify state.
+"""
+
+SYSTEM_PROMPT_EDITS_FOOTER = """
+Tool allowlist: Bash, Read, Write, Edit, Grep, Glob. You may propose and apply fixes when the operator explicitly asks.
+
+Scope rules (follow these — there is no filesystem sandbox):
+1. Look at the Channel state above for a value that looks like a filesystem path for this workflow's code (common keys: `workspace`, `worktree`, `repo`, `path`, `work_dir`). If you find one, `cd` into it before making edits so you're scoped to that tree.
+2. If no path-like channel is present, you may edit workflow definitions under `packages/dag-executor/workflows/` only. Do not modify other source trees without a path channel to justify the scope.
+3. NEVER edit files under `packages/dag-dashboard/src/` — that is the dashboard's own source; modifying it corrupts the running process you are talking to.
+4. Do NOT run `git commit`, `git push`, `git reset`, `git checkout <branch>`, or any other command that mutates git refs. The operator commits. After edits, summarize what you changed and why so the operator can review and commit.
 """
 
 
@@ -48,6 +61,7 @@ class OrchestratorRelay:
         event_loop: asyncio.AbstractEventLoop,
         dashboard_port: int,
         session_uuid: Optional[str] = None,
+        allow_edits: bool = False,
     ):
         self.conversation_id = conversation_id
         self.run_id = run_id
@@ -62,6 +76,9 @@ class OrchestratorRelay:
         self.event_loop = event_loop
         self.dashboard_port = dashboard_port
         self.session_uuid = session_uuid
+        # When True the orchestrator gets Write + Edit + no-git-commit rules
+        # in the system prompt. See SYSTEM_PROMPT_EDITS_FOOTER for scope.
+        self.allow_edits = allow_edits
         
         self.process: Optional[subprocess.Popen[bytes]] = None
         # Queue items are (content, run_id) tuples. run_id is the workflow
@@ -89,6 +106,17 @@ class OrchestratorRelay:
         Returns the rendered prompt so it can be passed inline via --system-prompt.
         The claude 2.x CLI does not accept --system-prompt-file; only the inline
         form exists, so we render a string here rather than a temp file.
+
+        The prompt includes:
+        - Recent events (last 10) as JSON — so the orchestrator can reason
+          about what just happened.
+        - Channel state VALUES (not just keys) — so a workflow writing a
+          ``workspace: /path/to/worktree`` channel lets the orchestrator
+          scope its edits to that directory. Capped at ~8 KB of JSON so a
+          pathological workflow with large channel payloads doesn't blow
+          the context window.
+        - Either a read-only or an edits-enabled footer depending on the
+          ``allow_edits`` config flag.
         """
         run = get_run(self.db_path, self.run_id)
         if not run:
@@ -107,23 +135,54 @@ class OrchestratorRelay:
         ]
         events_json = json.dumps(events, indent=2)
 
-        # Fetch distinct channel keys
+        # Fetch channel state — values, not just keys, so the LLM can see
+        # path-like values for scoping edits. Order newest-first so if we
+        # truncate we keep the most recent context.
         cursor.execute(
-            "SELECT DISTINCT channel_key FROM channel_states WHERE run_id = ?",
-            (self.run_id,)
+            """
+            SELECT channel_key, value_json, updated_at
+            FROM channel_states
+            WHERE run_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (self.run_id,),
         )
-        channel_keys = [row[0] for row in cursor.fetchall()]
-        channel_keys_csv = ",".join(channel_keys)
+        channels_raw = cursor.fetchall()
         conn.close()
 
-        return SYSTEM_PROMPT_TEMPLATE.format(
-            run_id=self.run_id,
-            workflow_name=run.get("workflow_name", "unknown"),
-            status=run.get("status", "unknown"),
-            conversation_id=self.conversation_id,
-            events_json=events_json,
-            channel_keys_csv=channel_keys_csv,
-            port=self.dashboard_port,
+        channels: Dict[str, Any] = {}
+        for key, value_json, _updated_at in channels_raw:
+            if key in channels:
+                continue  # ORDER BY newest → first occurrence wins
+            try:
+                channels[key] = json.loads(value_json) if value_json else None
+            except (TypeError, json.JSONDecodeError):
+                channels[key] = value_json
+        channels_json = json.dumps(channels, indent=2, default=str)
+        # Soft cap: if the serialized payload exceeds 8 KB, fall back to
+        # keys-only so we don't spend the entire context window on channel
+        # dumps. The LLM can then query via curl for specifics.
+        if len(channels_json) > 8192:
+            channels_json = json.dumps(
+                {"_truncated": True, "keys": list(channels.keys())}, indent=2
+            )
+
+        footer = (
+            SYSTEM_PROMPT_EDITS_FOOTER
+            if self.allow_edits
+            else SYSTEM_PROMPT_READONLY_FOOTER
+        )
+        return (
+            SYSTEM_PROMPT_BASE.format(
+                run_id=self.run_id,
+                workflow_name=run.get("workflow_name", "unknown"),
+                status=run.get("status", "unknown"),
+                conversation_id=self.conversation_id,
+                events_json=events_json,
+                channels_json=channels_json,
+                port=self.dashboard_port,
+            )
+            + footer
         )
     
     def start(self) -> None:
@@ -143,6 +202,16 @@ class OrchestratorRelay:
 
         system_prompt = self._build_system_prompt()
 
+        # Tool allowlist: analyst-only by default, edit-capable when the
+        # operator opted in via config.orchestrator_allow_edits. The system
+        # prompt carries matching scope rules + a no-git-commit instruction;
+        # this flag controls the CLI enforcement.
+        allowed_tools = (
+            "Bash,Read,Write,Edit,Grep,Glob"
+            if self.allow_edits
+            else "Bash,Read,Grep,Glob"
+        )
+
         cmd = [
             "claude",
             "--bare",
@@ -154,7 +223,7 @@ class OrchestratorRelay:
             "--replay-user-messages",
             "--permission-mode", "dontAsk",
             "--system-prompt", system_prompt,
-            "--allowedTools", "Bash,Read,Grep,Glob",
+            "--allowedTools", allowed_tools,
         ]
 
         if self.model:

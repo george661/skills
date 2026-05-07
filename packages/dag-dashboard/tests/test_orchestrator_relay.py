@@ -531,6 +531,150 @@ def test_claude_argv_passes_model_when_set(mock_popen, tmp_path: Path):
 
     loop.close()
 
+
+# ---------------------------------------------------------------------------
+# GW-5497 Phase 8: opt-in edit permissions
+# ---------------------------------------------------------------------------
+
+
+@patch('subprocess.Popen')
+def test_allowed_tools_readonly_by_default(mock_popen, tmp_path: Path):
+    """Without ``allow_edits``, argv must carry the analyst-only allowlist.
+
+    Read-only mode is the back-compat default the original GW-5492
+    implementation shipped with. Writing it into an assertion means a
+    later refactor can't silently flip the default to edit mode.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+    insert_run(
+        db_path=db_path, run_id="ro", workflow_name="wf", status="running",
+        started_at="2026-05-07T00:00:00Z",
+    )
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.BytesIO(b"")
+    mock_process.stderr = io.BytesIO(b"")
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="conv-ro", run_id="ro", db_path=db_path,
+        broadcaster=Mock(), model=None, event_loop=loop, dashboard_port=8080,
+        # allow_edits defaults to False
+    )
+    relay.start()
+    relay.stop()
+
+    argv = mock_popen.call_args.args[0]
+    idx = argv.index("--allowedTools")
+    assert argv[idx + 1] == "Bash,Read,Grep,Glob"
+    assert "Write" not in argv[idx + 1]
+    assert "Edit" not in argv[idx + 1]
+
+    # System prompt carries the analyst-only footer.
+    sp_idx = argv.index("--system-prompt")
+    assert "analyst only" in argv[sp_idx + 1]
+    assert "No Write, no Edit" in argv[sp_idx + 1]
+
+    loop.close()
+
+
+@patch('subprocess.Popen')
+def test_allowed_tools_extended_when_allow_edits_true(mock_popen, tmp_path: Path):
+    """``allow_edits=True`` adds Write + Edit and swaps the prompt footer.
+
+    The edits footer must carry the scope rules (path-like channel, no
+    dashboard self-edit) and the no-git-commit rule; otherwise granting
+    tools without the instructions loses the safety framing.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+    insert_run(
+        db_path=db_path, run_id="rw", workflow_name="wf", status="running",
+        started_at="2026-05-07T00:00:00Z",
+    )
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.BytesIO(b"")
+    mock_process.stderr = io.BytesIO(b"")
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="conv-rw", run_id="rw", db_path=db_path,
+        broadcaster=Mock(), model=None, event_loop=loop, dashboard_port=8080,
+        allow_edits=True,
+    )
+    relay.start()
+    relay.stop()
+
+    argv = mock_popen.call_args.args[0]
+    idx = argv.index("--allowedTools")
+    tools = argv[idx + 1]
+    assert "Write" in tools
+    assert "Edit" in tools
+    assert "Bash" in tools and "Read" in tools
+    assert tools == "Bash,Read,Write,Edit,Grep,Glob"
+
+    # System prompt must carry the edits-enabled scope guidance — granting
+    # tools without the rules would leave the orchestrator unconstrained.
+    sp_idx = argv.index("--system-prompt")
+    prompt = argv[sp_idx + 1]
+    assert "You may propose and apply fixes" in prompt
+    # Path-like channel scoping rule.
+    assert "`workspace`" in prompt or "workspace" in prompt.lower()
+    # Self-edit prohibition on the dashboard source.
+    assert "packages/dag-dashboard/src/" in prompt
+    # Git commit prohibition.
+    assert "git commit" in prompt
+
+    loop.close()
+
+
+def test_build_system_prompt_includes_channel_values(tmp_path: Path):
+    """Channel VALUES (not just keys) must reach the system prompt.
+
+    Scoping the orchestrator to a workflow's workspace depends on the
+    prompt carrying the path value — exposing only the keys gives the
+    LLM nothing to work with. Stage a channel with a path-like value
+    and assert the value round-trips into the rendered prompt.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run, get_connection
+
+    insert_run(
+        db_path=db_path, run_id="cv", workflow_name="wf", status="running",
+        started_at="2026-05-07T00:00:00Z",
+    )
+    conn = get_connection(db_path)
+    conn.execute(
+        "INSERT INTO channel_states (run_id, channel_key, channel_type, value_json, updated_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("cv", "workspace", "default",
+         json.dumps("/Users/op/dev/skills-worktrees/GW-1234"),
+         "2026-05-07T12:00:00Z"),
+    )
+    conn.commit()
+    conn.close()
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="conv-cv", run_id="cv", db_path=db_path,
+        broadcaster=Mock(), model=None, event_loop=loop, dashboard_port=8080,
+        allow_edits=True,
+    )
+    prompt = relay._build_system_prompt()
+    assert "workspace" in prompt
+    assert "/Users/op/dev/skills-worktrees/GW-1234" in prompt
+    loop.close()
+
+
 @patch('subprocess.Popen')
 def test_stderr_is_drained_to_prevent_pipe_deadlock(mock_popen, tmp_path: Path):
     """stderr is fully consumed by a dedicated drain thread.
