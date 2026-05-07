@@ -1,0 +1,12 @@
+[
+  {"expr": "1 == 1", "names": {}, "expected": true},
+  {"expr": "1 != 2", "names": {}, "expected": true},
+  {"expr": "2 < 3 and 3 <= 3", "names": {}, "expected": true},
+  {"expr": "5 > 4 and 5 >= 5", "names": {}, "expected": true},
+  {"expr": "not false", "names": {}, "expected": true},
+  {"expr": "x or y", "names": {"x": false, "y": true}, "expected": true},
+  {"expr": "'a' in choices and 'c' not in choices", "names": {"choices": ["a", "b"]}, "expected": true},
+  {"expr": "len(xs) > 0", "names": {"xs": [1, 2]}, "expected": true},
+  {"expr": "contains(s, 'foo') and startswith(s, 'foo')", "names": {"s": "foobar"}, "expected": true},
+  {"expr": "matches(s, '[a-z]+') and x == null", "names": {"s": "abc", "x": null}, "expected": true}
+]
