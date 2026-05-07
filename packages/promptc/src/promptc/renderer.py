@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from promptc.config import ParserConfig
 from promptc.errors import RenderError
 from promptc.expression import ExpressionError, evaluate
+from promptc.resolver import resolve_command, resolve_file, resolve_skill
 from promptc.schema import (
     Doc,
     OutputDecl,
@@ -36,7 +39,13 @@ def render(doc: Doc, inputs: Optional[Mapping[str, Any]] = None) -> str:
     resolved_inputs = _validate_inputs(doc, inputs or {})
 
     # Build context for evaluation and substitution
-    context = {**resolved_inputs, "inputs": resolved_inputs}
+    context = {
+        **resolved_inputs,
+        "inputs": resolved_inputs,
+        "_doc": doc,  # Internal: pass doc for ref resolution
+        "_config": ParserConfig(),  # Internal: default config
+        "_include_stack": [doc.path] if doc.path else [],  # Internal: track include chain
+    }
 
     # Render body nodes
     parts = []
@@ -153,15 +162,104 @@ def _render_node(node: Any, context: dict[str, Any]) -> str:
         return _render_run_node(node, context)
 
     elif isinstance(node, RefNode):
-        if node.include:
-            raise RenderError(
-                "{% ref include=true %} is not supported in this version"
-            )
-        # Link mode
-        if node.section:
-            return f"[{node.file}#{node.section}]({node.file}#{node.section})"
+        doc = context.get("_doc")
+        config = context.get("_config", ParserConfig())
+        base_path = Path(doc.path).parent if doc and doc.path else None
+
+        # Resolve the target
+        if node.command:
+            resolved = resolve_command(node.command, config, base_path)
+            if resolved is None:
+                raise RenderError(
+                    f"Command reference target not found: {node.command}",
+                    path=doc.path if doc else None,
+                )
+            target = str(resolved)
+            label = node.command
+        elif node.skill:
+            resolved = resolve_skill(node.skill, config, base_path)
+            if resolved is None:
+                raise RenderError(
+                    f"Skill reference target not found: {node.skill}",
+                    path=doc.path if doc else None,
+                )
+            target = str(resolved)
+            label = node.skill
+        elif node.file:
+            resolved = resolve_file(node.file, base_path)
+            if resolved is None:
+                # If include mode, this is an error
+                if node.include:
+                    raise RenderError(
+                        f"File reference target not found: {node.file}",
+                        path=doc.path if doc else None,
+                    )
+                # For link mode with file=, be lenient and just use the spec
+                target = node.file
+            else:
+                target = str(resolved)
+            label = node.file
         else:
-            return f"[{node.file}]({node.file})"
+            # Should not happen due to schema validation
+            raise RenderError("RefNode has no target (file/command/skill)")
+
+        # Include mode - recursively render the target file
+        if node.include:
+            # Get include stack and depth from context
+            include_stack = context.get("_include_stack", [])
+            current_depth = len(include_stack)
+
+            # Check max depth
+            if current_depth >= config.max_include_depth:
+                chain = include_stack + [target]
+                raise RenderError(
+                    f"Include depth exceeded (max {config.max_include_depth})",
+                    path=doc.path if doc else None,
+                    include_chain=chain,
+                )
+
+            # Check for cycles
+            if target in include_stack:
+                chain = include_stack + [target]
+                raise RenderError(
+                    "Include cycle detected",
+                    path=doc.path if doc else None,
+                    include_chain=chain,
+                )
+
+            # Read and parse the target file
+            try:
+                from promptc import parse_str
+                target_path = Path(target)
+                target_content = target_path.read_text()
+                target_ast = parse_str(target_content, path=target)
+                target_doc = Doc.from_ast(target_ast, path=target)
+
+                # Create new context with updated include stack
+                new_context = {
+                    **context,
+                    "_doc": target_doc,
+                    "_include_stack": include_stack + [target],
+                }
+
+                # Recursively render the target document
+                parts = []
+                for target_node in target_doc.nodes:
+                    parts.append(_render_node(target_node, new_context))
+
+                return "".join(parts)
+
+            except FileNotFoundError:
+                raise RenderError(
+                    f"Include target not found: {target}",
+                    path=doc.path if doc else None,
+                )
+
+        # Link mode - build markdown link
+        if node.section:
+            return f"[{label}#{node.section}]({target}#{node.section})"
+        else:
+            return f"[{label}]({target})"
 
     return ""
 
