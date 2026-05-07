@@ -4,7 +4,7 @@ import logging
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from .orchestrator_relay import OrchestratorRelay
 from .queries import (
@@ -60,8 +60,8 @@ class OrchestratorManager:
             try:
                 await asyncio.sleep(60)  # Check every minute
                 async with self.lock:
-                    to_evict_idle: list[str] = []
-                    to_evict_dead: list[str] = []
+                    to_evict_idle: List[str] = []
+                    to_evict_dead: List[str] = []
                     for conv_id, relay in self.relays.items():
                         if not relay.is_alive():
                             to_evict_dead.append(conv_id)

@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from queue import Queue, Empty
-from typing import Optional, Any
+from typing import Any, List, Optional, Tuple
 
 from .queries import get_run, get_connection
 
@@ -70,7 +70,7 @@ class OrchestratorRelay:
         # single conversation can be reused across runs (continuation), so
         # the spawn-time run_id may be stale by the time the next user
         # message arrives.
-        self.message_queue: "Queue[tuple[str, str]]" = Queue()
+        self.message_queue: "Queue[Tuple[str, str]]" = Queue()
         self.stdin_thread: Optional[threading.Thread] = None
         self.stdout_thread: Optional[threading.Thread] = None
         self.stderr_thread: Optional[threading.Thread] = None
@@ -340,7 +340,7 @@ class OrchestratorRelay:
                         # Concatenate all text blocks in the message; skip tool_use blocks.
                         msg = event.get("message") or {}
                         content = msg.get("content") or []
-                        text_parts: list[str] = []
+                        text_parts: List[str] = []
                         if isinstance(content, list):
                             for block in content:
                                 if isinstance(block, dict) and block.get("type") == "text":

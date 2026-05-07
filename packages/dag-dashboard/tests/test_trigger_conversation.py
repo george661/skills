@@ -6,6 +6,7 @@ from the dashboard, which makes the GW-5492 long-lived orchestrator unreachable
 `get_conversation_id_from_run` returns None).
 """
 from pathlib import Path
+from typing import Optional
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -59,7 +60,7 @@ def client(tmp_path: Path, test_db: Path, events_dir: Path, workflows_dir: Path)
     return TestClient(app, raise_server_exceptions=True)
 
 
-def _trigger(client: TestClient, *, conversation_id: str | None = None) -> str:
+def _trigger(client: TestClient, *, conversation_id: Optional[str] = None) -> str:
     payload = {
         "workflow": "test-workflow",
         "inputs": {"issue_key": "TEST-1"},
