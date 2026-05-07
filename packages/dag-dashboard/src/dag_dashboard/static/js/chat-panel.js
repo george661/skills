@@ -346,14 +346,10 @@ class ChatPanel {
   }
 
   async sendMessage(content) {
-    let operatorUsername = localStorage.getItem('chat_operator_username');
-    if (!operatorUsername) {
-      operatorUsername = prompt('Enter your username for chat:');
-      if (!operatorUsername) {
-        throw new Error('Username is required to send messages');
-      }
-      localStorage.setItem('chat_operator_username', operatorUsername);
-    }
+    // operator_username is a best-effort audit field. Until a login feature
+    // ships, we send whatever is in localStorage (populated via ?operator= or
+    // future login), or null. The backend accepts null — see GW-5497.
+    const operatorUsername = localStorage.getItem('chat_operator_username') || null;
 
     const response = await fetch(`/api/workflows/${this.runId}/chat`, {
       method: 'POST',

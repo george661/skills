@@ -34,48 +34,50 @@ def client(tmp_path: Path):
     return TestClient(app, raise_server_exceptions=True)
 
 
-def test_post_chat_message_persisted(client: TestClient):
-    """Test that posting a chat message persists and returns 201."""
+def test_post_chat_message_accepted(client: TestClient):
+    """Posting a workflow chat message returns 201 with the echo payload.
+
+    The response echoes role/content/operator_username/created_at. It does
+    NOT include an id — orchestrator transcripts live in claude's session
+    JSONL, not chat_messages. History coverage is validated in the
+    session_transcript tests (we can't spin up a real claude here).
+    """
     run_id = "test-workflow-001"
     payload = {
         "content": "Hello from operator",
         "operator_username": "test-operator"
     }
-    
+
     response = client.post(f"/api/workflows/{run_id}/chat", json=payload)
     assert response.status_code == 201
     data = response.json()
-    assert "id" in data
     assert data["content"] == payload["content"]
     assert data["role"] == "operator"
-    
-    # Verify it's in history
-    history_response = client.get(f"/api/workflows/{run_id}/chat/history")
-    assert history_response.status_code == 200
-    messages = history_response.json()
-    assert len(messages) > 0
-    assert any(m["content"] == payload["content"] for m in messages)
+    assert data["operator_username"] == "test-operator"
+    assert "created_at" in data
 
 
-def test_chat_history_endpoint(client: TestClient):
-    """Test GET chat history returns posted messages."""
+def test_chat_history_empty_without_live_session(client: TestClient):
+    """With no live claude subprocess, /chat/history is empty — expected.
+
+    History is sourced from the claude session JSONL file written by the
+    running subprocess. In this integration test no claude is spawned, so
+    the session file doesn't exist and the endpoint returns []. That's
+    the correct answer under the new architecture (GW-5497 Phase 6).
+    """
     run_id = "test-workflow-002"
-    
-    # Post 3 messages
+
+    # Post messages (they hit the audit table + SSE broadcast but don't
+    # create a session JSONL without a live claude).
     for i in range(3):
         client.post(
             f"/api/workflows/{run_id}/chat",
             json={"content": f"Message {i+1}", "operator_username": "test-op"}
         )
-    
-    # Fetch history
+
     response = client.get(f"/api/workflows/{run_id}/chat/history?limit=50")
     assert response.status_code == 200
-    messages = response.json()
-    assert len(messages) == 3
-    # Should be chronological
-    assert messages[0]["content"] == "Message 1"
-    assert messages[2]["content"] == "Message 3"
+    assert response.json() == []
 
 
 def test_chat_rate_limit_429_after_10_messages(client: TestClient):
@@ -136,12 +138,14 @@ def test_sse_chat_message_response_shape(client: TestClient):
     )
     assert response.status_code == 201
     
-    # Verify the response has fields ChatPanel needs
+    # Verify the response has fields ChatPanel needs. "id" is deliberately
+    # absent — transcripts live in the claude session JSONL; there's no DB
+    # row id to surface on the POST response.
     data = response.json()
-    required_fields = ["id", "content", "role", "created_at", "operator_username"]
+    required_fields = ["content", "role", "created_at", "operator_username"]
     for field in required_fields:
         assert field in data, f"Missing field: {field}"
-    
+
     # The broadcaster will emit this shape — chat_routes.py handles the SSE broadcast
 
 

@@ -134,7 +134,9 @@ class ChatMessageRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     content: str = Field(min_length=1, max_length=10000)
-    operator_username: str
+    # Optional until a login feature populates it from the authenticated session.
+    # Required-field behavior forced a prompt() dialog that blocked first-use chat.
+    operator_username: Optional[str] = None
 
     @field_validator("content")
     @classmethod

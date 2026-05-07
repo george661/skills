@@ -27,15 +27,24 @@ def test_app(tmp_path):
 
 
 def test_post_workflow_chat_success(test_app):
-    """POST /api/workflows/{runId}/chat should create workflow-level message."""
+    """POST /api/workflows/{runId}/chat should accept a workflow-level message.
+
+    The response mirrors the posted message (role, content, timestamp) and
+    no longer includes an id: workflow-level transcripts live in claude's
+    session JSONL, not in chat_messages, so there is no row id to return.
+    The operator row IS still persisted to chat_messages as an audit /
+    rate-limit record (see check_rate_limit).
+    """
     response = test_app.post(
         "/api/workflows/run-123/chat",
         json={"content": "Hello workflow", "operator_username": "alice"}
     )
     assert response.status_code == 201
     data = response.json()
-    assert "id" in data
     assert data["content"] == "Hello workflow"
+    assert data["role"] == "operator"
+    assert data["operator_username"] == "alice"
+    assert "created_at" in data
 
 
 def test_post_workflow_chat_max_length(test_app):
@@ -108,20 +117,17 @@ def test_post_node_chat_not_executing(test_app):
     assert response.status_code == 409
 
 
-def test_get_chat_history(test_app):
-    """GET /api/workflows/{runId}/chat/history should return paginated messages."""
-    # Create some messages
-    for i in range(5):
-        test_app.post(
-            "/api/workflows/run-123/chat",
-            json={"content": f"History msg {i}", "operator_username": "alice"}
-        )
+def test_get_chat_history_empty_without_session(test_app):
+    """/chat/history returns an empty list when no claude session has run.
 
-    # Get history
+    History is sourced from the claude session JSONL. Until the
+    orchestrator has actually produced a turn (and thus a session file)
+    for this run's conversation, the endpoint returns []. That's the
+    correct answer — a run with no chat simply has no transcript.
+    """
     response = test_app.get("/api/workflows/run-123/chat/history?limit=10&offset=0")
     assert response.status_code == 200
-    data = response.json()
-    assert len(data) >= 5
+    assert response.json() == []
 
 
 def test_post_chat_unknown_run(test_app):

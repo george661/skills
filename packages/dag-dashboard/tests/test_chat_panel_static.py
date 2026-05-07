@@ -28,6 +28,24 @@ def test_chat_panel_js_served(client: TestClient):
     assert "handleSSEMessage" in response.text
 
 
+def test_chat_panel_send_does_not_prompt_for_username(client: TestClient):
+    """GW-5497: sendMessage must not gate on an operator username.
+
+    Pre-orchestrator the ChatPanel called ``prompt('Enter your username for chat:')``
+    to populate an audit field. The backend will accept chat without a username
+    (see test_chat_models.test_chat_message_request_operator_username_optional),
+    and a real login feature is on the roadmap — we do NOT want the prompt-dialog
+    shim blocking every first-use flow in the meantime.
+    """
+    response = client.get("/js/chat-panel.js")
+    assert response.status_code == 200
+    body = response.text
+
+    # The prompt() call and the "Username is required" throw must be gone.
+    assert "prompt('Enter your username for chat:" not in body
+    assert "Username is required" not in body
+
+
 def test_marked_vendor_js_served(client: TestClient):
     """Test that marked.min.js vendor library is served."""
     response = client.get("/js/vendor/marked.min.js")

@@ -3,12 +3,12 @@ import asyncio
 import json
 import logging
 import subprocess
-import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from queue import Queue, Empty
-from typing import Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from .queries import get_run, get_connection
 
@@ -16,17 +16,30 @@ from .queries import get_run, get_connection
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT_TEMPLATE = """
-You are a read-only workflow orchestrator analyst for run {run_id} (workflow: {workflow_name}, status: {status}, conversation: {conversation_id}).
+SYSTEM_PROMPT_BASE = """
+You are a workflow orchestrator assistant for run {run_id} (workflow: {workflow_name}, status: {status}, conversation: {conversation_id}).
 
 Recent events (last 10):
 {events_json}
 
-Available channels: {channel_keys_csv}
+Channel state (most recent value per channel):
+{channels_json}
 
 You can query run details via: curl http://127.0.0.1:{port}/api/workflows/{run_id}/...
+"""
 
+SYSTEM_PROMPT_READONLY_FOOTER = """
 Tool allowlist: Bash, Read, Grep, Glob. No Write, no Edit. Your role is analyst only — observe, report, explain. Do not modify state.
+"""
+
+SYSTEM_PROMPT_EDITS_FOOTER = """
+Tool allowlist: Bash, Read, Write, Edit, Grep, Glob. You may propose and apply fixes when the operator explicitly asks.
+
+Scope rules (follow these — there is no filesystem sandbox):
+1. Look at the Channel state above for a value that looks like a filesystem path for this workflow's code (common keys: `workspace`, `worktree`, `repo`, `path`, `work_dir`). If you find one, `cd` into it before making edits so you're scoped to that tree.
+2. If no path-like channel is present, you may edit workflow definitions under `packages/dag-executor/workflows/` only. Do not modify other source trees without a path channel to justify the scope.
+3. NEVER edit files under `packages/dag-dashboard/src/` — that is the dashboard's own source; modifying it corrupts the running process you are talking to.
+4. Do NOT run `git commit`, `git push`, `git reset`, `git checkout <branch>`, or any other command that mutates git refs. The operator commits. After edits, summarize what you changed and why so the operator can review and commit.
 """
 
 
@@ -44,29 +57,67 @@ class OrchestratorRelay:
         run_id: str,
         db_path: Path,
         broadcaster: Any,
-        model: str,
+        model: Optional[str],
         event_loop: asyncio.AbstractEventLoop,
         dashboard_port: int,
         session_uuid: Optional[str] = None,
+        allow_edits: bool = False,
     ):
         self.conversation_id = conversation_id
         self.run_id = run_id
         self.db_path = db_path
         self.broadcaster = broadcaster
+        # model=None means "inherit from ANTHROPIC_MODEL env". We forward --model
+        # only when explicitly set, because hardcoded defaults like
+        # "claude-opus-4-7" don't resolve under CLAUDE_CODE_USE_BEDROCK=1 where
+        # the model id must be a Bedrock inference profile (e.g.
+        # "global.anthropic.claude-opus-4-7[1m]").
         self.model = model
         self.event_loop = event_loop
         self.dashboard_port = dashboard_port
         self.session_uuid = session_uuid
+        # When True the orchestrator gets Write + Edit + no-git-commit rules
+        # in the system prompt. See SYSTEM_PROMPT_EDITS_FOOTER for scope.
+        self.allow_edits = allow_edits
         
         self.process: Optional[subprocess.Popen[bytes]] = None
-        self.message_queue: "Queue[str]" = Queue()
+        # Queue items are (content, run_id) tuples. run_id is the workflow
+        # run that initiated this turn and drives SSE channel routing when
+        # the reply streams back. We thread it through per-turn because a
+        # single conversation can be reused across runs (continuation), so
+        # the spawn-time run_id may be stale by the time the next user
+        # message arrives.
+        self.message_queue: "Queue[Tuple[str, str]]" = Queue()
         self.stdin_thread: Optional[threading.Thread] = None
         self.stdout_thread: Optional[threading.Thread] = None
+        self.stderr_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.last_active = time.time()
+
+        # The run_id attached to the turn currently flowing through the
+        # stdout reader. Set when the stdin writer dequeues a message,
+        # used by the reader when broadcasting tokens + final reply. Falls
+        # back to self.run_id for the pre-first-turn status broadcast.
+        self._current_run_id: str = run_id
         
-    def _build_system_prompt(self) -> Path:
-        """Build system prompt file with run context."""
+    def _build_system_prompt(self) -> str:
+        """Build system prompt string with run context.
+
+        Returns the rendered prompt so it can be passed inline via --system-prompt.
+        The claude 2.x CLI does not accept --system-prompt-file; only the inline
+        form exists, so we render a string here rather than a temp file.
+
+        The prompt includes:
+        - Recent events (last 10) as JSON — so the orchestrator can reason
+          about what just happened.
+        - Channel state VALUES (not just keys) — so a workflow writing a
+          ``workspace: /path/to/worktree`` channel lets the orchestrator
+          scope its edits to that directory. Capped at ~8 KB of JSON so a
+          pathological workflow with large channel payloads doesn't blow
+          the context window.
+        - Either a read-only or an edits-enabled footer depending on the
+          ``allow_edits`` config flag.
+        """
         run = get_run(self.db_path, self.run_id)
         if not run:
             raise ValueError(f"Run {self.run_id} not found")
@@ -84,60 +135,100 @@ class OrchestratorRelay:
         ]
         events_json = json.dumps(events, indent=2)
 
-        # Fetch distinct channel keys
+        # Fetch channel state — values, not just keys, so the LLM can see
+        # path-like values for scoping edits. Order newest-first so if we
+        # truncate we keep the most recent context.
         cursor.execute(
-            "SELECT DISTINCT channel_key FROM channel_states WHERE run_id = ?",
-            (self.run_id,)
+            """
+            SELECT channel_key, value_json, updated_at
+            FROM channel_states
+            WHERE run_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (self.run_id,),
         )
-        channel_keys = [row[0] for row in cursor.fetchall()]
-        channel_keys_csv = ",".join(channel_keys)
+        channels_raw = cursor.fetchall()
         conn.close()
-        
-        content = SYSTEM_PROMPT_TEMPLATE.format(
-            run_id=self.run_id,
-            workflow_name=run.get("workflow_name", "unknown"),
-            status=run.get("status", "unknown"),
-            conversation_id=self.conversation_id,
-            events_json=events_json,
-            channel_keys_csv=channel_keys_csv,
-            port=self.dashboard_port,
+
+        channels: Dict[str, Any] = {}
+        for key, value_json, _updated_at in channels_raw:
+            if key in channels:
+                continue  # ORDER BY newest → first occurrence wins
+            try:
+                channels[key] = json.loads(value_json) if value_json else None
+            except (TypeError, json.JSONDecodeError):
+                channels[key] = value_json
+        channels_json = json.dumps(channels, indent=2, default=str)
+        # Soft cap: if the serialized payload exceeds 8 KB, fall back to
+        # keys-only so we don't spend the entire context window on channel
+        # dumps. The LLM can then query via curl for specifics.
+        if len(channels_json) > 8192:
+            channels_json = json.dumps(
+                {"_truncated": True, "keys": list(channels.keys())}, indent=2
+            )
+
+        footer = (
+            SYSTEM_PROMPT_EDITS_FOOTER
+            if self.allow_edits
+            else SYSTEM_PROMPT_READONLY_FOOTER
         )
-        
-        # Write to temp file
-        temp_file = tempfile.NamedTemporaryFile(
-            mode='w',
-            suffix='.system-prompt.txt',
-            delete=False,
-            prefix=f"orchestrator-{self.conversation_id}-"
+        return (
+            SYSTEM_PROMPT_BASE.format(
+                run_id=self.run_id,
+                workflow_name=run.get("workflow_name", "unknown"),
+                status=run.get("status", "unknown"),
+                conversation_id=self.conversation_id,
+                events_json=events_json,
+                channels_json=channels_json,
+                port=self.dashboard_port,
+            )
+            + footer
         )
-        temp_file.write(content)
-        temp_file.close()
-        
-        return Path(temp_file.name)
     
     def start(self) -> None:
-        """Spawn the Claude subprocess and start reader/writer threads."""
+        """Spawn the Claude subprocess and start reader/writer threads.
+
+        Command construction follows the claude 2.x CLI contract:
+        - ``--print`` is required for ``--input-format=stream-json`` (non-interactive).
+        - ``--verbose`` is required with ``--output-format=stream-json``.
+        - ``--system-prompt`` takes an inline string; no ``-file`` variant exists.
+        - ``--model`` is omitted unless explicitly configured so the process
+          inherits ANTHROPIC_MODEL (necessary for Bedrock which rejects bare
+          model names like "claude-opus-4-7").
+        """
         if self.process is not None:
             logger.warning(f"Orchestrator for {self.conversation_id} already started")
             return
-        
-        # Build system prompt
-        system_prompt_path = self._build_system_prompt()
-        
-        # Build command
+
+        system_prompt = self._build_system_prompt()
+
+        # Tool allowlist: analyst-only by default, edit-capable when the
+        # operator opted in via config.orchestrator_allow_edits. The system
+        # prompt carries matching scope rules + a no-git-commit instruction;
+        # this flag controls the CLI enforcement.
+        allowed_tools = (
+            "Bash,Read,Write,Edit,Grep,Glob"
+            if self.allow_edits
+            else "Bash,Read,Grep,Glob"
+        )
+
         cmd = [
             "claude",
             "--bare",
-            "--model", self.model,
+            "--print",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",  # Emit content_block_delta for token streaming
             "--replay-user-messages",
             "--permission-mode", "dontAsk",
-            "--system-prompt-file", str(system_prompt_path),
-            "--allowedTools", "Bash,Read,Grep,Glob",
-            "--verbose",
+            "--system-prompt", system_prompt,
+            "--allowedTools", allowed_tools,
         ]
-        
+
+        if self.model:
+            cmd.extend(["--model", self.model])
+
         if self.session_uuid:
             cmd.extend(["--resume", self.session_uuid])
         else:
@@ -158,13 +249,19 @@ class OrchestratorRelay:
             bufsize=0,
         )
         
-        # Start threads
+        # Start threads. The stderr drain is critical: claude runs with
+        # --verbose, which produces a steady byte-stream to stderr. The OS
+        # pipe buffer is ~64 KB on macOS/Linux; once it fills the subprocess
+        # blocks on its next stderr write and the whole orchestrator freezes
+        # mid-reply. Drain it continuously.
         self.stdin_thread = threading.Thread(target=self._stdin_writer, daemon=True)
         self.stdout_thread = threading.Thread(target=self._stdout_reader, daemon=True)
-        
+        self.stderr_thread = threading.Thread(target=self._stderr_drain, daemon=True)
+
         self.stdin_thread.start()
         self.stdout_thread.start()
-        
+        self.stderr_thread.start()
+
         logger.info(f"Orchestrator {self.conversation_id} started with PID {self.process.pid}")
     
     def _stdin_writer(self) -> None:
@@ -175,18 +272,33 @@ class OrchestratorRelay:
         try:
             while not self.stop_event.is_set():
                 try:
-                    message = self.message_queue.get(timeout=0.5)
+                    content, turn_run_id = self.message_queue.get(timeout=0.5)
                 except Empty:
                     continue
-                
-                # Encode as stream-json user event
-                event = {"type": "user", "message": message}
+
+                # Publish the per-turn run_id before writing to stdin so the
+                # stdout reader broadcasts the reply back to the right SSE
+                # channel even if tokens arrive faster than the stdin flush
+                # (unlikely but cheap to guard).
+                self._current_run_id = turn_run_id
+
+                # Encode as stream-json user event. The claude 2.x CLI expects
+                # the payload's ``message`` field to be a full message object
+                # (role + content), not a bare string — bare strings produce
+                # "Expected message role 'user', got 'undefined'" and abort.
+                event = {
+                    "type": "user",
+                    "message": {"role": "user", "content": content},
+                }
                 line = json.dumps(event) + "\n"
-                
+
                 try:
                     self.process.stdin.write(line.encode('utf-8'))
                     self.process.stdin.flush()
-                    logger.debug(f"Sent message to orchestrator {self.conversation_id}: {message[:50]}...")
+                    logger.debug(
+                        f"Sent message to orchestrator {self.conversation_id} "
+                        f"(run {turn_run_id}): {content[:50]}..."
+                    )
                 except (BrokenPipeError, IOError) as e:
                     logger.error(f"Failed to write to orchestrator {self.conversation_id}: {e}")
                     break
@@ -199,7 +311,44 @@ class OrchestratorRelay:
                     self.process.stdin.close()
                 except Exception:
                     pass
-    
+
+    def _stderr_drain(self) -> None:
+        """Thread that drains subprocess stderr to prevent pipe-buffer deadlock.
+
+        With --verbose, claude writes a steady stream of diagnostic lines to
+        stderr. If nothing reads them, the OS pipe buffer (~64 KB) fills and
+        the subprocess blocks on its next stderr write — freezing the reply
+        mid-stream. Forward each line to the relay logger at DEBUG level so
+        the bytes are consumed and occasionally surfaced when someone is
+        actually looking.
+        """
+        if not self.process or not self.process.stderr:
+            return
+        try:
+            for line in iter(self.process.stderr.readline, b''):
+                if self.stop_event.is_set():
+                    break
+                if not line:
+                    continue
+                try:
+                    decoded = line.decode('utf-8', errors='replace').rstrip()
+                    if decoded:
+                        logger.debug(
+                            f"[orchestrator {self.conversation_id} stderr] {decoded}"
+                        )
+                except Exception:
+                    # Never let a decode error crash the drain — any error
+                    # here means the pipe fills and the subprocess freezes.
+                    pass
+        except Exception as e:
+            logger.error(f"stderr_drain thread error for {self.conversation_id}: {e}")
+        finally:
+            if self.process and self.process.stderr:
+                try:
+                    self.process.stderr.close()
+                except Exception:
+                    pass
+
     def _stdout_reader(self) -> None:
         """Thread that reads stdout and publishes events via broadcaster."""
         if not self.process or not self.process.stdout:
@@ -222,37 +371,70 @@ class OrchestratorRelay:
                         line_str = line
                     event = json.loads(line_str)
                     event_type = event.get("type")
-                    
-                    # Publish tokens and final messages, skip tool_use
-                    if event_type == "token":
-                        # Publish token event
-                        asyncio.run_coroutine_threadsafe(
-                            self.broadcaster.publish(
-                                self.run_id,
-                                {
-                                    "type": "chat_message_token",
-                                    "content": event.get("content", ""),
-                                    "conversation_id": self.conversation_id,
-                                }
-                            ),
-                            self.event_loop
-                        )
+
+                    # Publish tokens and final assistant messages.
+                    #
+                    # Event shapes emitted by claude 2.x --output-format=stream-json:
+                    #   - {"type":"stream_event","event":{"type":"content_block_delta",
+                    #       "delta":{"type":"text_delta","text":"..."}}}   ← streaming tokens
+                    #   - {"type":"assistant","message":{"content":[
+                    #       {"type":"text","text":"..."},{"type":"tool_use",...}]}}
+                    #   - {"type":"system","subtype":"init"|"status",...}  ← skip
+                    #   - {"type":"user",...}  ← --replay-user-messages echo, skip
+                    #   - {"type":"result",...}  ← turn-end, skip
+                    # Publish tokens and final assistant messages back to the
+                    # SSE channel for the run_id that initiated THIS turn.
+                    # Persistence is handled by claude itself — it writes the
+                    # full transcript to ~/.claude/projects/.../<uuid>.jsonl,
+                    # which is our source of truth (see session_transcript).
+                    if event_type == "stream_event":
+                        inner = event.get("event") or {}
+                        if inner.get("type") == "content_block_delta":
+                            delta = inner.get("delta") or {}
+                            if delta.get("type") == "text_delta":
+                                text = delta.get("text", "")
+                                if text:
+                                    asyncio.run_coroutine_threadsafe(
+                                        self.broadcaster.publish(
+                                            self._current_run_id,
+                                            {
+                                                "type": "chat_message_token",
+                                                "content": text,
+                                                "conversation_id": self.conversation_id,
+                                            },
+                                        ),
+                                        self.event_loop,
+                                    )
                     elif event_type == "assistant":
-                        # Publish final message event
-                        asyncio.run_coroutine_threadsafe(
-                            self.broadcaster.publish(
-                                self.run_id,
-                                {
-                                    "type": "chat_message",
-                                    "role": "assistant",
-                                    "content": event.get("content", ""),
-                                    "conversation_id": self.conversation_id,
-                                }
-                            ),
-                            self.event_loop
-                        )
-                    # Skip tool_use and other internal events
-                    
+                        # Concatenate all text blocks in the message; skip tool_use blocks.
+                        msg = event.get("message") or {}
+                        content = msg.get("content") or []
+                        text_parts: List[str] = []
+                        if isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    text_parts.append(block.get("text", ""))
+                        elif isinstance(content, str):
+                            # Defensive: some CLI versions or tests emit a bare string.
+                            text_parts.append(content)
+                        text = "".join(text_parts)
+                        if text:
+                            now = datetime.now(timezone.utc).isoformat()
+                            asyncio.run_coroutine_threadsafe(
+                                self.broadcaster.publish(
+                                    self._current_run_id,
+                                    {
+                                        "type": "chat_message",
+                                        "role": "assistant",
+                                        "content": text,
+                                        "conversation_id": self.conversation_id,
+                                        "created_at": now,
+                                    },
+                                ),
+                                self.event_loop,
+                            )
+                    # Skip system/user/result/tool_use/etc.
+
                 except json.JSONDecodeError:
                     logger.debug(f"Non-JSON stdout line from orchestrator {self.conversation_id}: {line!r}")
                 except Exception as e:
@@ -261,15 +443,25 @@ class OrchestratorRelay:
         except Exception as e:
             logger.error(f"stdout_reader thread error for {self.conversation_id}: {e}")
         finally:
+            # No partial-flush on exit: claude persists every token it
+            # emitted to its session JSONL, so a mid-stream crash already
+            # has an on-disk transcript for /chat/history to read.
             if self.process and self.process.stdout:
                 try:
                     self.process.stdout.close()
                 except Exception:
                     pass
-    
-    def send_message(self, message: str) -> None:
-        """Queue a user message to be sent to the orchestrator."""
-        self.message_queue.put(message)
+
+    def send_message(self, content: str, run_id: str) -> None:
+        """Queue a user message to be routed to the orchestrator.
+
+        ``run_id`` is the workflow run that originated this turn. It
+        drives SSE channel routing for the reply, which matters because
+        a single conversation can be reused across multiple runs — the
+        run captured at spawn time is stale by the time the user sends
+        a follow-up from a different run page.
+        """
+        self.message_queue.put((content, run_id))
         self.last_active = time.time()
     
     def stop(self) -> None:
@@ -297,7 +489,9 @@ class OrchestratorRelay:
             self.stdin_thread.join(timeout=2)
         if self.stdout_thread and self.stdout_thread.is_alive():
             self.stdout_thread.join(timeout=2)
-        
+        if self.stderr_thread and self.stderr_thread.is_alive():
+            self.stderr_thread.join(timeout=2)
+
         self.process = None
         logger.info(f"Orchestrator {self.conversation_id} stopped")
     

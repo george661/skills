@@ -8,8 +8,6 @@ from fastapi import APIRouter, HTTPException, Request, status
 from .models import ChatMessageRequest
 from .queries import (
     insert_chat_message,
-    get_workflow_chat_history,
-    get_conversation_chat_history,
     check_rate_limit,
     get_run,
     get_node,
@@ -17,7 +15,50 @@ from .queries import (
     list_conversations,
     list_runs_in_conversation,
     get_conversation_id_from_run,
+    get_orchestrator_session,
 )
+from .session_transcript import read_session_transcript
+
+
+def _orchestrator_history_for_run(
+    db_path: Path, run_id: str, limit: int, offset: int
+) -> List[Dict[str, Any]]:
+    """Read chat history for the orchestrator conversation bound to a run.
+
+    Claude persists every turn to its session JSONL under
+    ``~/.claude/projects/<cwd-slug>/<session_uuid>.jsonl``; we resolve
+    ``run_id -> conversation_id -> session_uuid`` and read from there
+    instead of duplicating the transcript in the ``chat_messages`` table.
+    Returns an empty list when the conversation hasn't produced any turns
+    yet (no session file exists).
+    """
+    conversation_id = get_conversation_id_from_run(db_path, run_id)
+    if not conversation_id:
+        return []
+    session_row = get_orchestrator_session(db_path, conversation_id)
+    if not session_row or not session_row.get("session_uuid"):
+        return []
+    rows = read_session_transcript(session_row["session_uuid"])
+    if offset:
+        rows = rows[offset:]
+    if limit is not None:
+        rows = rows[:limit]
+    return rows
+
+
+def _orchestrator_history_for_conversation(
+    db_path: Path, conversation_id: str, limit: int, offset: int
+) -> List[Dict[str, Any]]:
+    """Read full chat history for a conversation across all its runs."""
+    session_row = get_orchestrator_session(db_path, conversation_id)
+    if not session_row or not session_row.get("session_uuid"):
+        return []
+    rows = read_session_transcript(session_row["session_uuid"])
+    if offset:
+        rows = rows[offset:]
+    if limit is not None:
+        rows = rows[:limit]
+    return rows
 
 
 def create_chat_router(db_path: Path) -> APIRouter:
@@ -61,19 +102,32 @@ def create_chat_router(db_path: Path) -> APIRouter:
                 detail="Rate limit exceeded: max 10 messages per minute"
             )
 
-        # Insert message
+        # Look up conversation_id so orchestrator routing sees a consistent
+        # linkage. GW-5497 guarantees this is populated for any run
+        # triggered from the dashboard.
+        conversation_id = get_conversation_id_from_run(db_path, run_id)
+
+        # Insert an audit/rate-limit record. The chat_messages table is NOT
+        # the conversation transcript anymore — that's the claude session
+        # JSONL, read by /chat/history. But we still record each operator
+        # POST here so check_rate_limit has something to count and so we
+        # have an on-dashboard audit trail of who sent what when. Agent
+        # replies are intentionally absent; reading them back from JSONL
+        # (one source of truth) is what /chat/history does.
         now = datetime.now(timezone.utc).isoformat()
-        msg_id = insert_chat_message(
+        insert_chat_message(
             db_path,
             execution_id=None,
             role="operator",
             content=message.content,
             created_at=now,
             run_id=run_id,
-            operator_username=message.operator_username
+            operator_username=message.operator_username,
+            conversation_id=conversation_id,
         )
 
-        # Broadcast via SSE if broadcaster available
+        # Broadcast via SSE so live subscribers see the operator message
+        # immediately.
         if hasattr(request.app.state, "broadcaster"):
             await request.app.state.broadcaster.publish(
                 run_id,
@@ -88,22 +142,23 @@ def create_chat_router(db_path: Path) -> APIRouter:
             )
 
         # Route to orchestrator if available
-        if hasattr(request.app.state, "orchestrator_manager") and request.app.state.orchestrator_manager:
-            conversation_id = get_conversation_id_from_run(db_path, run_id)
-            if conversation_id:
-                try:
-                    await request.app.state.orchestrator_manager.route_message(
-                        conversation_id=conversation_id,
-                        run_id=run_id,
-                        message=message.content,
-                    )
-                except Exception as e:
-                    # Don't fail the request if orchestrator routing fails
-                    import logging
-                    logging.getLogger(__name__).error(f"Failed to route message to orchestrator: {e}")
+        if (
+            hasattr(request.app.state, "orchestrator_manager")
+            and request.app.state.orchestrator_manager
+            and conversation_id
+        ):
+            try:
+                await request.app.state.orchestrator_manager.route_message(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    message=message.content,
+                )
+            except Exception as e:
+                # Don't fail the request if orchestrator routing fails
+                import logging
+                logging.getLogger(__name__).error(f"Failed to route message to orchestrator: {e}")
 
         return {
-            "id": msg_id,
             "content": message.content,
             "role": "operator",
             "operator_username": message.operator_username,
@@ -195,17 +250,15 @@ def create_chat_router(db_path: Path) -> APIRouter:
         limit: int = 50,
         offset: int = 0
     ) -> List[Dict[str, Any]]:
-        """Get paginated chat history for a workflow run.
+        """Return orchestrator chat history for a workflow run.
 
-        Args:
-            run_id: Workflow run ID
-            limit: Maximum messages to return (default 50)
-            offset: Number of messages to skip (default 0)
-
-        Returns:
-            List of chat messages
+        History is the claude session transcript for the conversation this
+        run is bound to. When the conversation has spanned multiple runs
+        (continuation), all turns across those runs are returned — the
+        transcript is conversation-scoped, not run-scoped, because that
+        matches how the LLM reasons about the thread.
         """
-        return get_workflow_chat_history(db_path, run_id, limit, offset)
+        return _orchestrator_history_for_run(db_path, run_id, limit, offset)
 
     return router
 
@@ -267,6 +320,8 @@ def create_conversation_router(db_path: Path) -> APIRouter:
                 detail=f"Conversation {conversation_id} not found"
             )
 
-        return get_conversation_chat_history(db_path, conversation_id, limit, offset)
+        return _orchestrator_history_for_conversation(
+            db_path, conversation_id, limit, offset
+        )
 
     return router

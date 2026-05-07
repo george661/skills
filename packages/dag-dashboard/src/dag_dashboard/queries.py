@@ -43,6 +43,7 @@ def insert_run(
     workflow_definition: Optional[str] = None,
     trigger_source: Optional[str] = None,
     parent_run_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
 ) -> str:
     """Insert a new workflow run."""
     # Validate workflow_name at query level (defense in depth)
@@ -53,10 +54,10 @@ def insert_run(
     try:
         conn.execute(
             """
-            INSERT INTO workflow_runs (id, workflow_name, status, started_at, inputs, workflow_definition, trigger_source, parent_run_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO workflow_runs (id, workflow_name, status, started_at, inputs, workflow_definition, trigger_source, parent_run_id, conversation_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (run_id, workflow_name, status, started_at, json.dumps(inputs) if inputs else None, workflow_definition, trigger_source, parent_run_id)
+            (run_id, workflow_name, status, started_at, json.dumps(inputs) if inputs else None, workflow_definition, trigger_source, parent_run_id, conversation_id)
         )
         conn.commit()
         return run_id
