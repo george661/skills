@@ -343,3 +343,65 @@ class TestModelExtraForbid:
                 type="string",
                 unknown_field="value",  # type: ignore[call-arg]
             )
+
+
+class TestGW5475SchemaEnhancements:
+    """Tests for GW-5475 schema enhancements (PhaseNode.when, RunNode enrichment)."""
+
+    def test_phase_node_when_attribute_roundtrip(self) -> None:
+        """PhaseNode.when should roundtrip through parse."""
+        source = '{% phase name="Setup" when="x == 1" %}content{% /phase %}'
+        ast = parse_str(source)
+        doc = Doc.from_ast(ast)
+
+        assert len(doc.nodes) == 1
+        phase = doc.nodes[0]
+        assert isinstance(phase, PhaseNode)
+        assert phase.name == "Setup"
+        assert phase.when == "x == 1"
+
+    def test_phase_node_when_absent_is_none(self) -> None:
+        """PhaseNode.when should be None when not specified."""
+        source = '{% phase name="Setup" %}content{% /phase %}'
+        ast = parse_str(source)
+        doc = Doc.from_ast(ast)
+
+        assert len(doc.nodes) == 1
+        phase = doc.nodes[0]
+        assert isinstance(phase, PhaseNode)
+        assert phase.when is None
+
+    def test_run_node_rich_fields_from_parser(self) -> None:
+        """RunNode should extract skill, id, capture, and body from parser."""
+        source = '{% run id="x" skill="issues/get_issue" capture="json" %}{"issue_key": "TEST-1"}{% /run %}'  # noqa: E501
+        ast = parse_str(source)
+        doc = Doc.from_ast(ast)
+
+        assert len(doc.nodes) == 1
+        run = doc.nodes[0]
+        assert isinstance(run, RunNode)
+        assert run.id == "x"
+        assert run.skill == "issues/get_issue"
+        assert run.capture == "json"
+        assert run.body == '{"issue_key": "TEST-1"}'
+        # Other target fields should be None
+        assert run.command is None
+        assert run.tool is None
+        assert run.bash is None
+        assert run.prompt_file is None
+
+    def test_run_node_validator_rejects_zero_targets(self) -> None:
+        """RunNode validator should reject when no target is set."""
+        with pytest.raises(ValidationError, match="exactly one"):
+            RunNode(
+                source_span=SourceSpan(start_line=1, start_col=1, end_line=1, end_col=1)
+            )
+
+    def test_run_node_validator_rejects_two_targets(self) -> None:
+        """RunNode validator should reject when multiple targets are set."""
+        with pytest.raises(ValidationError, match="exactly one"):
+            RunNode(
+                skill="test/skill",
+                command="ls",
+                source_span=SourceSpan(start_line=1, start_col=1, end_line=1, end_col=1)
+            )

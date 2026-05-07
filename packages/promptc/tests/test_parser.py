@@ -210,3 +210,33 @@ class TestStandardTags:
         parser = Parser()
         nodes = parser.parse('{% raw %}text{% endraw %}')
         assert nodes[0].kind == "raw"
+
+
+class TestParserHangFixes:
+    """Tests for parser hang fixes (GW-5475)."""
+
+    def test_dollar_prefixed_tag_consumed_as_text_no_hang(self) -> None:
+        """Parser should not hang on {% $var %} syntax."""
+        parser = Parser()
+        # Should complete in <2s, not hang forever
+        nodes = parser.parse("Hello {% $inputs.name %} world")
+
+        # Should produce text nodes (parser doesn't recognize $-prefixed as valid tag)
+        assert len(nodes) >= 1
+        # Concatenate all text node bodies
+        text_parts = [n.body for n in nodes if n.kind == "text" and n.body]
+        full_text = "".join(text_parts)
+        # The original {% $inputs.name %} should be preserved in text
+        assert "{% $inputs.name %}" in full_text
+
+    def test_double_brace_open_without_close_no_hang(self) -> None:
+        """Parser should not hang on {% {% without proper tag structure."""
+        import pytest
+
+        from promptc.errors import ParseError
+
+        parser = Parser()
+        # Should complete without hanging (even if it raises an error)
+        # The key is it doesn't loop forever
+        with pytest.raises(ParseError):
+            parser.parse("Text {% {% more text")

@@ -126,20 +126,41 @@ class PhaseNode(BaseModel):
 
     kind: Literal["phase"] = "phase"
     name: str
+    when: Optional[str] = None
     children: list[dict[str, Any]]
     source_span: SourceSpan
 
 
 class RunNode(BaseModel):
-    """Run command node (self-closing tag)."""
+    """Run command node (self-closing or paired tag)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kind: Literal["run"] = "run"
-    command: Optional[str] = None
-    prompt_file: Optional[str] = None
+    # Invocation target (exactly one must be set):
+    skill: Optional[str] = None
+    tool: Optional[str] = None
+    bash: Optional[str] = None
+    command: Optional[str] = None  # back-compat
+    prompt_file: Optional[str] = None  # back-compat
+    # Bindings & capture:
+    id: Optional[str] = None
+    capture: Optional[Literal["json", "text", "lines"]] = None
+    timeout_ms: Optional[int] = None
     on_failure: Optional[str] = None
+    body: Optional[str] = None  # raw body content (JSON args, bash script)
     source_span: SourceSpan
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> "RunNode":
+        """Validate exactly one of skill/tool/bash/command/prompt_file is set."""
+        targets = [self.skill, self.tool, self.bash, self.command, self.prompt_file]
+        n_set = sum(1 for t in targets if t is not None)
+        if n_set != 1:
+            raise ValueError(
+                f"RunNode requires exactly one of skill/tool/bash/command/prompt_file; got {n_set}"
+            )
+        return self
 
 
 class RefNode(BaseModel):
@@ -248,18 +269,29 @@ class Doc(BaseModel):
                 nodes.append(
                     PhaseNode(
                         name=child.attrs.get("name", ""),
+                        when=child.attrs.get("when"),
                         children=[c.to_dict() for c in child.children],
                         source_span=node_span,
                     )
                 )
 
             elif child.kind == "run":
-                # Run command node
+                # Run command node - extract body from children (paired form)
+                body_parts = [c.body or "" for c in child.children if c.kind == "text"]
+                body_text = "".join(body_parts).strip() if body_parts else None
+
                 nodes.append(
                     RunNode(
+                        skill=child.attrs.get("skill"),
+                        tool=child.attrs.get("tool"),
+                        bash=child.attrs.get("bash"),
                         command=child.attrs.get("command"),
                         prompt_file=child.attrs.get("prompt_file"),
+                        id=child.attrs.get("id"),
+                        capture=child.attrs.get("capture"),
+                        timeout_ms=child.attrs.get("timeout_ms"),
                         on_failure=child.attrs.get("on_failure"),
+                        body=body_text,
                         source_span=node_span,
                     )
                 )

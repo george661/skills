@@ -34,3 +34,31 @@ class TimeoutError(Exception):
         super().__init__(f"{message}: timeout={timeout_ms}ms")
         self.message = message
         self.timeout_ms = timeout_ms
+
+
+class RenderError(Exception):
+    """Raised when rendering fails due to missing inputs, type errors, or unsupported features."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        missing: list[str] | None = None,
+        type_errors: list[str] | None = None,
+        path: str | None = None,
+    ) -> None:
+        self.message = message
+        self.missing = missing or []
+        self.type_errors = type_errors or []
+        self.path = path
+
+        # Build summary
+        parts = [message]
+        if self.missing:
+            parts.append(f"missing: {', '.join(self.missing)}")
+        if self.type_errors:
+            parts.append(f"type errors: {', '.join(self.type_errors)}")
+        if self.path:
+            parts.append(f"path: {self.path}")
+
+        super().__init__("; ".join(parts))

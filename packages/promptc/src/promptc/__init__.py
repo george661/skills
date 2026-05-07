@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from promptc.ast_nodes import Node, SourceSpan
 from promptc.config import ParserConfig
-from promptc.errors import LimitExceededError, ParseError, TimeoutError
+from promptc.errors import LimitExceededError, ParseError, RenderError, TimeoutError
 from promptc.expression import ExpressionError, evaluate
 from promptc.parser import parse, parse_str
+from promptc.renderer import render
 from promptc.schema import (
     Doc,
     InputDecl,
@@ -26,10 +27,12 @@ from promptc.schema import (
 __all__ = [
     "parse",
     "parse_str",
+    "render",
     "ParserConfig",
     "Node",
     "SourceSpan",
     "ParseError",
+    "RenderError",
     "LimitExceededError",
     "TimeoutError",
     "ExpressionError",
