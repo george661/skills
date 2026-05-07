@@ -38,14 +38,12 @@ pip install -e "packages/promptc[dev]"
 Create a simple contract file `greeting.md`:
 
 ```markdown
-{% meta tier="contract" %}
+{% meta description="A simple greeting skill" /%}
 
-{% input %}
-name: string
+{% input name="name" type="string" /%}
 
-{% output %}
-greeting: string
-message: string
+{% output name="greeting" type="string" /%}
+{% output name="message" type="string" /%}
 ```
 
 Load, render, and parse:
@@ -66,7 +64,7 @@ greeting: Hello
 message: Welcome to promptc, Alice!
 """
 
-result = parse_output(response, doc.output.fields)
+result = parse_output(response, doc.outputs)
 
 if result.errors:
     print(f"Parse errors: {result.errors}")
@@ -77,13 +75,15 @@ else:
 
 ## Document Tiers
 
-`promptc` supports three document tiers (set via `{% meta tier="..." %}`):
+`promptc` automatically classifies documents into three tiers based on the presence of metadata and output contracts:
 
-| Tier | Description |
-|------|-------------|
-| **contract** | Input and output declarations only; no reference prose. Suitable for production skills. |
-| **mixed** | Contract + reference prose. Skill documentation lives alongside the contract. |
-| **reference** | No input/output declarations. Pure documentation (e.g., architecture docs). |
+| Tier | Detection Rule | Description |
+|------|----------------|-------------|
+| **contract** | `{% meta %}` present + `{% output %}` declared | Input and output declarations; executable prompts with typed I/O. |
+| **mixed** | `{% meta %}` present + no `{% output %}` | Contract metadata with reference prose but no output parsing. |
+| **reference** | no `{% meta %}` | Pure documentation (e.g., CLAUDE.md, architecture docs). |
+
+The tier is a `@computed_field` on the `Doc` model derived from the presence of meta and outputs tags. It is **not** an explicit attribute set in the `{% meta %}` tag.
 
 For full tier semantics and validation rules, see [`docs/promptc-spec.md`](../../docs/promptc-spec.md).
 
@@ -93,13 +93,13 @@ For full tier semantics and validation rules, see [`docs/promptc-spec.md`](../..
 
 | Tag | Purpose |
 |-----|---------|
-| `{% meta %}` | Document metadata (tier, version, dependencies) |
-| `{% input %}` | Declare input fields with types and defaults |
-| `{% output %}` | Declare expected output fields from LLM responses |
-| `{% phase name="..." %}` | Multi-phase prompts (render phases sequentially) |
-| `{% run path="..." %}` | Include and render another contract at runtime |
-| `{% ref path="..." %}` | Static reference to another contract (for validation only) |
-| `{% when expr %}` | Conditional content based on input values |
+| `{% meta %}` | File-level metadata (doc_type, description, model, owner) |
+| `{% input %}` | Typed input parameter declaration |
+| `{% output %}` | Typed output field the LLM must emit |
+| `{% phase name="..." %}` | Named phase block, wraps prose + sub-tags |
+| `{% run path="..." %}` | Prescriptive tool/skill invocation with args |
+| `{% ref path="..." %}` | Reference to another command/skill (validated at load time) |
+| `{% when expr %}` | Typed conditional gate (prose inside runs only if expr true) |
 
 For detailed tag syntax and semantics, see [`docs/promptc-spec.md`](../../docs/promptc-spec.md).
 
@@ -107,10 +107,10 @@ For detailed tag syntax and semantics, see [`docs/promptc-spec.md`](../../docs/p
 
 **Status:** Stub (implementation tracked in GW-5482)
 
-The CLI is currently a placeholder. Running `python -m promptc` will print:
+The CLI is currently a placeholder. Running `promptc` will print:
 
 ```
-promptc CLI not implemented yet — see GW-5475 for roadmap
+promptc CLI not implemented yet — see GW-5475
 ```
 
 And exit with code 2.
@@ -157,7 +157,7 @@ from promptc import parse_output, ParserConfig
 # Parse LLM response against output contract
 result = parse_output(
     text=assistant_response,
-    contract=doc.output.fields,
+    contract=doc.outputs,
     config=ParserConfig(regex_timeout_ms=500)  # optional
 )
 
@@ -186,10 +186,10 @@ result = evaluate("count > 10 and name != ''", {"count": 5, "name": "Alice"})
 `promptc` exports schema models for working with parsed contracts:
 
 - **`Doc`**: Compiled contract document (metadata, input, output, AST)
-- **`MetaDecl`**: Metadata declaration (`tier`, `version`, `dependencies`)
-- **`InputDecl`**: Input field declaration (`name`, `type`, `default`, `required_when`)
-- **`OutputDecl`**: Output field declaration (`name`, `type`, `values` for enums, `pattern`)
-- **`ParseResult`**: Result from parsing markdown (AST root node)
+- **`MetaDecl`**: Metadata declaration (doc_type, description, model, owner, extras)
+- **`InputDecl`**: Input field declaration (name, type, required, default, description)
+- **`OutputDecl`**: Output field declaration (name, type, description, values for enums, pattern, required_when)
+- **`ParseResult`**: Generic wrapper with success/value/errors fields; returned by internal parsing functions
 - **`ContractParseResult`**: Result from `parse_output()` (see below)
 - **`ParseErrorInfo`**: Error detail (code, field, message)
 - **`ValidationIssue`**: Contract validation issue (for pre-render checks)
@@ -321,7 +321,7 @@ doc = load("task.md")
 response = sys.stdin.read()
 
 # Parse against contract
-result = parse_output(response, doc.output.fields)
+result = parse_output(response, doc.outputs)
 
 if result.errors:
     # Fail-fast: print errors and exit
