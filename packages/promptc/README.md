@@ -295,7 +295,7 @@ for attempt in range(max_retries):
     assistant_response = call_llm(prompt)
 
     # Parse response
-    result = parse_output(assistant_response, doc.output.fields)
+    result = parse_output(assistant_response, doc.outputs)
 
     if not result.errors:
         # Success — use result.fields
