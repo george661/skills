@@ -137,6 +137,31 @@ class TestRefFileMissingTarget:
         error_str = str(exc_info.value).lower()
         assert "not found" in error_str or "nonexistent" in error_str
 
+    def test_ref_file_absolute_path_outside_project_root_raises(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Absolute file path outside project root should raise RenderError."""
+        # Set project root to tmp_path
+        monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+
+        # Create a file outside tmp_path (in parent directory)
+        outside_dir = tmp_path.parent / "outside"
+        outside_dir.mkdir(exist_ok=True)
+        outside_file = outside_dir / "secret.md"
+        outside_file.write_text("Secret content")
+
+        # Try to reference the outside file using absolute path
+        source = f'{{% ref file="{outside_file}" include=true /%}}'
+        ast = parse_str(source)
+        doc = Doc.from_ast(ast, path=str(tmp_path / "main.md"))
+
+        # Should raise RenderError about boundary violation
+        with pytest.raises(RenderError) as exc_info:
+            render(doc, {})
+
+        error_str = str(exc_info.value).lower()
+        assert "outside" in error_str or "project root" in error_str
+
 
 class TestRefFileIncludeMode:
     """Tests for {% ref file=\"...\" include=true /%} inline rendering."""
@@ -157,6 +182,50 @@ class TestRefFileIncludeMode:
         result = render(doc, {})
 
         assert "This is included content." in result
+
+    def test_ref_file_include_renders_with_same_inputs(self, tmp_path: Path) -> None:
+        """Input variables should propagate through includes."""
+        # Create included file that uses a variable
+        included_file = tmp_path / "template.md"
+        included_file.write_text("Hello, {% $name %}!")
+
+        # Create main file that includes it
+        main_file = tmp_path / "main.md"
+        source = f'{{% ref file="{included_file.name}" include=true /%}}'
+        ast = parse_str(source, path=str(main_file))
+        doc = Doc.from_ast(ast, path=str(main_file))
+
+        # Render with inputs — should propagate to included file
+        result = render(doc, {"name": "Alice"})
+
+        assert "Hello, Alice!" in result
+
+    def test_ref_file_relative_resolves_against_current_file(self, tmp_path: Path) -> None:
+        """Relative file refs should resolve from the current file's directory."""
+        # Create directory structure:
+        #   tmp_path/
+        #     dir_a/
+        #       a.md -> includes ../dir_b/b.md
+        #     dir_b/
+        #       b.md
+        dir_a = tmp_path / "dir_a"
+        dir_b = tmp_path / "dir_b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+
+        file_b = dir_b / "b.md"
+        file_b.write_text("Content from B in dir_b")
+
+        file_a = dir_a / "a.md"
+        # A includes B using relative path from A's directory
+        file_a.write_text('{% ref file="../dir_b/b.md" include=true /%}')
+
+        ast = parse_str(file_a.read_text(), path=str(file_a))
+        doc = Doc.from_ast(ast, path=str(file_a))
+
+        # Should resolve ../dir_b/b.md relative to dir_a/a.md
+        result = render(doc, {})
+        assert "Content from B in dir_b" in result
 
 
 class TestRefIncludeCycles:
@@ -214,6 +283,47 @@ class TestRefIncludeDepth:
         assert error.include_chain  # Should have include chain populated
         # Chain should contain all 4 files (a->b->c->d)
         assert len(error.include_chain) >= 4
+
+    def test_ref_include_max_depth_configurable(self, tmp_path: Path) -> None:
+        """Setting max_include_depth via config should be enforced."""
+        from promptc.config import ParserConfig
+
+        # Create chain A->B (depth 2)
+        file_a = tmp_path / "a.md"
+        file_b = tmp_path / "b.md"
+
+        file_b.write_text("Content from B")
+        file_a.write_text(f'{{% ref file="{file_b.name}" include=true /%}}')
+
+        ast = parse_str(file_a.read_text(), path=str(file_a))
+        doc = Doc.from_ast(ast, path=str(file_a))
+
+        # With max_include_depth=1, A->B should fail (depth 2 exceeds max 1)
+        config = ParserConfig(max_include_depth=1)
+        with pytest.raises(RenderError) as exc_info:
+            render(doc, {}, config=config)
+
+        error = exc_info.value
+        assert "depth" in str(error).lower()
+        assert error.include_chain  # Should have include chain populated
+
+    def test_ref_include_at_max_depth_succeeds(self, tmp_path: Path) -> None:
+        """Include chain at exactly max depth should succeed (off-by-one guard)."""
+        # Create chain A->B->C (depth 3 with default max_include_depth=3)
+        file_a = tmp_path / "a.md"
+        file_b = tmp_path / "b.md"
+        file_c = tmp_path / "c.md"
+
+        file_c.write_text("Content from C")
+        file_b.write_text(f'{{% ref file="{file_c.name}" include=true /%}}')
+        file_a.write_text(f'{{% ref file="{file_b.name}" include=true /%}}')
+
+        ast = parse_str(file_a.read_text(), path=str(file_a))
+        doc = Doc.from_ast(ast, path=str(file_a))
+
+        # Should succeed — depth 3 equals max_include_depth=3
+        result = render(doc, {})
+        assert "Content from C" in result
 
 
 class TestRefCommandLeadingSlash:

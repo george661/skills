@@ -21,12 +21,17 @@ from promptc.schema import (
 )
 
 
-def render(doc: Doc, inputs: Optional[Mapping[str, Any]] = None) -> str:
+def render(
+    doc: Doc,
+    inputs: Optional[Mapping[str, Any]] = None,
+    config: Optional[ParserConfig] = None,
+) -> str:
     """Render a promptc Doc to a string.
 
     Args:
         doc: The parsed and validated promptc document
         inputs: Optional input values for variable substitution
+        config: Optional parser configuration (defaults to ParserConfig())
 
     Returns:
         Rendered document as a string
@@ -43,7 +48,7 @@ def render(doc: Doc, inputs: Optional[Mapping[str, Any]] = None) -> str:
         **resolved_inputs,
         "inputs": resolved_inputs,
         "_doc": doc,  # Internal: pass doc for ref resolution
-        "_config": ParserConfig(),  # Internal: default config
+        "_config": config or ParserConfig(),  # Internal: use provided or default config
         "_include_stack": [doc.path] if doc.path else [],  # Internal: track include chain
     }
 
@@ -186,7 +191,14 @@ def _render_node(node: Any, context: dict[str, Any]) -> str:
             target = str(resolved)
             label = node.skill
         elif node.file:
-            resolved = resolve_file(node.file, base_path)
+            try:
+                resolved = resolve_file(node.file, base_path)
+            except ValueError as e:
+                # Boundary validation failure (e.g., absolute path outside project root)
+                raise RenderError(
+                    str(e),
+                    path=doc.path if doc else None,
+                )
             if resolved is None:
                 # If include mode, this is an error
                 if node.include:

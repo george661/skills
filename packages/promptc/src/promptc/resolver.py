@@ -105,14 +105,34 @@ def resolve_file(spec: str, base_path: Optional[Path] = None) -> Optional[Path]:
 
     Returns:
         Absolute Path to the file if found, None otherwise
+
+    Raises:
+        ValueError: If an absolute path is outside the project root boundary
     """
     path = Path(spec)
 
-    # If absolute, return as-is if it exists
+    # Determine project root boundary
+    project_root_str = os.environ.get("PROJECT_ROOT")
+    if project_root_str:
+        project_root = Path(project_root_str).resolve()
+    else:
+        project_root = Path.cwd().resolve()
+
+    # If absolute, check boundary and return if valid
     if path.is_absolute():
-        if path.exists() and path.is_file():
-            return path.resolve()
-        return None
+        if not path.exists() or not path.is_file():
+            return None
+        resolved = path.resolve()
+        # Validate that absolute path is within project root
+        try:
+            resolved.relative_to(project_root)
+        except ValueError:
+            # Path is outside project root
+            raise ValueError(
+                f"Absolute file path outside project root: {resolved} "
+                f"(project root: {project_root})"
+            )
+        return resolved
 
     # If relative, resolve against base_path
     if base_path is not None:
