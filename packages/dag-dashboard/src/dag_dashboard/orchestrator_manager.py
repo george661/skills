@@ -108,8 +108,10 @@ class OrchestratorManager:
             # Update LRU order
             self.lru.move_to_end(conversation_id)
 
-        # Send message (outside lock)
-        relay.send_message(message)
+        # Send message (outside lock). Pass run_id through so the reply
+        # SSE-broadcasts back to the run the user is currently viewing,
+        # even when the conversation spans multiple runs (continuation).
+        relay.send_message(message, run_id)
 
     def _evict_locked(self, conversation_id: str, *, new_status: str) -> None:
         """Remove a relay from the pool and update its persisted status.

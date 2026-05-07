@@ -10,7 +10,7 @@ from pathlib import Path
 from queue import Queue, Empty
 from typing import Optional, Any
 
-from .queries import get_run, get_connection, insert_chat_message
+from .queries import get_run, get_connection
 
 
 logger = logging.getLogger(__name__)
@@ -64,19 +64,24 @@ class OrchestratorRelay:
         self.session_uuid = session_uuid
         
         self.process: Optional[subprocess.Popen[bytes]] = None
-        self.message_queue: "Queue[str]" = Queue()
+        # Queue items are (content, run_id) tuples. run_id is the workflow
+        # run that initiated this turn and drives SSE channel routing when
+        # the reply streams back. We thread it through per-turn because a
+        # single conversation can be reused across runs (continuation), so
+        # the spawn-time run_id may be stale by the time the next user
+        # message arrives.
+        self.message_queue: "Queue[tuple[str, str]]" = Queue()
         self.stdin_thread: Optional[threading.Thread] = None
         self.stdout_thread: Optional[threading.Thread] = None
         self.stderr_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.last_active = time.time()
 
-        # Streaming buffer: accumulates text_delta tokens during a turn so
-        # we can persist a partial record if the subprocess dies mid-reply
-        # (TTL eviction, crash, SIGKILL). Reset when a final "assistant"
-        # event lands or when we flush on exit.
-        self._pending_text_parts: list[str] = []
-        self._pending_started_at: Optional[str] = None
+        # The run_id attached to the turn currently flowing through the
+        # stdout reader. Set when the stdin writer dequeues a message,
+        # used by the reader when broadcasting tokens + final reply. Falls
+        # back to self.run_id for the pre-first-turn status broadcast.
+        self._current_run_id: str = run_id
         
     def _build_system_prompt(self) -> str:
         """Build system prompt string with run context.
@@ -198,24 +203,33 @@ class OrchestratorRelay:
         try:
             while not self.stop_event.is_set():
                 try:
-                    message = self.message_queue.get(timeout=0.5)
+                    content, turn_run_id = self.message_queue.get(timeout=0.5)
                 except Empty:
                     continue
-                
+
+                # Publish the per-turn run_id before writing to stdin so the
+                # stdout reader broadcasts the reply back to the right SSE
+                # channel even if tokens arrive faster than the stdin flush
+                # (unlikely but cheap to guard).
+                self._current_run_id = turn_run_id
+
                 # Encode as stream-json user event. The claude 2.x CLI expects
                 # the payload's ``message`` field to be a full message object
                 # (role + content), not a bare string — bare strings produce
                 # "Expected message role 'user', got 'undefined'" and abort.
                 event = {
                     "type": "user",
-                    "message": {"role": "user", "content": message},
+                    "message": {"role": "user", "content": content},
                 }
                 line = json.dumps(event) + "\n"
-                
+
                 try:
                     self.process.stdin.write(line.encode('utf-8'))
                     self.process.stdin.flush()
-                    logger.debug(f"Sent message to orchestrator {self.conversation_id}: {message[:50]}...")
+                    logger.debug(
+                        f"Sent message to orchestrator {self.conversation_id} "
+                        f"(run {turn_run_id}): {content[:50]}..."
+                    )
                 except (BrokenPipeError, IOError) as e:
                     logger.error(f"Failed to write to orchestrator {self.conversation_id}: {e}")
                     break
@@ -299,6 +313,11 @@ class OrchestratorRelay:
                     #   - {"type":"system","subtype":"init"|"status",...}  ← skip
                     #   - {"type":"user",...}  ← --replay-user-messages echo, skip
                     #   - {"type":"result",...}  ← turn-end, skip
+                    # Publish tokens and final assistant messages back to the
+                    # SSE channel for the run_id that initiated THIS turn.
+                    # Persistence is handled by claude itself — it writes the
+                    # full transcript to ~/.claude/projects/.../<uuid>.jsonl,
+                    # which is our source of truth (see session_transcript).
                     if event_type == "stream_event":
                         inner = event.get("event") or {}
                         if inner.get("type") == "content_block_delta":
@@ -306,17 +325,9 @@ class OrchestratorRelay:
                             if delta.get("type") == "text_delta":
                                 text = delta.get("text", "")
                                 if text:
-                                    # Buffer for partial-flush-on-exit; stamp
-                                    # the turn start so a crash-flushed row
-                                    # has a stable created_at.
-                                    if not self._pending_text_parts:
-                                        self._pending_started_at = (
-                                            datetime.now(timezone.utc).isoformat()
-                                        )
-                                    self._pending_text_parts.append(text)
                                     asyncio.run_coroutine_threadsafe(
                                         self.broadcaster.publish(
-                                            self.run_id,
+                                            self._current_run_id,
                                             {
                                                 "type": "chat_message_token",
                                                 "content": text,
@@ -339,39 +350,10 @@ class OrchestratorRelay:
                             text_parts.append(content)
                         text = "".join(text_parts)
                         if text:
-                            # Final assistant message supersedes the streaming
-                            # buffer — drop any accumulated tokens so
-                            # _flush_partial doesn't double-persist on shutdown.
-                            self._pending_text_parts = []
-                            self._pending_started_at = None
-                            # Persist the assistant reply so a page reload
-                            # (GET /api/workflows/{run_id}/chat/history) shows
-                            # it alongside the operator messages. Operator
-                            # turns are persisted in chat_routes.post_chat;
-                            # the assistant side lives in the relay because
-                            # that's where the reply is assembled.
                             now = datetime.now(timezone.utc).isoformat()
-                            try:
-                                insert_chat_message(
-                                    self.db_path,
-                                    execution_id=None,
-                                    role="agent",
-                                    content=text,
-                                    created_at=now,
-                                    run_id=self.run_id,
-                                    conversation_id=self.conversation_id,
-                                    session_id=self.session_uuid,
-                                )
-                            except Exception as e:
-                                # Persistence is best-effort — never drop the
-                                # SSE broadcast because the DB write failed.
-                                logger.error(
-                                    f"Failed to persist assistant message for "
-                                    f"{self.conversation_id}: {e}"
-                                )
                             asyncio.run_coroutine_threadsafe(
                                 self.broadcaster.publish(
-                                    self.run_id,
+                                    self._current_run_id,
                                     {
                                         "type": "chat_message",
                                         "role": "assistant",
@@ -392,56 +374,25 @@ class OrchestratorRelay:
         except Exception as e:
             logger.error(f"stdout_reader thread error for {self.conversation_id}: {e}")
         finally:
-            # If the subprocess died (or we're being torn down) mid-stream,
-            # persist whatever tokens we accumulated so the partial reply
-            # survives a reload instead of disappearing silently.
-            self._flush_partial_if_any(reason="stream_ended_without_final_assistant")
+            # No partial-flush on exit: claude persists every token it
+            # emitted to its session JSONL, so a mid-stream crash already
+            # has an on-disk transcript for /chat/history to read.
             if self.process and self.process.stdout:
                 try:
                     self.process.stdout.close()
                 except Exception:
                     pass
 
-    def _flush_partial_if_any(self, *, reason: str) -> None:
-        """Persist buffered tokens as a partial chat_messages row, then reset.
+    def send_message(self, content: str, run_id: str) -> None:
+        """Queue a user message to be routed to the orchestrator.
 
-        Called from the stdout reader's finally block so any accumulated
-        stream is preserved when the subprocess exits without emitting a
-        final "assistant" event (TTL eviction, crash, SIGKILL). Tagged
-        metadata.partial=true so the UI (or any consumer) can render an
-        "interrupted" affordance.
+        ``run_id`` is the workflow run that originated this turn. It
+        drives SSE channel routing for the reply, which matters because
+        a single conversation can be reused across multiple runs — the
+        run captured at spawn time is stale by the time the user sends
+        a follow-up from a different run page.
         """
-        if not self._pending_text_parts:
-            return
-        text = "".join(self._pending_text_parts)
-        started_at = self._pending_started_at or datetime.now(timezone.utc).isoformat()
-        # Reset state BEFORE the DB call so a re-entrant error doesn't loop.
-        self._pending_text_parts = []
-        self._pending_started_at = None
-        try:
-            insert_chat_message(
-                self.db_path,
-                execution_id=None,
-                role="agent",
-                content=text,
-                created_at=started_at,
-                run_id=self.run_id,
-                conversation_id=self.conversation_id,
-                session_id=self.session_uuid,
-                metadata={"partial": True, "reason": reason},
-            )
-            logger.info(
-                f"Flushed partial orchestrator reply for {self.conversation_id} "
-                f"({len(text)} chars, reason={reason})"
-            )
-        except Exception as e:
-            logger.error(
-                f"Failed to flush partial reply for {self.conversation_id}: {e}"
-            )
-
-    def send_message(self, message: str) -> None:
-        """Queue a user message to be sent to the orchestrator."""
-        self.message_queue.put(message)
+        self.message_queue.put((content, run_id))
         self.last_active = time.time()
     
     def stop(self) -> None:

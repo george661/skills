@@ -84,7 +84,7 @@ async def test_spawn_on_first_message(mock_relay_class, db_with_runs):
     # Verify relay was created and started
     mock_relay_class.assert_called_once()
     mock_relay.start.assert_called_once()
-    mock_relay.send_message.assert_called_once_with("Hello orchestrator")
+    mock_relay.send_message.assert_called_once_with("Hello orchestrator", "run-1")
 
 
 @pytest.mark.asyncio
@@ -249,7 +249,7 @@ async def test_dead_relay_is_evicted_and_respawned(mock_relay_class, db_with_run
     manager.set_loop(loop)
 
     await manager.route_message("conv-1", "run-1", "turn one")
-    first_relay.send_message.assert_called_once_with("turn one")
+    first_relay.send_message.assert_called_once_with("turn one", "run-1")
 
     # Subprocess dies between turns.
     first_relay.is_alive = MagicMock(return_value=False)
@@ -260,7 +260,7 @@ async def test_dead_relay_is_evicted_and_respawned(mock_relay_class, db_with_run
     # received the message.
     first_relay.stop.assert_called_once()
     assert mock_relay_class.call_count == 2
-    second_relay.send_message.assert_called_once_with("turn two")
+    second_relay.send_message.assert_called_once_with("turn two", "run-1")
 
     # Persisted status reflects the "exited" transition on the dead relay.
     row = get_connection(db_path).execute(

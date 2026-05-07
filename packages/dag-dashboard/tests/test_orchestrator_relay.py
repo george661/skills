@@ -122,7 +122,7 @@ def test_user_message_serialized_as_stream_json(mock_popen, tmp_path: Path):
     relay.start()
     
     # Send a user message
-    relay.send_message("Hello orchestrator")
+    relay.send_message("Hello orchestrator", "run-123")
     
     # Give threads a moment to process
     import time
@@ -531,276 +531,6 @@ def test_claude_argv_passes_model_when_set(mock_popen, tmp_path: Path):
 
     loop.close()
 
-
-@patch('subprocess.Popen')
-def test_assistant_reply_is_persisted_to_chat_messages(mock_popen, tmp_path: Path):
-    """Final assistant messages must be inserted into chat_messages so a page
-    reload (GET /api/workflows/{run_id}/chat/history) shows them alongside
-    operator turns.
-
-    Operator messages are already persisted by chat_routes.post_chat; the
-    assistant side lives in the relay because that's where the reply is
-    assembled from stream-json blocks.
-    """
-    db_path = tmp_path / "test.db"
-    init_db(db_path)
-    from dag_dashboard.queries import insert_run, insert_conversation, get_workflow_chat_history
-
-    insert_conversation(db_path, "conv-p1", "dashboard", "2026-05-04T00:00:00Z")
-    insert_run(
-        db_path=db_path, run_id="run-p1", workflow_name="wf", status="running",
-        started_at="2026-05-04T00:00:00Z", conversation_id="conv-p1",
-    )
-
-    mock_process = MagicMock()
-    mock_process.stdin = io.BytesIO()
-    mock_process.stdout = io.StringIO(
-        '{"type":"system","subtype":"init","session_id":"s1"}\n'
-        '{"type":"assistant","message":{"role":"assistant",'
-        '"content":[{"type":"text","text":"Hello, operator."}]}}\n'
-    )
-    mock_process.stderr = io.BytesIO(b"")
-    mock_process.poll.return_value = None
-    mock_popen.return_value = mock_process
-
-    loop = asyncio.new_event_loop()
-    broadcaster = Mock()
-    async def _publish(*args, **kwargs):
-        return None
-    broadcaster.publish = Mock(side_effect=_publish)
-
-    relay = OrchestratorRelay(
-        conversation_id="conv-p1", run_id="run-p1", db_path=db_path,
-        broadcaster=broadcaster, model=None, event_loop=loop, dashboard_port=8080,
-    )
-
-    import threading
-    def _run_loop() -> None:
-        asyncio.set_event_loop(loop)
-        loop.run_forever()
-    loop_thread = threading.Thread(target=_run_loop, daemon=True)
-    loop_thread.start()
-
-    relay.start()
-    time.sleep(0.3)
-    relay.stop()
-    loop.call_soon_threadsafe(loop.stop)
-    loop_thread.join(timeout=2)
-
-    history = get_workflow_chat_history(db_path, "run-p1")
-    # Exactly one agent message with the assembled text.
-    agent_msgs = [m for m in history if m["role"] == "agent"]
-    assert len(agent_msgs) == 1, (
-        f"expected 1 persisted agent message, got {len(agent_msgs)}: {history}"
-    )
-    assert agent_msgs[0]["content"] == "Hello, operator."
-    # Conversation + session linkage persisted so conversation-view queries work.
-    assert agent_msgs[0]["conversation_id"] == "conv-p1"
-    assert agent_msgs[0]["session_id"] == relay.session_uuid
-
-    loop.close()
-
-
-@patch('subprocess.Popen')
-def test_persistence_failure_does_not_break_sse_broadcast(mock_popen, tmp_path: Path):
-    """If insert_chat_message blows up, the SSE broadcast must still fire.
-
-    Persistence is best-effort; a DB-write failure (e.g. transient lock) must
-    not drop the live user-visible response.
-    """
-    db_path = tmp_path / "test.db"
-    init_db(db_path)
-    from dag_dashboard.queries import insert_run
-    insert_run(
-        db_path=db_path, run_id="run-p2", workflow_name="wf", status="running",
-        started_at="2026-05-04T00:00:00Z",
-    )
-
-    mock_process = MagicMock()
-    mock_process.stdin = io.BytesIO()
-    mock_process.stdout = io.StringIO(
-        '{"type":"assistant","message":{"role":"assistant",'
-        '"content":[{"type":"text","text":"still delivered"}]}}\n'
-    )
-    mock_process.stderr = io.BytesIO(b"")
-    mock_process.poll.return_value = None
-    mock_popen.return_value = mock_process
-
-    loop = asyncio.new_event_loop()
-    broadcaster = Mock()
-    async def _publish(*args, **kwargs):
-        return None
-    broadcaster.publish = Mock(side_effect=_publish)
-
-    relay = OrchestratorRelay(
-        conversation_id="conv-p2", run_id="run-p2", db_path=db_path,
-        broadcaster=broadcaster, model=None, event_loop=loop, dashboard_port=8080,
-    )
-
-    import threading
-    def _run_loop() -> None:
-        asyncio.set_event_loop(loop)
-        loop.run_forever()
-    loop_thread = threading.Thread(target=_run_loop, daemon=True)
-    loop_thread.start()
-
-    # Force insert_chat_message to explode
-    with patch("dag_dashboard.orchestrator_relay.insert_chat_message",
-               side_effect=RuntimeError("db locked")):
-        relay.start()
-        time.sleep(0.3)
-        relay.stop()
-
-    loop.call_soon_threadsafe(loop.stop)
-    loop_thread.join(timeout=2)
-
-    # Broadcast still happened despite the failed persist.
-    payloads = [c.args[1] for c in broadcaster.publish.call_args_list if len(c.args) >= 2]
-    final = [p for p in payloads if p.get("type") == "chat_message"]
-    assert len(final) == 1, f"expected 1 chat_message broadcast, got {len(final)}"
-    assert final[0]["content"] == "still delivered"
-
-    loop.close()
-
-
-@patch('subprocess.Popen')
-def test_partial_reply_flushed_on_subprocess_exit(mock_popen, tmp_path: Path):
-    """Tokens streamed before a crash must be persisted on stdout_reader exit.
-
-    Scenario: subprocess emits some text_delta events, then stdout closes
-    without a final "assistant" event (simulates crash / TTL eviction /
-    SIGKILL). The relay must flush the accumulated text with
-    metadata.partial=true so the reply isn't lost on page reload.
-    """
-    db_path = tmp_path / "test.db"
-    init_db(db_path)
-    from dag_dashboard.queries import insert_run, insert_conversation, get_workflow_chat_history
-
-    insert_conversation(db_path, "conv-flush", "dashboard", "2026-05-04T00:00:00Z")
-    insert_run(
-        db_path=db_path, run_id="run-flush", workflow_name="wf", status="running",
-        started_at="2026-05-04T00:00:00Z", conversation_id="conv-flush",
-    )
-
-    # Two text_delta events, then stream ends (no assistant, no result).
-    mock_process = MagicMock()
-    mock_process.stdin = io.BytesIO()
-    mock_process.stdout = io.StringIO(
-        '{"type":"system","subtype":"init","session_id":"s1"}\n'
-        '{"type":"stream_event","event":{"type":"content_block_delta",'
-        '"delta":{"type":"text_delta","text":"thinking about "}}}\n'
-        '{"type":"stream_event","event":{"type":"content_block_delta",'
-        '"delta":{"type":"text_delta","text":"your question"}}}\n'
-    )
-    mock_process.stderr = io.BytesIO(b"")
-    mock_process.poll.return_value = None
-    mock_popen.return_value = mock_process
-
-    loop = asyncio.new_event_loop()
-    broadcaster = Mock()
-    async def _publish(*args, **kwargs):
-        return None
-    broadcaster.publish = Mock(side_effect=_publish)
-
-    relay = OrchestratorRelay(
-        conversation_id="conv-flush", run_id="run-flush", db_path=db_path,
-        broadcaster=broadcaster, model=None, event_loop=loop, dashboard_port=8080,
-    )
-
-    import threading
-    def _run_loop() -> None:
-        asyncio.set_event_loop(loop)
-        loop.run_forever()
-    loop_thread = threading.Thread(target=_run_loop, daemon=True)
-    loop_thread.start()
-
-    relay.start()
-    time.sleep(0.3)  # reader exits after StringIO EOF, flush fires in finally
-    relay.stop()
-    loop.call_soon_threadsafe(loop.stop)
-    loop_thread.join(timeout=2)
-
-    history = get_workflow_chat_history(db_path, "run-flush")
-    agent_msgs = [m for m in history if m["role"] == "agent"]
-    assert len(agent_msgs) == 1, (
-        f"expected 1 flushed agent message, got {len(agent_msgs)}: {history}"
-    )
-    assert agent_msgs[0]["content"] == "thinking about your question"
-    # metadata is deserialized to a dict by _row_to_dict
-    meta = agent_msgs[0].get("metadata") or {}
-    assert meta.get("partial") is True
-    assert meta.get("reason") == "stream_ended_without_final_assistant"
-
-    loop.close()
-
-
-@patch('subprocess.Popen')
-def test_final_assistant_supersedes_partial_buffer(mock_popen, tmp_path: Path):
-    """A final "assistant" event must consume the streaming buffer so the
-    exit flush doesn't double-persist the same content.
-    """
-    db_path = tmp_path / "test.db"
-    init_db(db_path)
-    from dag_dashboard.queries import insert_run, insert_conversation, get_workflow_chat_history
-
-    insert_conversation(db_path, "conv-nodup", "dashboard", "2026-05-04T00:00:00Z")
-    insert_run(
-        db_path=db_path, run_id="run-nodup", workflow_name="wf", status="running",
-        started_at="2026-05-04T00:00:00Z", conversation_id="conv-nodup",
-    )
-
-    mock_process = MagicMock()
-    mock_process.stdin = io.BytesIO()
-    mock_process.stdout = io.StringIO(
-        '{"type":"stream_event","event":{"type":"content_block_delta",'
-        '"delta":{"type":"text_delta","text":"Hi"}}}\n'
-        '{"type":"stream_event","event":{"type":"content_block_delta",'
-        '"delta":{"type":"text_delta","text":" there"}}}\n'
-        '{"type":"assistant","message":{"role":"assistant",'
-        '"content":[{"type":"text","text":"Hi there"}]}}\n'
-    )
-    mock_process.stderr = io.BytesIO(b"")
-    mock_process.poll.return_value = None
-    mock_popen.return_value = mock_process
-
-    loop = asyncio.new_event_loop()
-    broadcaster = Mock()
-    async def _publish(*args, **kwargs):
-        return None
-    broadcaster.publish = Mock(side_effect=_publish)
-
-    relay = OrchestratorRelay(
-        conversation_id="conv-nodup", run_id="run-nodup", db_path=db_path,
-        broadcaster=broadcaster, model=None, event_loop=loop, dashboard_port=8080,
-    )
-
-    import threading
-    def _run_loop() -> None:
-        asyncio.set_event_loop(loop)
-        loop.run_forever()
-    loop_thread = threading.Thread(target=_run_loop, daemon=True)
-    loop_thread.start()
-
-    relay.start()
-    time.sleep(0.3)
-    relay.stop()
-    loop.call_soon_threadsafe(loop.stop)
-    loop_thread.join(timeout=2)
-
-    history = get_workflow_chat_history(db_path, "run-nodup")
-    agent_msgs = [m for m in history if m["role"] == "agent"]
-    # Exactly one row — final assistant persisted, exit flush was a no-op.
-    assert len(agent_msgs) == 1, (
-        f"final assistant + exit flush double-wrote: {agent_msgs}"
-    )
-    # And it's the final one, not tagged partial
-    assert agent_msgs[0]["content"] == "Hi there"
-    meta = agent_msgs[0].get("metadata") or {}
-    assert not meta.get("partial"), "final row must not be flagged partial"
-
-    loop.close()
-
-
 @patch('subprocess.Popen')
 def test_stderr_is_drained_to_prevent_pipe_deadlock(mock_popen, tmp_path: Path):
     """stderr is fully consumed by a dedicated drain thread.
@@ -871,4 +601,137 @@ def test_stderr_is_drained_to_prevent_pipe_deadlock(mock_popen, tmp_path: Path):
     )
 
     relay.stop()
+    loop.close()
+
+
+@patch('subprocess.Popen')
+def test_broadcast_routes_to_per_turn_run_id(mock_popen, tmp_path: Path):
+    """SSE broadcasts use the run_id from send_message, not the spawn-time one.
+
+    A conversation can be reused across multiple workflow runs via the
+    continuation feature. The relay is spawned on run A but a follow-up
+    message might arrive from run B's page. The reply must SSE-broadcast
+    back to run B, not run A, so the user sees the response on the page
+    they're actually viewing.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+    insert_run(
+        db_path=db_path, run_id="run-a", workflow_name="wf", status="running",
+        started_at="2026-05-07T00:00:00Z",
+    )
+    insert_run(
+        db_path=db_path, run_id="run-b", workflow_name="wf", status="running",
+        started_at="2026-05-07T00:05:00Z",
+    )
+
+    # Deliver one assistant reply for each of the two user messages.
+    # Crucial: claude only writes stdout AFTER receiving input. A vanilla
+    # StringIO pre-loads both replies and the reader races ahead of the
+    # second stdin write, defeating the per-turn invariant. Simulate the
+    # real ordering with a stdin that reveals the next stdout chunk only
+    # after a stdin write is observed.
+    import threading as _threading
+
+    reply1 = (
+        '{"type":"assistant","message":{"role":"assistant",'
+        '"content":[{"type":"text","text":"first reply"}]}}\n'
+    )
+    reply2 = (
+        '{"type":"assistant","message":{"role":"assistant",'
+        '"content":[{"type":"text","text":"second reply"}]}}\n'
+    )
+
+    class _PacedStdin(io.BytesIO):
+        """Unblocks the next stdout chunk on each write."""
+        def __init__(self, release: _threading.Event) -> None:
+            super().__init__()
+            self._release = release
+
+        def write(self, data):  # type: ignore[override]
+            n = super().write(data)
+            self._release.set()
+            return n
+
+    class _PacedStdout:
+        """Emits queued chunks lazily, one per release."""
+        def __init__(self, chunks: list[str], release: _threading.Event) -> None:
+            self._buffers = [c.encode() for c in chunks]
+            self._release = release
+            self._pos = b""
+
+        def readline(self, *a, **kw):
+            # Block until the paired stdin is written, then release one chunk.
+            if not self._pos:
+                if not self._buffers:
+                    return b""
+                # Wait for a signal from stdin, with a short timeout so EOF
+                # also works.
+                self._release.wait(timeout=2)
+                self._release.clear()
+                if not self._buffers:
+                    return b""
+                self._pos = self._buffers.pop(0)
+            out, self._pos = self._pos, b""
+            return out
+
+        def close(self):
+            self._buffers = []
+
+    release = _threading.Event()
+    mock_process = MagicMock()
+    mock_process.stdin = _PacedStdin(release)
+    mock_process.stdout = _PacedStdout([reply1, reply2], release)
+    mock_process.stderr = io.BytesIO(b"")
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    broadcaster = Mock()
+    async def _publish(*args, **kwargs):
+        return None
+    broadcaster.publish = Mock(side_effect=_publish)
+
+    relay = OrchestratorRelay(
+        conversation_id="conv-ab",
+        # Spawn-time run_id is run-a
+        run_id="run-a",
+        db_path=db_path, broadcaster=broadcaster, model=None,
+        event_loop=loop, dashboard_port=8080,
+    )
+
+    import threading
+    def _drive() -> None:
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+    loop_thread = threading.Thread(target=_drive, daemon=True)
+    loop_thread.start()
+
+    relay.start()
+
+    # First turn originates on run-a (the "live" run at the moment).
+    relay.send_message("hi from run-a", "run-a")
+    time.sleep(0.15)
+
+    # Second turn originates on run-b — user jumped to a new run but is
+    # continuing the same conversation. The reply must broadcast to run-b.
+    relay.send_message("hi from run-b", "run-b")
+    time.sleep(0.3)
+
+    relay.stop()
+    loop.call_soon_threadsafe(loop.stop)
+    loop_thread.join(timeout=2)
+
+    # Each publish call is publish(run_id, payload). Collect (run_id, content).
+    routed = [
+        (c.args[0], c.args[1].get("content"))
+        for c in broadcaster.publish.call_args_list
+        if len(c.args) >= 2 and c.args[1].get("type") == "chat_message"
+    ]
+    # We expect the first final reply routed to run-a, second to run-b.
+    assert routed == [("run-a", "first reply"), ("run-b", "second reply")], (
+        f"per-turn routing failed: {routed}"
+    )
+
     loop.close()
