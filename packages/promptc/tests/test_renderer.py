@@ -368,7 +368,9 @@ class TestRefRendering:
 
         result = render(doc)
 
-        assert "[CLAUDE.md](CLAUDE.md)" in result
+        # Should render as markdown link (may be absolute path if file exists)
+        assert "[CLAUDE.md]" in result
+        assert "CLAUDE.md)" in result
 
     def test_ref_link_mode_with_section(self) -> None:
         """Ref with section should include section in link."""
@@ -378,16 +380,12 @@ class TestRefRendering:
 
         result = render(doc)
 
-        assert "[doc.md#intro](doc.md#intro)" in result
+        # Should include section anchor in both label and target
+        assert "[doc.md#intro]" in result
+        assert "#intro)" in result
 
-    def test_ref_include_true_raises_render_error(self) -> None:
-        """Ref with include=true should raise RenderError."""
-        source = '{% ref file="x.md" include=true /%}'
-        ast = parse_str(source)
-        doc = Doc.from_ast(ast)
-
-        with pytest.raises(RenderError, match="include=true.*not supported"):
-            render(doc)
+    # Note: test_ref_include_true_raises_render_error removed in GW-5476
+    # Include mode is now supported with cycle and depth detection
 
 
 class TestRawRendering:

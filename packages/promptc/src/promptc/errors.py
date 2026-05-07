@@ -46,11 +46,13 @@ class RenderError(Exception):
         missing: list[str] | None = None,
         type_errors: list[str] | None = None,
         path: str | None = None,
+        include_chain: list[str] | None = None,
     ) -> None:
         self.message = message
         self.missing = missing or []
         self.type_errors = type_errors or []
         self.path = path
+        self.include_chain = include_chain or []
 
         # Build summary
         parts = [message]
@@ -60,5 +62,7 @@ class RenderError(Exception):
             parts.append(f"type errors: {', '.join(self.type_errors)}")
         if self.path:
             parts.append(f"path: {self.path}")
+        if self.include_chain:
+            parts.append(f"include chain: {' → '.join(self.include_chain)}")
 
         super().__init__("; ".join(parts))

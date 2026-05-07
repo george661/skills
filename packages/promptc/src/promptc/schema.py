@@ -169,10 +169,25 @@ class RefNode(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kind: Literal["ref"] = "ref"
-    file: str
+    # Target (exactly one of file/command/skill must be set):
+    file: Optional[str] = None
+    command: Optional[str] = None
+    skill: Optional[str] = None
+    # Modifiers:
     include: bool = False
     section: Optional[str] = None
     source_span: SourceSpan
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> "RefNode":
+        """Validate exactly one of file/command/skill is set."""
+        targets = [self.file, self.command, self.skill]
+        n_set = sum(1 for t in targets if t is not None)
+        if n_set != 1:
+            raise ValueError(
+                f"RefNode requires exactly one of file/command/skill; got {n_set}"
+            )
+        return self
 
 
 class WhenNode(BaseModel):
@@ -300,7 +315,9 @@ class Doc(BaseModel):
                 # Reference node
                 nodes.append(
                     RefNode(
-                        file=child.attrs.get("file", ""),
+                        file=child.attrs.get("file"),
+                        command=child.attrs.get("command"),
+                        skill=child.attrs.get("skill"),
                         include=child.attrs.get("include", False),
                         section=child.attrs.get("section"),
                         source_span=node_span,
