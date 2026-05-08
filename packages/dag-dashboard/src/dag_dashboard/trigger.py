@@ -204,6 +204,12 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
     @router.post("/trigger", response_model=TriggerResponse)
     async def trigger_workflow(request_body: TriggerRequest, request: Request) -> TriggerResponse:
         """Trigger a workflow execution via webhook."""
+        # Runtime gate: when operator disables trigger via Settings UI the
+        # router stays mounted (so re-enabling does not need a restart) but
+        # the endpoint returns 404 exactly like an unmounted route would.
+        if not settings.trigger_enabled:
+            raise HTTPException(status_code=404, detail="Not Found")
+
         # HMAC verification (if secret is configured)
         if settings.trigger_secret:
             body_bytes = await request.body()

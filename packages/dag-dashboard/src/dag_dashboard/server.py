@@ -197,9 +197,12 @@ def create_app(
     # Register drafts routes (always mounted - workflow editing)
     app.include_router(drafts_router)
 
-    # Register validation routes (builder feature)
-    if settings and settings.builder_enabled:
-        app.include_router(validation_router)
+    # Register validation routes (builder feature).
+    # Mount unconditionally so a runtime toggle of builder_enabled via the
+    # Settings UI or dashboard_settings DB takes effect without restart.
+    # Endpoints inside validation_router are harmless when the builder UI is
+    # not loaded — they just get no callers.
+    app.include_router(validation_router)
 
     # Register chat routes
     chat_router = create_chat_router(db_path)
@@ -259,9 +262,14 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/builder-config.js")
-    async def builder_config_js() -> Response:
-        """Return inline JavaScript that sets window.DAG_DASHBOARD_BUILDER_ENABLED."""
-        enabled = settings.builder_enabled if settings else False
+    async def builder_config_js(request: Request) -> Response:
+        """Return inline JavaScript that sets window.DAG_DASHBOARD_BUILDER_ENABLED.
+
+        Reads live settings from app.state so DB-persisted overrides picked
+        up by reload_from_db (in lifespan) take effect without restart.
+        """
+        live_settings = getattr(request.app.state, "settings", None)
+        enabled = live_settings.builder_enabled if live_settings else False
         js_content = f"window.DAG_DASHBOARD_BUILDER_ENABLED = {'true' if enabled else 'false'};"
         return Response(content=js_content, media_type="application/javascript")
 
@@ -310,11 +318,15 @@ def create_app(
     )
     app.include_router(sse_router)
 
-    # Mount trigger router if enabled
-    if settings and settings.trigger_enabled:
+    # Mount trigger router unconditionally when settings exist; the handler
+    # itself checks settings.trigger_enabled on each request and returns 404
+    # when disabled. This keeps a runtime toggle (via Settings UI or DB)
+    # effective without restarting the server — previously the router was
+    # pinned at create_app() build time and reload_from_db overrides were
+    # silently ignored (GW-5770).
+    if settings:
         trigger_router = create_trigger_router(settings, db_path)
         app.include_router(trigger_router)
-        logger.info("Trigger endpoint enabled")
 
     # Mount search router (always mounted; auth handled by endpoint)
     if settings:
