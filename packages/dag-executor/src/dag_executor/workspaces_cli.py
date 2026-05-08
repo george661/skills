@@ -6,7 +6,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 
 def _resolve_workspace_root() -> Path:
@@ -17,7 +17,7 @@ def _resolve_workspace_root() -> Path:
     return Path.home() / ".dag-dashboard" / "workspaces"
 
 
-def _get_workspace_info(workspace_path: Path) -> Tuple[str, float, int]:
+def _get_workspace_info(workspace_path: Path) -> Tuple[str, float, float]:
     """Get workspace metadata: run_id, age in days, size in MB."""
     run_id = workspace_path.name
     
@@ -212,7 +212,7 @@ def run_workspaces(args: argparse.Namespace) -> int:
         return 1
 
 
-def add_workspaces_parser(subparsers) -> None:
+def add_workspaces_parser(subparsers: Any) -> None:
     """Add workspaces subcommand parser."""
     workspaces = subparsers.add_parser(
         "workspaces",

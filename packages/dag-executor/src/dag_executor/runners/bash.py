@@ -97,6 +97,14 @@ class BashRunner(BaseRunner):
                 continue
             _export_channel(channel_name, value)
 
+        # Always export workspace channel if it exists (runtime channel)
+        if channel_store is not None:
+            try:
+                workspace_value, _version = channel_store.read("workspace")
+                _export_channel("workspace", workspace_value)
+            except KeyError:
+                pass
+
         timeout = ctx.node_def.timeout or 300  # Default 5 min timeout
 
         try:

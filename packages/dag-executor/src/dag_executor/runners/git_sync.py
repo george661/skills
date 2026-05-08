@@ -102,14 +102,13 @@ class GitSyncRunner(BaseRunner):
         """Get workspace path from channel state."""
         if not ctx.channel_store:
             return None
-        
+
         try:
-            workspace_channel = ctx.channel_store.get("workspace")
-            if workspace_channel:
-                value = workspace_channel.get("value"); return str(value) if value is not None else None
+            value, _version = ctx.channel_store.read("workspace")
+            return str(value) if value is not None else None
         except Exception:
             pass
-        
+
         return None
     
     def _resolve_variable(self, value: str, ctx: RunnerContext) -> str:

@@ -1701,6 +1701,9 @@ class WorkflowExecutor:
             # author's `${foo:-}` bash fallback then fires correctly.
             if workflow_def is not None and workflow_def.inputs:
                 skip_names = skip_names | set(workflow_def.inputs.keys())
+            # Runtime channels (workspace) are always available as env vars
+            # Skip both the channel name and the DAG_-prefixed version
+            skip_names = skip_names | {"workspace", "DAG_WORKSPACE"}
 
         # Resolve variables
         resolved = resolve_variables(

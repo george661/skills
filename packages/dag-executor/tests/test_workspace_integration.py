@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from dag_executor import execute_workflow, load_workflow
-from dag_executor.schema import WorkflowDef, WorkflowConfig, NodeDef
+from dag_executor.schema import WorkflowDef, WorkflowConfig, NodeDef, WorkflowStatus, NodeStatus
 
 
 def test_workspace_created_for_every_run():
@@ -14,7 +14,7 @@ def test_workspace_created_for_every_run():
     with tempfile.TemporaryDirectory() as tmpdir:
         # Override workspace root
         workspace_override = Path(tmpdir) / "workspaces"
-        
+
         # Simple workflow with no git config
         workflow = WorkflowDef(
             name="test-workspace",
@@ -28,14 +28,14 @@ def test_workspace_created_for_every_run():
                 )
             ],
         )
-        
+
         result = execute_workflow(
             workflow_def=workflow,
             inputs={},
             workspace_override=workspace_override,
         )
-        
-        assert result.status == "completed"
+
+        assert result.status == WorkflowStatus.COMPLETED
         
         # Verify workspace was created
         workspaces = list(workspace_override.glob("*"))
@@ -50,7 +50,7 @@ def test_workspace_root_env_override():
     with tempfile.TemporaryDirectory() as tmpdir:
         # Set env var
         os.environ["DAG_WORKSPACE_ROOT"] = tmpdir
-        
+
         try:
             workflow = WorkflowDef(
                 name="test-env-workspace",
@@ -64,13 +64,13 @@ def test_workspace_root_env_override():
                     )
                 ],
             )
-            
+
             result = execute_workflow(
                 workflow_def=workflow,
                 inputs={},
             )
-            
-            assert result.status == "completed"
+
+            assert result.status == WorkflowStatus.COMPLETED
             
             # Verify workspace was created in env dir
             workspaces = list(Path(tmpdir).glob("*"))
@@ -94,7 +94,7 @@ def test_workspace_channel_auto_registered():
                     id="check",
                     name="Check Workspace",
                     type="bash",
-                    script='if [ -z "$DAG_workspace" ]; then echo "FAIL: workspace not set"; exit 1; else echo "workspace=$DAG_workspace"; fi',
+                    script='if [ -z "$DAG_WORKSPACE" ]; then echo "FAIL: workspace not set"; exit 1; else echo "workspace=$DAG_WORKSPACE"; fi',
                 )
             ],
         )
@@ -104,7 +104,7 @@ def test_workspace_channel_auto_registered():
             inputs={},
             workspace_override=workspace_override,
         )
-        
-        assert result.status == "completed"
+
+        assert result.status == WorkflowStatus.COMPLETED
         # Node should have succeeded (workspace env var was set)
-        assert result.node_results.get("check", {}).get("status") == "completed"
+        assert result.node_results["check"].status == NodeStatus.COMPLETED
