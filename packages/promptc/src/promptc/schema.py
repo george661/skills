@@ -83,10 +83,12 @@ class InputDecl(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
-    type: Literal["string", "int", "float", "bool", "list", "object"]
+    type: Literal["string", "int", "float", "bool", "list", "object", "url", "enum", "json"]
     required: bool = True
     default: Any = None
     description: Optional[str] = None
+    values: Optional[list[str]] = None  # For type="enum": allowed values
+    pattern: Optional[str] = None  # Regex pattern for string validation
 
 
 class OutputDecl(BaseModel):
@@ -95,7 +97,7 @@ class OutputDecl(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
-    type: Literal["string", "int", "float", "bool", "list", "object", "enum"]
+    type: Literal["string", "int", "float", "bool", "list", "object", "enum", "url", "json"]
     description: Optional[str] = None
     values: Optional[list[str]] = None  # For type="enum": allowed values
     pattern: Optional[str] = None  # Regex pattern for string validation
