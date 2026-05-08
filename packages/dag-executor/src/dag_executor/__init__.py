@@ -171,6 +171,7 @@ def execute_workflow(
     events_dir: Optional["Path"] = None,
     conversation_id: Optional[str] = None,
     db_path: Optional["Path"] = None,
+    workspace_override: Optional["Path"] = None,
 ) -> WorkflowResult:
     """Execute a workflow from start to completion.
 
@@ -187,6 +188,7 @@ def execute_workflow(
             triggers SIGTERM/SIGKILL on marker detection.
         conversation_id: Optional conversation ID for session continuity
         db_path: Optional path to dashboard database for conversation storage
+        workspace_override: Optional workspace root override (from --workspace CLI flag)
 
     Returns:
         WorkflowResult with execution status and node results
@@ -201,6 +203,7 @@ def execute_workflow(
             event_emitter=event_emitter, checkpoint_store=checkpoint_store, run_id=run_id,
             channel_store=channel_store, events_dir=events_dir,
             conversation_id=conversation_id, db_path=db_path,
+            workspace_override=workspace_override,
         )
     )
 

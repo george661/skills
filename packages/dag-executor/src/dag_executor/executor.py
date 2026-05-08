@@ -232,15 +232,72 @@ class WorkflowResult:
 
 class WorkflowExecutor:
     """Executes workflow DAGs with layer-parallel node execution."""
-    
+
     DEFAULT_TIMEOUTS = {
         "prompt": 300,
         "command": 300,
         "bash": 60,
         "skill": 60,
         "gate": 30,
+        "git-sync": 300,
     }
-    
+
+    def _resolve_workspace_root(self, workspace_override: Optional[Path] = None) -> Path:
+        """Resolve workspace root directory.
+
+        Priority:
+        1. workspace_override parameter (from --workspace CLI flag)
+        2. DAG_WORKSPACE_ROOT env var
+        3. Default: ~/.dag-dashboard/workspaces
+        """
+        import os
+
+        if workspace_override:
+            return workspace_override.expanduser()
+
+        env_root = os.environ.get("DAG_WORKSPACE_ROOT")
+        if env_root:
+            return Path(env_root).expanduser()
+
+        return Path.home() / ".dag-dashboard" / "workspaces"
+
+    def _inject_git_sync_node(self, workflow_def: WorkflowDef) -> WorkflowDef:
+        """Inject synthetic git-sync node if config.git is present.
+
+        Returns a modified copy of workflow_def with the git-sync node
+        prepended to the DAG and all original Layer 0 nodes depending on it.
+        """
+        if not workflow_def.config.git:
+            return workflow_def
+
+        # Create synthetic git-sync node
+        from dag_executor.schema import NodeDef
+
+        git_sync_node = NodeDef(
+            id="__git_sync__",
+            name="Git Sync",
+            type="git-sync",
+            depends_on=[],
+            on_failure=OnFailure.STOP,
+        )
+
+        # Copy workflow_def and modify nodes
+        import copy
+        modified_def = copy.deepcopy(workflow_def)
+
+        # Find original Layer 0 nodes (nodes with no dependencies)
+        layer_0_nodes = [n for n in modified_def.nodes if not n.depends_on]
+
+        # Add git-sync dependency to all Layer 0 nodes
+        for node in modified_def.nodes:
+            if node.id in [n.id for n in layer_0_nodes]:
+                node.depends_on.append("__git_sync__")
+
+        # Prepend git-sync node
+        modified_def.nodes.insert(0, git_sync_node)
+
+        return modified_def
+
     async def execute(
         self,
         workflow_def: WorkflowDef,
@@ -258,6 +315,7 @@ class WorkflowExecutor:
         db_path: Optional["Path"] = None,
         prefilled_outputs: Optional[Dict[str, Dict[str, Any]]] = None,
         prefilled_channel_writes: Optional[Dict[str, Dict[str, Any]]] = None,
+        workspace_override: Optional[Path] = None,
     ) -> WorkflowResult:
         """Execute workflow from start to completion.
 
@@ -277,6 +335,7 @@ class WorkflowExecutor:
             subprocess_registry: Optional subprocess registry to share with parent
             conversation_id: Optional conversation ID for session grouping
             db_path: Optional database path for conversation/session storage
+            workspace_override: Optional workspace root override (from --workspace CLI flag)
 
         Returns:
             WorkflowResult with execution status and node results
@@ -372,6 +431,22 @@ class WorkflowExecutor:
 
         # Always initialize ChannelStore (empty for workflows without state declarations)
         ctx.channel_store = ChannelStore.from_workflow_def(workflow_def, emitter=channel_emitter)
+
+        # Create workspace directory and emit workspace channel
+        workspace_root = self._resolve_workspace_root(workspace_override)
+        workspace_path = workspace_root / run_id
+        workspace_path.mkdir(parents=True, exist_ok=True)
+
+        # Ensure workspace channel exists in the store
+        from dag_executor.channels import LastValueChannel
+        if "workspace" not in ctx.channel_store.channels:
+            ctx.channel_store.channels["workspace"] = LastValueChannel("workspace")
+
+        # Write workspace path to channel (emits event via channel_emitter)
+        ctx.channel_store.write("workspace", str(workspace_path), writer_node_id="__runtime__")
+
+        # Inject git-sync node if config.git is present
+        workflow_def = self._inject_git_sync_node(workflow_def)
 
         # Initialize all nodes to PENDING status
         for node in workflow_def.nodes:
