@@ -1,0 +1,3 @@
+#!/bin/sh
+# Portable shim for promptc CLI — exec the installed binary
+exec promptc "$@"
