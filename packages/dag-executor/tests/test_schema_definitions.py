@@ -1,5 +1,6 @@
 """Tests for workflow definition models (for YAML parsing)."""
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from dag_executor.schema import (
@@ -168,7 +169,34 @@ class TestNodeTypeConfigs:
             PromptNodeConfig(model=ModelTier.SONNET)  # type: ignore
         error_str = str(exc_info.value).lower()
         assert "prompt" in error_str or "required" in error_str
-    
+
+    def test_prompt_node_with_inputs(self) -> None:
+        """Test PromptNodeConfig with inputs dict."""
+        config = PromptNodeConfig(
+            prompt_file="x.md",
+            inputs={"topic": "cats"},
+            model=ModelTier.SONNET
+        )
+        assert config.inputs == {"topic": "cats"}
+
+    def test_prompt_node_inputs_defaults_empty(self) -> None:
+        """Test that inputs defaults to empty dict when omitted."""
+        config = PromptNodeConfig(
+            prompt_file="x.md",
+            model=ModelTier.SONNET
+        )
+        assert config.inputs == {}
+
+    def test_prompt_node_inline_prompt_with_inputs(self) -> None:
+        """Test PromptNodeConfig with inline prompt and inputs."""
+        config = PromptNodeConfig(
+            prompt="Test prompt",
+            inputs={"key": "value"},
+            model=ModelTier.SONNET
+        )
+        assert config.prompt == "Test prompt"
+        assert config.inputs == {"key": "value"}
+
     def test_bash_node_config(self) -> None:
         """Test BashNodeConfig model."""
         config = BashNodeConfig(script="echo hello")
@@ -221,7 +249,32 @@ class TestNodeDef:
         assert node.id == "prompt1"
         assert node.type == "prompt"
         assert node.prompt == "Test prompt"
-    
+
+    def test_prompt_node_with_prompt_inputs(self) -> None:
+        """Test NodeDef prompt node with prompt_inputs."""
+        node = NodeDef(
+            id="prompt1",
+            name="Test Prompt",
+            type="prompt",
+            prompt_file="x.md",
+            prompt_inputs={"a": 1}
+        )
+        assert node.prompt_file == "x.md"
+        assert node.prompt_inputs == {"a": 1}
+
+    def test_prompt_inputs_rejected_on_non_prompt(self) -> None:
+        """Test that prompt_inputs is rejected on non-prompt nodes."""
+        with pytest.raises(ValidationError) as exc_info:
+            NodeDef(
+                id="bash1",
+                name="Test Bash",
+                type="bash",
+                script="echo test",
+                prompt_inputs={"a": 1}
+            )
+        error_str = str(exc_info.value).lower()
+        assert "prompt_inputs" in error_str or "prompt" in error_str
+
     def test_bash_node(self) -> None:
         """Test creating a bash node definition."""
         node = NodeDef(
@@ -422,3 +475,71 @@ class TestWorkflowDef:
             )
         error_str = str(exc_info.value).lower()
         assert "nodes" in error_str or "at least" in error_str or "empty" in error_str
+
+
+class TestPromptNodeYAMLRoundTrip:
+    """Test YAML round-trip for prompt nodes."""
+
+    def test_roundtrip_inline_prompt(self) -> None:
+        """Test round-trip for NodeDef with inline prompt."""
+        yaml_dict = {
+            "id": "prompt1",
+            "name": "Test Prompt",
+            "type": "prompt",
+            "prompt": "Test prompt text",
+            "model": "sonnet"
+        }
+        # Parse from dict
+        node1 = NodeDef(**yaml_dict)
+        # Dump to dict (exclude_none to match YAML behavior)
+        dumped = node1.model_dump(exclude_none=True, mode="json")
+        # Convert to YAML string and back
+        yaml_str = yaml.safe_dump(dumped)
+        reloaded = yaml.safe_load(yaml_str)
+        # Parse again
+        node2 = NodeDef(**reloaded)
+        # Compare
+        assert node1.model_dump(exclude_none=True, mode="json") == node2.model_dump(exclude_none=True, mode="json")
+
+    def test_roundtrip_prompt_file_with_inputs(self) -> None:
+        """Test round-trip for NodeDef with prompt_file and prompt_inputs."""
+        yaml_dict = {
+            "id": "prompt1",
+            "name": "Test Prompt",
+            "type": "prompt",
+            "prompt_file": "path/to.md",
+            "prompt_inputs": {"topic": "cats", "count": 3},
+            "model": "sonnet"
+        }
+        # Parse from dict
+        node1 = NodeDef(**yaml_dict)
+        # Dump to dict (exclude_none to match YAML behavior)
+        dumped = node1.model_dump(exclude_none=True, mode="json")
+        # Convert to YAML string and back
+        yaml_str = yaml.safe_dump(dumped)
+        reloaded = yaml.safe_load(yaml_str)
+        # Parse again
+        node2 = NodeDef(**reloaded)
+        # Compare
+        assert node1.model_dump(exclude_none=True, mode="json") == node2.model_dump(exclude_none=True, mode="json")
+
+    def test_roundtrip_prompt_file_without_inputs(self) -> None:
+        """Test round-trip for NodeDef with prompt_file only (inputs omitted)."""
+        yaml_dict = {
+            "id": "prompt1",
+            "name": "Test Prompt",
+            "type": "prompt",
+            "prompt_file": "path/to.md",
+            "model": "sonnet"
+        }
+        # Parse from dict
+        node1 = NodeDef(**yaml_dict)
+        # Dump to dict (exclude_none to match YAML behavior)
+        dumped = node1.model_dump(exclude_none=True, mode="json")
+        # Convert to YAML string and back
+        yaml_str = yaml.safe_dump(dumped)
+        reloaded = yaml.safe_load(yaml_str)
+        # Parse again
+        node2 = NodeDef(**reloaded)
+        # Compare
+        assert node1.model_dump(exclude_none=True, mode="json") == node2.model_dump(exclude_none=True, mode="json")
