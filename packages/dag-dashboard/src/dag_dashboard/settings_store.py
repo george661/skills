@@ -19,6 +19,7 @@ WHITELISTED_KEYS = {
     "workflows_dir",
     "node_log_line_cap",
     "allow_destructive_nodes",
+    "builder_enabled",
 }
 
 # Keys that contain secrets (should be masked in GET responses)

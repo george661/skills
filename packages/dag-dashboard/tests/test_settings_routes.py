@@ -315,3 +315,52 @@ def test_get_settings_includes_allow_destructive_nodes(client: TestClient) -> No
     setting = data["settings"]["allow_destructive_nodes"]
     assert setting["value"] is False
     assert setting["source"] == "default"
+
+
+def test_put_builder_enabled_true(client: TestClient) -> None:
+    """Test PUT /api/settings with builder_enabled=true returns 200."""
+    response = client.put("/api/settings", json={"updates": {"builder_enabled": True}})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "settings" in data
+    assert data["settings"]["builder_enabled"]["value"] is True
+
+
+def test_put_builder_enabled_false(client: TestClient) -> None:
+    """Test PUT /api/settings with builder_enabled=false returns 200 and persists override."""
+    response = client.put("/api/settings", json={"updates": {"builder_enabled": False}})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "settings" in data
+    assert data["settings"]["builder_enabled"]["value"] is False
+    assert data["settings"]["builder_enabled"]["source"] == "db"
+
+
+def test_put_builder_enabled_rejects_non_bool(client: TestClient) -> None:
+    """Test PUT /api/settings rejects non-bool value for builder_enabled."""
+    response = client.put("/api/settings", json={"updates": {"builder_enabled": "yes"}})
+
+    assert response.status_code == 400
+    data = response.json()
+    assert "detail" in data
+    assert "errors" in data["detail"]
+    errors = {e["key"]: e["detail"] for e in data["detail"]["errors"]}
+    assert "builder_enabled" in errors
+    assert "must be boolean" in errors["builder_enabled"]
+
+
+def test_get_settings_includes_builder_enabled(client: TestClient) -> None:
+    """Test GET /api/settings includes builder_enabled in merged response."""
+    response = client.get("/api/settings")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "settings" in data
+    assert "builder_enabled" in data["settings"]
+
+    # Should have default value (True) and source "default"
+    setting = data["settings"]["builder_enabled"]
+    assert setting["value"] is True
+    assert setting["source"] == "default"

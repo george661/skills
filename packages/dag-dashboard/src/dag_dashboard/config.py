@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     dashboard_url: str = "http://127.0.0.1:8100"
 
     # Builder feature flag
-    builder_enabled: bool = Field(default=False, description="Enable DAG builder UI (feature-flagged React bundle)")
+    builder_enabled: bool = Field(default=True, description="Enable DAG builder UI (feature-flagged React bundle)")
 
     # Event collection settings
     node_log_line_cap: int = Field(
