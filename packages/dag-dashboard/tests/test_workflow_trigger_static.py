@@ -74,3 +74,39 @@ def test_styles_css_contains_model_override_banner_class(tmp_client):
     assert response.status_code == 200
     css_content = response.text
     assert ".model-override-banner" in css_content
+
+
+def test_workflows_js_uses_data_pattern_not_pattern_attribute(tmp_client):
+    """Trigger form stores YAML input patterns on data-pattern, not on the
+    HTML `pattern` attribute.
+
+    Regression guard for GW-5774. Modern Chromium compiles `pattern=`
+    attributes with the ECMAScript `v` regex flag, which rejects character
+    classes like [a-zA-Z0-9_-] as "Invalid character in character class"
+    and bricks any trigger form whose YAML input uses such a pattern
+    (e.g. validate-epic-audit-artifacts.yaml). Submit-time validation via
+    `new RegExp(pattern)` uses `u`-flag semantics which accepts those
+    patterns cleanly.
+    """
+    response = tmp_client.get("/js/workflows.js")
+    assert response.status_code == 200
+    js = response.text
+
+    # The form-field render path must NOT emit a raw pattern= attribute
+    # for workflow inputs. The old regression was:
+    #   ${pattern ? `pattern="${escapeHtml(pattern)}"` : ''}
+    assert '`pattern="${escapeHtml(pattern)}"`' not in js, (
+        "workflows.js still emits raw `pattern=` attribute for input fields — "
+        "this breaks forms under Chromium's ECMAScript `v` regex flag. "
+        "Use `data-pattern=` and validate with new RegExp() on submit."
+    )
+
+    # The data-pattern path must exist.
+    assert 'data-pattern="${escapeHtml(pattern)}"' in js, (
+        "Expected data-pattern= attribute on form inputs (GW-5774 fix)."
+    )
+
+    # Submit-time validation must run `new RegExp(patternAttr).test(value)`.
+    assert "new RegExp(patternAttr)" in js, (
+        "Expected submit-time pattern validation via new RegExp() (GW-5774 fix)."
+    )
