@@ -10,4 +10,4 @@ tier: 6
 
 {% output name="summary" type="string" /%}
 
-Generate a one-sentence summary about {{topic}}.
+Generate a one-sentence summary about {% $inputs.topic %}.
