@@ -98,3 +98,10 @@ def test_settings_page_references_allow_destructive_nodes(tmp_path: Path) -> Non
     js = client.get("/js/settings-page.js").text
     assert "allow_destructive_nodes" in js, "allow_destructive_nodes key not found in settings-page.js"
     assert "Builder" in js, "Builder section not found in settings-page.js"
+
+
+def test_settings_page_references_builder_enabled(tmp_path: Path) -> None:
+    """The settings page must expose a toggle for builder_enabled."""
+    client = _client(tmp_path)
+    js = client.get("/js/settings-page.js").text
+    assert "builder_enabled" in js, "builder_enabled key not found in settings-page.js"

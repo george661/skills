@@ -50,6 +50,7 @@
             id: 'builder',
             title: 'Builder',
             fields: [
+                { key: 'builder_enabled', label: 'Enable DAG builder UI', type: 'checkbox', help: 'Show the Builder tab in the top nav. The builder lets you edit workflow DAGs visually. Requires a page reload to take effect.' },
                 { key: 'allow_destructive_nodes', label: 'Allow editing bash/skill/command node fields', type: 'checkbox', help: 'Keep OFF unless you trust everyone with dashboard access. When enabled, users can edit bash commands, skill references, and command node fields in the workflow builder.' },
             ],
         },

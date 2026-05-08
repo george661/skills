@@ -10,24 +10,27 @@ from dag_dashboard.config import Settings
 
 
 @pytest.fixture
-def client_with_flag_off(tmp_path: Path):
-    """Client with builder_enabled=False (default)."""
+def client_with_flag_on(tmp_path: Path):
+    """Client with builder_enabled=True (default)."""
     db_dir = tmp_path
     init_db(db_dir / "dashboard.db")
     events_dir = tmp_path / "events"
     events_dir.mkdir()
     checkpoint_dir = tmp_path / "checkpoints"
     checkpoint_dir.mkdir(exist_ok=True)
-    # Default settings (builder_enabled=False)
-    app = create_app(db_dir, events_dir=events_dir, checkpoint_dir_fallback=str(checkpoint_dir))
+    # Default settings (builder_enabled=True). An explicit Settings() is required
+    # because create_app defaults settings=None, which makes /api/config fall back
+    # to False via getattr — we want to verify the actual model default here.
+    settings = Settings()
+    app = create_app(db_dir, events_dir=events_dir, checkpoint_dir_fallback=str(checkpoint_dir), settings=settings)
     return TestClient(app)
 
 
 @pytest.fixture
-def client_with_flag_on(tmp_path: Path, monkeypatch):
-    """Client with builder_enabled=True."""
+def client_with_flag_off(tmp_path: Path, monkeypatch):
+    """Client with builder_enabled=False (opt-out via env var)."""
     # Override settings BEFORE creating settings/app
-    monkeypatch.setenv("DAG_DASHBOARD_BUILDER_ENABLED", "true")
+    monkeypatch.setenv("DAG_DASHBOARD_BUILDER_ENABLED", "false")
 
     db_dir = tmp_path
     init_db(db_dir / "dashboard.db")
@@ -42,20 +45,20 @@ def client_with_flag_on(tmp_path: Path, monkeypatch):
     return TestClient(app)
 
 
-def test_config_endpoint_default_false(client_with_flag_off) -> None:
-    """GET /api/config should return builder_enabled: false by default."""
-    response = client_with_flag_off.get("/api/config")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["builder_enabled"] is False
-
-
-def test_config_endpoint_respects_env(client_with_flag_on) -> None:
-    """GET /api/config should respect DAG_DASHBOARD_BUILDER_ENABLED env var."""
+def test_config_endpoint_default_true(client_with_flag_on) -> None:
+    """GET /api/config should return builder_enabled: true by default."""
     response = client_with_flag_on.get("/api/config")
     assert response.status_code == 200
     data = response.json()
     assert data["builder_enabled"] is True
+
+
+def test_config_endpoint_respects_env_off(client_with_flag_off) -> None:
+    """GET /api/config should respect DAG_DASHBOARD_BUILDER_ENABLED=false override."""
+    response = client_with_flag_off.get("/api/config")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["builder_enabled"] is False
 
 
 def test_builder_config_js_reflects_flag_off(client_with_flag_off) -> None:

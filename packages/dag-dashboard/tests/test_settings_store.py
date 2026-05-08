@@ -146,3 +146,28 @@ def test_allow_destructive_nodes_reload_from_db(tmp_path: Path) -> None:
     # Reload from db - should override default
     settings.reload_from_db(db_path)
     assert settings.allow_destructive_nodes is True
+
+
+def test_builder_enabled_is_whitelisted() -> None:
+    """Test that builder_enabled is in WHITELISTED_KEYS."""
+    assert "builder_enabled" in WHITELISTED_KEYS
+
+
+def test_builder_enabled_reload_from_db(tmp_path: Path) -> None:
+    """Test that builder_enabled can be written to db and reloaded (override default)."""
+    from dag_dashboard.config import Settings
+    from dag_dashboard.database import init_db
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+
+    # Write false via put_setting (overriding the True default)
+    put_setting(db_path, "builder_enabled", False, updated_by="test")
+
+    # Create settings instance (default should be True)
+    settings = Settings()
+    assert settings.builder_enabled is True
+
+    # Reload from db - should override default
+    settings.reload_from_db(db_path)
+    assert settings.builder_enabled is False
