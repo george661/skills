@@ -9,7 +9,6 @@ from __future__ import annotations
 import ast
 import multiprocessing
 import re
-import signal
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,10 +26,10 @@ from promptc.resolver import resolve_command, resolve_file, resolve_skill
 from promptc.schema import (
     Doc,
     PhaseNode,
+    RawNode,
     RefNode,
     RunNode,
     TextNode,
-    RawNode,
     ValidationIssue,
     ValidationReport,
     WhenNode,
@@ -227,7 +226,7 @@ def _probe_redos(doc: Doc, cfg: ParserConfig) -> list[ValidationIssue]:
         if not inp.pattern:
             continue
         try:
-            compiled = re.compile(inp.pattern)
+            re.compile(inp.pattern)
         except re.error as e:
             issues.append(ValidationIssue(
                 severity="error", code="REDOS_INVALID_REGEX",
