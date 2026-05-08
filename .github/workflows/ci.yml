@@ -61,6 +61,110 @@ jobs:
             echo "::endgroup::"
           done <<< "$pkgs"
 
+  promptc-validate:
+    name: promptc validate (commands/ skills/ docs/)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+
+      - name: Install promptc
+        run: |
+          uv venv .venv --python ${{ matrix.python-version }}
+          source .venv/bin/activate
+          uv pip install -e packages/promptc[dev]
+
+      - name: Validate all .md files under commands/, skills/, docs/
+        run: |
+          source .venv/bin/activate
+          # docs/promptc-spec.md contains unquoted attr=val in prose documenting
+          # the promptc syntax itself; validator cannot parse such examples.
+          # Exclude by path — if the spec is ever rewritten to use fenced code
+          # blocks for its examples, remove this line.
+          EXCLUDE='^docs/promptc-spec\.md$'
+
+          errors=0
+          warnings=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if echo "$f" | grep -qE "$EXCLUDE"; then
+              echo "SKIP (intentional exclusion): $f"
+              continue
+            fi
+            out=$(promptc validate "$f" 2>&1)
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              echo "FAIL: $f"
+              echo "$out" | sed 's/^/  /'
+              errors=$((errors + 1))
+            elif echo "$out" | grep -qi 'warning'; then
+              echo "WARN: $f"
+              echo "$out" | sed 's/^/  /'
+              warnings=$((warnings + 1))
+            fi
+          done < <(find commands skills docs -name '*.md' -type f | sort)
+
+          echo ""
+          echo "promptc validate summary: $errors error(s), $warnings warning(s)"
+          if [ "$errors" -gt 0 ]; then
+            exit 1
+          fi
+
+  promptc-evaluator-parity:
+    name: promptc ⇄ simpleeval parity
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+
+      - name: Install promptc + dag-executor (both bring simpleeval)
+        run: |
+          uv venv .venv --python ${{ matrix.python-version }}
+          source .venv/bin/activate
+          # promptc[dev] includes simpleeval; dag-executor is installed editable
+          # so a future refactor that centralizes the evaluator is automatically
+          # exercised here. If dag-executor is installed but unused by this job
+          # today, the install is cheap and keeps the parity scope honest.
+          uv pip install -e packages/promptc[dev] -e packages/dag-executor
+
+      - name: Run expression parity suite
+        run: |
+          source .venv/bin/activate
+          cd packages/promptc
+          pytest tests/test_expression_parity.py -v
+
+      - name: Assert corpus covers required surface
+        run: |
+          source .venv/bin/activate
+          python - <<'PYEOF'
+          import json, pathlib, sys
+          corpus = json.loads(pathlib.Path(
+              "packages/promptc/tests/fixtures/expression_parity.json"
+          ).read_text())
+          if len(corpus) < 10:
+              sys.exit(f"corpus has {len(corpus)} cases, need >= 10 per AC3")
+          ops = "== != < <= > >= and or not in".split()
+          funcs = ["len", "contains", "startswith", "matches"]
+          joined = " ".join(c["expr"] for c in corpus)
+          missing_ops = [o for o in ops if o not in joined]
+          missing_funcs = [f for f in funcs if f + "(" not in joined]
+          if missing_ops:
+              sys.exit(f"corpus missing operators: {missing_ops}")
+          if missing_funcs:
+              sys.exit(f"corpus missing functions: {missing_funcs}")
+          print(f"corpus OK: {len(corpus)} cases, covers all operators + functions")
+          PYEOF
+
   builder-bundle:
     name: Builder Bundle (React + React Flow)
     runs-on: ubuntu-latest
