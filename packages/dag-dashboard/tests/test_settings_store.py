@@ -171,3 +171,45 @@ def test_builder_enabled_reload_from_db(tmp_path: Path) -> None:
     # Reload from db - should override default
     settings.reload_from_db(db_path)
     assert settings.builder_enabled is False
+
+
+def test_reload_from_db_reparses_derived_dirs(tmp_path: Path) -> None:
+    """workflows_dirs / skills_dirs must re-derive from DB-reloaded workflows_dir / skills_dir.
+
+    Regression test for GW-5770: reload_from_db applied overrides via setattr,
+    which bypassed the model_validator(mode="after") that parses workflows_dir
+    into the workflows_dirs list. Result: workflows_dirs stayed at the
+    construction-time default ([Path("workflows")]) while workflows_dir
+    pointed at the real absolute path, causing /api/definitions to scan a
+    non-existent relative directory and return [].
+    """
+    from dag_dashboard.config import Settings
+    from dag_dashboard.database import init_db
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+
+    real_workflows = tmp_path / "my-workflows"
+    real_workflows.mkdir()
+    real_skills = tmp_path / "my-skills"
+    real_skills.mkdir()
+
+    put_setting(db_path, "workflows_dir", str(real_workflows), updated_by="test")
+    # skills_dir is not whitelisted for the settings API but the same setattr
+    # path runs for any DB key that matches a Settings attribute, so test it
+    # via the same mechanism.
+    put_setting(db_path, "skills_dir", str(real_skills), updated_by="test")
+
+    settings = Settings()
+    # Construction-time defaults
+    assert settings.workflows_dirs == [Path("workflows")]
+
+    settings.reload_from_db(db_path)
+
+    # After reload, the scalar fields reflect the DB values
+    assert settings.workflows_dir == str(real_workflows)
+    assert settings.skills_dir == str(real_skills)
+
+    # And critically, the derived list fields have been re-parsed
+    assert settings.workflows_dirs == [real_workflows]
+    assert settings.skills_dirs == [real_skills]

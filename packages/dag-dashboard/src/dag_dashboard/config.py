@@ -198,12 +198,26 @@ class Settings(BaseSettings):
             for key, value in overrides.items():
                 setattr(self, key, value)
 
-            # Re-validate by calling model_validate on a fresh instance
-            # This ensures Slack coherency rules are still enforced
+            # Re-run model validators so derived fields (workflows_dirs,
+            # skills_dirs) get re-parsed from the newly-set workflows_dir /
+            # skills_dir. A plain setattr bypasses model_validator(mode="after")
+            # and leaves the dirs-list fields stuck at their construction-time
+            # default ([Path("workflows")]), which made /api/definitions return
+            # an empty list whenever workflows_dir was persisted via the
+            # Settings UI. Also preserves Slack coherency validation.
             if overrides:
-                # Validate by constructing with current values
-                current_values = self.model_dump()
-                self.__class__(**current_values)
+                # model_dump() excludes workflows_dirs/skills_dirs from the
+                # reconstruction input so the validator re-derives them from
+                # the scalar fields (same behavior as the original
+                # construction path when workflows_dirs defaults to []).
+                current_values = self.model_dump(
+                    exclude={"workflows_dirs", "skills_dirs"}
+                )
+                refreshed = self.__class__(**current_values)
+                self.workflows_dir = refreshed.workflows_dir
+                self.workflows_dirs = refreshed.workflows_dirs
+                self.skills_dir = refreshed.skills_dir
+                self.skills_dirs = refreshed.skills_dirs
 
         finally:
             conn.close()
