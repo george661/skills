@@ -426,3 +426,110 @@ class TestEmpty:
         result = render(doc)
 
         assert result == ""
+
+
+class TestModeBRendering:
+    """Tests for Mode-B rendering (GW-5482)."""
+
+    def test_mode_b_strips_run_blocks(self) -> None:
+        """Mode-B should strip {% run %} blocks entirely."""
+        source = """
+{% meta doc_type="command" /%}
+{% input name="issue" type="string" /%}
+
+## Phase: Fetch Data
+
+{% run id="data" skill="jira/get_issue" %}
+{"issue_key": "{% $inputs.issue %}"}
+{% /run %}
+
+Next step.
+"""
+        ast = parse_str(source)
+        doc = Doc.from_ast(ast)
+
+        result = render(doc, {"issue": "GW-123"}, mode="b")
+
+        # Should NOT contain skill invocation instructions
+        assert "Call the jira/get_issue skill" not in result
+        assert "npx tsx" not in result
+        assert "Capture" not in result
+        # Should preserve phase header and surrounding text
+        assert "## Phase: Fetch Data" in result
+        assert "Next step." in result
+
+    def test_mode_b_preserves_unbound_run_refs(self) -> None:
+        """Mode-B should preserve {% $run_id.field %} as literal text."""
+        source = """
+{% meta doc_type="command" /%}
+{% input name="issue" type="string" /%}
+
+The status is: {% $issue_data.status %}
+"""
+        ast = parse_str(source)
+        doc = Doc.from_ast(ast)
+
+        result = render(doc, {"issue": "GW-123"}, mode="b")
+
+        # Should preserve the literal variable reference
+        assert "$issue_data.status" in result
+
+    def test_mode_b_still_substitutes_inputs(self) -> None:
+        """Mode-B should still substitute {% $inputs.X %} variables."""
+        source = """
+{% meta doc_type="command" /%}
+{% input name="issue" type="string" required=true /%}
+
+Processing issue: {% $inputs.issue %}
+"""
+        ast = parse_str(source)
+        doc = Doc.from_ast(ast)
+
+        result = render(doc, {"issue": "GW-5482"}, mode="b")
+
+        # Input substitution should work
+        assert "GW-5482" in result
+        assert "{% $inputs.issue %}" not in result
+
+    def test_mode_a_still_works(self) -> None:
+        """Mode-A should still render run blocks as instructions."""
+        source = """
+{% run skill="jira/get_issue" %}
+{"issue_key": "GW-123"}
+{% /run %}
+"""
+        ast = parse_str(source)
+        doc = Doc.from_ast(ast)
+
+        result = render(doc, mode="a")
+
+        # Mode-A should emit skill instructions
+        assert "Call the jira/get_issue skill" in result
+        assert "npx tsx" in result
+
+    def test_mode_a_rejects_unbound_run_refs(self) -> None:
+        """Mode-A should raise RenderError for unbound run references."""
+        source = """
+{% meta doc_type="command" /%}
+The status is: {% $issue_data.status %}
+"""
+        ast = parse_str(source)
+        doc = Doc.from_ast(ast)
+
+        with pytest.raises(RenderError, match="Mode-B run_context substitution"):
+            render(doc, mode="a")
+
+    def test_mode_defaults_to_a(self) -> None:
+        """Default mode should be 'a' for backward compatibility."""
+        source = """
+{% run skill="test" %}{}{% /run %}
+"""
+        ast = parse_str(source)
+        doc = Doc.from_ast(ast)
+
+        result_explicit = render(doc, mode="a")
+        result_default = render(doc)
+
+        # Default and explicit mode="a" should be identical
+        assert result_default == result_explicit
+        assert "Call the test skill" in result_default

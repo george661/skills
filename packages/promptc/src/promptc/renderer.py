@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Literal, Mapping, Optional
 
 from promptc.config import ParserConfig
 from promptc.errors import RenderError
@@ -25,6 +25,8 @@ def render(
     doc: Doc,
     inputs: Optional[Mapping[str, Any]] = None,
     config: Optional[ParserConfig] = None,
+    *,
+    mode: Literal["a", "b"] = "a",
 ) -> str:
     """Render a promptc Doc to a string.
 
@@ -32,6 +34,8 @@ def render(
         doc: The parsed and validated promptc document
         inputs: Optional input values for variable substitution
         config: Optional parser configuration (defaults to ParserConfig())
+        mode: Rendering mode. "a" (default) emits run blocks as LLM instructions;
+              "b" strips run blocks and preserves unbound $run_id.field refs as literals.
 
     Returns:
         Rendered document as a string
@@ -50,6 +54,7 @@ def render(
         "_doc": doc,  # Internal: pass doc for ref resolution
         "_config": config or ParserConfig(),  # Internal: use provided or default config
         "_include_stack": [doc.path] if doc.path else [],  # Internal: track include chain
+        "_mode": mode,  # Internal: rendering mode
     }
 
     # Render body nodes
@@ -164,6 +169,10 @@ def _render_node(node: Any, context: dict[str, Any]) -> str:
         return "".join(child_parts)
 
     elif isinstance(node, RunNode):
+        # In Mode-B, strip run blocks entirely
+        mode = context.get("_mode", "a")
+        if mode == "b":
+            return ""
         return _render_run_node(node, context)
 
     elif isinstance(node, RefNode):
@@ -410,11 +419,17 @@ def _substitute_variables(text: str, context: dict[str, Any]) -> str:
             return str(context[var_name])
 
         elif field_path:
-            # {% $run_id.field %} form - not supported in Mode A
-            raise RenderError(
-                "Mode-B run_context substitution is not supported; "
-                f"{{% ${var_name}.{field_path} %}} requires dag-executor integration"
-            )
+            # {% $run_id.field %} form
+            mode = context.get("_mode", "a")
+            if mode == "b":
+                # Mode-B: preserve as literal text
+                return f"${var_name}.{field_path}"
+            else:
+                # Mode-A: not supported
+                raise RenderError(
+                    "Mode-B run_context substitution is not supported; "
+                    f"{{% ${var_name}.{field_path} %}} requires dag-executor integration"
+                )
 
         else:
             # Unknown variable
