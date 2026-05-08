@@ -1,0 +1,5 @@
+{
+  "status": "OPEN",
+  "summary": "Test issue summary",
+  "assignee": "user@example.com"
+}
