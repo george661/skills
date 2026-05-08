@@ -116,3 +116,50 @@ nodes:
     response = client.get("/api/definitions/invalid-yaml")
     assert response.status_code == 500
     assert "parse error" in response.json()["detail"].lower()
+
+
+def test_definitions_reflect_db_persisted_workflows_dir(tmp_path: Path) -> None:
+    """/api/definitions respects a DB-persisted workflows_dir override.
+
+    Regression guard for GW-5770: when workflows_dir is persisted via the
+    Settings UI (dashboard_settings table), the reload_from_db path must
+    propagate to app.state.workflows_dirs before routes read it. Previously
+    app.state.workflows_dirs was pinned from settings.workflows_dirs BEFORE
+    reload_from_db ran, so DB overrides were invisible to /api/definitions.
+    """
+    from dag_dashboard.config import Settings
+    from dag_dashboard.database import init_db
+    from dag_dashboard.settings_store import put_setting
+
+    # Create a real workflows dir with one YAML
+    real_workflows = tmp_path / "custom-workflows"
+    real_workflows.mkdir()
+    (real_workflows / "hello.yaml").write_text("""
+name: hello
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: greet
+    name: Greet
+    type: bash
+    script: 'echo hello'
+""".lstrip())
+
+    # Persist workflows_dir in the DB (simulating a Settings UI save)
+    db_path = tmp_path / "dashboard.db"
+    init_db(db_path)
+    put_setting(db_path, "workflows_dir", str(real_workflows), updated_by="test")
+
+    # Settings() sees the default; reload_from_db (inside lifespan) must
+    # propagate. Use TestClient as a context manager so lifespan fires.
+    settings = Settings()
+    app = create_app(db_path=db_path, settings=settings)
+    with TestClient(app) as client:
+        response = client.get("/api/definitions")
+        assert response.status_code == 200
+        definitions = response.json()
+        names = [d.get("name") for d in definitions]
+        assert "hello" in names, (
+            f"Expected /api/definitions to reflect DB-persisted workflows_dir, "
+            f"got {names}"
+        )
