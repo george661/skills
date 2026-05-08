@@ -95,9 +95,10 @@ class TestRenderSubcommand:
 
     def test_render_mode_a_vs_mode_b_differ(self) -> None:
         """render --mode=a vs --mode=b should produce different output."""
+        with_run = FIXTURES_DIR / "mode_b" / "with_run.md"
         result_a = run_cli(
             "render",
-            str(GOOD_DIR / "with_run.md"),
+            str(with_run),
             "--mode",
             "a",
             "--inputs",
@@ -105,7 +106,7 @@ class TestRenderSubcommand:
         )
         result_b = run_cli(
             "render",
-            str(GOOD_DIR / "with_run.md"),
+            str(with_run),
             "--mode",
             "b",
             "--inputs",
