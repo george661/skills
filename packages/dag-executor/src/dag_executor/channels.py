@@ -445,8 +445,14 @@ class ChannelStore:
 
         Returns:
             Dict mapping channel keys to their current values
+            (excludes runtime-only channels like "workspace")
         """
-        return {key: channel.value for key, channel in self.channels.items()}
+        # Exclude runtime-only channels from state snapshots
+        return {
+            key: channel.value
+            for key, channel in self.channels.items()
+            if key != "workspace"
+        }
 
     def reset_all(self) -> None:
         """Reset all channels, clearing their writer tracking.

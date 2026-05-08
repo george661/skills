@@ -184,7 +184,50 @@ class OrchestratorRelay:
             )
             + footer
         )
-    
+
+    def _get_workspace_cwd(self) -> Optional[str]:
+        """Get workspace path from channel_states to set as cwd.
+
+        Returns the workspace path if present and the directory exists,
+        otherwise None (preserves current behavior for workflows without workspaces).
+        """
+        from pathlib import Path
+        import json
+
+        try:
+            conn = get_connection(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT value_json
+                FROM channel_states
+                WHERE run_id = ? AND channel_key = 'workspace'
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (self.run_id,),
+            )
+            row = cursor.fetchone()
+            conn.close()
+
+            if not row or not row[0]:
+                return None
+
+            # Parse workspace path from channel value
+            value = json.loads(row[0])
+            workspace_path = value if isinstance(value, str) else value.get("value") if isinstance(value, dict) else None
+
+            if workspace_path and Path(workspace_path).exists():
+                logger.info(f"Setting orchestrator cwd to workspace: {workspace_path}")
+                return workspace_path
+            elif workspace_path:
+                logger.warning(f"Workspace path {workspace_path} does not exist, falling back to default cwd")
+
+        except Exception as e:
+            logger.warning(f"Failed to query workspace channel: {e}")
+
+        return None
+
     def start(self) -> None:
         """Spawn the Claude subprocess and start reader/writer threads.
 
@@ -238,7 +281,10 @@ class OrchestratorRelay:
             cmd.extend(["--session-id", self.session_uuid])
         
         logger.info(f"Spawning orchestrator for {self.conversation_id}: {' '.join(cmd)}")
-        
+
+        # Query workspace channel to set cwd if available
+        workspace_cwd = self._get_workspace_cwd()
+
         # Spawn subprocess
         self.process = subprocess.Popen(
             cmd,
@@ -247,6 +293,7 @@ class OrchestratorRelay:
             stderr=subprocess.PIPE,
             text=False,
             bufsize=0,
+            cwd=workspace_cwd if workspace_cwd else None,
         )
         
         # Start threads. The stderr drain is critical: claude runs with

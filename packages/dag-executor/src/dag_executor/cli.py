@@ -26,7 +26,7 @@ from dag_executor import (
 from dag_executor.replay import execute_replay
 from dag_executor.validator import WorkflowValidator
 
-SUBCOMMANDS = {"replay", "history", "inspect", "cancel", "search", "logs", "rerun", "gates", "artifacts", "drafts", "conversation"}
+SUBCOMMANDS = {"replay", "history", "inspect", "cancel", "search", "logs", "rerun", "gates", "artifacts", "drafts", "conversation", "workspaces"}
 
 
 def _build_list_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -279,6 +279,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint-dir",
         help="Override checkpoint directory (defaults to workflow config)",
+    )
+
+    parser.add_argument(
+        "--workspace",
+        help="Override workspace root directory (defaults to DAG_WORKSPACE_ROOT env or ~/.dag-dashboard/workspaces)",
     )
 
     parser.add_argument(
@@ -870,6 +875,15 @@ def main(argv: Optional[List[str]] = None) -> None:
                 from dag_executor.conversation_cli import run_conversation
                 run_conversation(argv[1:])
                 return
+            elif subcmd == "workspaces":
+                from dag_executor.workspaces_cli import run_workspaces
+                import argparse
+                parser = argparse.ArgumentParser(prog="dag-exec workspaces")
+                from dag_executor.workspaces_cli import add_workspaces_parser
+                subparsers = parser.add_subparsers(dest="workspaces_cmd")
+                add_workspaces_parser(parser._subparsers)
+                ws_args = parser.parse_args(argv[1:])
+                sys.exit(run_workspaces(ws_args))
 
         args = parse_args(argv)
 
@@ -1069,6 +1083,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             else:
                 # Normal execution
                 print(f"Executing workflow '{workflow_def.name}'...")
+                workspace_override = Path(args.workspace) if args.workspace else None
                 result = execute_workflow(
                     workflow_def=workflow_def,
                     inputs=inputs,
@@ -1079,6 +1094,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     events_dir=events_dir,
                     conversation_id=conversation_id,
                     db_path=db_path,
+                    workspace_override=workspace_override,
                 )
         finally:
             # Cleanup notification listener if attached

@@ -439,7 +439,7 @@ class WorkflowValidator:
         result: ValidationResult,
     ) -> None:
         """Verify type-specific required fields (belt-and-suspenders with pydantic)."""
-        valid_types = {"bash", "skill", "command", "prompt", "gate", "interrupt"}
+        valid_types = {"bash", "skill", "command", "prompt", "gate", "interrupt", "git-sync"}
         for node in workflow_def.nodes:
             if node.type not in valid_types:
                 result.issues.append(ValidationIssue(

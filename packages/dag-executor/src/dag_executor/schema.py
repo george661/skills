@@ -598,12 +598,25 @@ class NotificationsConfig(BaseModel):
     )
 
 
+class GitConfig(BaseModel):
+    """Git repository configuration for workspace sync."""
+    model_config = {"extra": "forbid"}
+
+    url: str = Field(..., description="Git repository URL (any format git clone accepts)")
+    ref: str = Field(default="main", description="Branch, tag, or SHA to checkout")
+    depth: Optional[int] = Field(default=1, description="Clone depth (None for full history)")
+
+
 class WorkflowConfig(BaseModel):
     """Workflow-level configuration."""
     model_config = {"extra": "forbid"}
 
     checkpoint_prefix: str = Field(..., description="Prefix for checkpoint files")
-    worktree: bool = Field(default=False, description="Use worktree isolation")
+    worktree: bool = Field(default=False, description="DEPRECATED: use config.git instead. This flag has no runtime effect.")
+    git: Optional[GitConfig] = Field(
+        default=None,
+        description="Git repository configuration for workspace sync"
+    )
     labels: LabelsConfig = Field(default_factory=LabelsConfig, description="Label lifecycle configuration")
     on_exit: List[ExitHookDef] = Field(
         default_factory=list,
