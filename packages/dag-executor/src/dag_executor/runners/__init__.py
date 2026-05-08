@@ -15,6 +15,7 @@ from dag_executor.runners.base import (
 from dag_executor.runners.bash import BashRunner
 from dag_executor.runners.command import CommandRunner
 from dag_executor.runners.gate import GateRunner
+from dag_executor.runners.git_sync import GitSyncRunner
 from dag_executor.runners.interrupt import InterruptRunner
 from dag_executor.runners.prompt import PromptRunner
 from dag_executor.runners.skill import SkillRunner
@@ -32,6 +33,7 @@ __all__ = [
     "BashRunner",
     "CommandRunner",
     "GateRunner",
+    "GitSyncRunner",
     "InterruptRunner",
     "PromptRunner",
     "SkillRunner",
