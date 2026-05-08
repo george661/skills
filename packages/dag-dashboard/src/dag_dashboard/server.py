@@ -82,6 +82,16 @@ def create_app(
         app.state.chat_relay = chat_relay
         app.state.checkpoint_dir_fallback = checkpoint_dir_fallback
         app.state.settings = settings
+
+        # Reload settings from db BEFORE pinning derived fields into
+        # app.state. Otherwise app.state.workflows_dirs captures the
+        # construction-time default and ignores any operator-persisted
+        # workflows_dir override (GW-5770). The earlier module-scope
+        # assignments (outside lifespan) stay in place as a fallback for
+        # TestClient scenarios that skip lifespan startup.
+        if settings:
+            settings.reload_from_db(db_path)
+
         # Store workflows_dirs for definitions endpoints.
         # Explicit workflows_dirs kwarg takes precedence (used by tests).
         if workflows_dirs is not None:
@@ -99,10 +109,6 @@ def create_app(
             app.state.skills_dirs = settings.skills_dirs
         else:
             app.state.skills_dirs = [Path("skills")]
-
-        # Reload settings from db to pick up dashboard_settings overrides
-        if settings:
-            settings.reload_from_db(db_path)
 
         # Create and start event collector
         loop = asyncio.get_running_loop()
