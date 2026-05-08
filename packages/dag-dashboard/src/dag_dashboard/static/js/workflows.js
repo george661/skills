@@ -303,6 +303,14 @@ async function renderWorkflowTriggerForm(name) {
                 const defaultValue = spec.default !== undefined ? escapeHtml(String(spec.default)) : '';
                 const pattern = spec.pattern || '';
 
+                // Store the pattern on a data- attribute instead of the HTML
+                // `pattern=` attribute. Modern Chromium compiles `pattern=`
+                // with the ECMAScript `v` flag, which rejects character
+                // classes like [a-zA-Z0-9_-] as "Invalid character in
+                // character class" — breaking forms whose workflow YAML
+                // declares pattern: "^[a-zA-Z0-9_-]+...". Submit-time JS
+                // validation (below) uses `new RegExp(pattern)` which stays
+                // on the older `u`-flag semantics and accepts these patterns.
                 formHtml += `
                     <div class="form-field">
                         <label for="input-${escapeHtml(inputName)}">
@@ -315,7 +323,7 @@ async function renderWorkflowTriggerForm(name) {
                             name="${escapeHtml(inputName)}"
                             value="${defaultValue}"
                             ${isRequired ? 'required' : ''}
-                            ${pattern ? `pattern="${escapeHtml(pattern)}"` : ''}
+                            ${pattern ? `data-pattern="${escapeHtml(pattern)}"` : ''}
                         />
                         ${spec.description ? `<p class="field-description">${escapeHtml(spec.description)}</p>` : ''}
                     </div>
@@ -361,14 +369,39 @@ async function renderWorkflowTriggerForm(name) {
             const workflow = formData.get('workflow');
             const model_override = formData.get('model_override') || undefined;
 
-            // Collect workflow inputs
+            // Collect workflow inputs + validate against data-pattern.
+            // We do this in JS instead of using the HTML `pattern=` attribute
+            // because modern Chromium rejects patterns like [a-zA-Z0-9_-]
+            // under the ECMAScript `v` regex flag applied to HTML pattern=.
+            // `new RegExp(pattern)` uses the more permissive `u`-flag
+            // semantics and accepts these character classes cleanly.
             const workflowInputs = {};
+            const patternErrors = [];
             inputEntries.forEach(([inputName, _]) => {
                 const value = formData.get(inputName);
                 if (value) {
                     workflowInputs[inputName] = value;
+                    const fieldEl = document.getElementById(`input-${inputName}`);
+                    const patternAttr = fieldEl ? fieldEl.dataset.pattern : null;
+                    if (patternAttr) {
+                        try {
+                            const re = new RegExp(patternAttr);
+                            if (!re.test(value)) {
+                                patternErrors.push(`${inputName} does not match pattern ${patternAttr}`);
+                            }
+                        } catch (regexErr) {
+                            // Malformed pattern in YAML — surface to user
+                            // rather than silently swallow.
+                            patternErrors.push(`${inputName} pattern ${patternAttr} is not a valid regex: ${regexErr.message}`);
+                        }
+                    }
                 }
             });
+
+            if (patternErrors.length > 0) {
+                alert(`Validation failed:\n\n${patternErrors.join('\n')}`);
+                return;
+            }
 
             // Prepare trigger payload
             const payload = {
