@@ -133,6 +133,31 @@ def test_reference_tier_parse_error_is_warning_not_error(tmp_path: Path) -> None
     )
 
 
+def test_classify_parse_failure_ignores_repo_name_collisions() -> None:
+    """Regression: CI checkouts land at /home/runner/work/<repo>/<repo>/... —
+    the classifier must not match 'skills' in the parent chain as if the file
+    were under a 'skills/' directory."""
+    from promptc.validator import _classify_parse_failure_for_path
+
+    # A docs/ file in a GitHub Actions checkout for the 'skills' repo
+    sev, _ = _classify_parse_failure_for_path(
+        "/home/runner/work/skills/skills/docs/promptc-spec.md", "ParseError",
+    )
+    assert sev == "warning", "docs/ file must be reference-tier even when repo name collides"
+
+    # A real commands/ file in the same CI layout
+    sev, _ = _classify_parse_failure_for_path(
+        "/home/runner/work/skills/skills/commands/audit.md", "ParseError",
+    )
+    assert sev == "error", "commands/ file must remain contract-tier"
+
+    # A real skills/<subdir>/file.md
+    sev, _ = _classify_parse_failure_for_path(
+        "/home/runner/work/skills/skills/skills/fly/abort_build.md", "ParseError",
+    )
+    assert sev == "error", "skills/ subdirectory file must remain contract-tier"
+
+
 @pytest.mark.parametrize(
     "md_path",
     [p for p in list(SKILLS_ROOT.glob("commands/**/*.md")) +

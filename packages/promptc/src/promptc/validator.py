@@ -136,33 +136,42 @@ def _classify_parse_failure_for_path(
     """Decide severity for a parse failure based on the file's likely tier.
 
     Commands and skills are expected to parse cleanly (error on parse failure).
-    Other files (docs/, templates/, etc.) are reference-tier (warning on parse failure).
+    Other files (docs/, templates/, README.md, etc.) are reference-tier and
+    get a warning on parse failure so repo-tree smoke tests stay green when
+    prose contains inline {% tag %} code samples.
 
-    We check if the path contains /commands/ or /skills/ as a directory in the
-    final project-relative portion (not in parent directories like worktree names).
+    Decision is based only on the final directory hop: is the file directly
+    inside (or nested under) a 'commands' or 'skills' directory? We cannot
+    scan the full path for "commands"/"skills" because CI checkouts live
+    under paths like `/home/runner/work/skills/skills/...` where the repo
+    name happens to collide with the directory name.
     """
-    from pathlib import Path
+    from pathlib import PurePosixPath
 
-    # Convert to Path and get the parts
-    path_obj = Path(path)
-    parts = list(path_obj.parts)
+    # Normalize separators so Windows paths compare the same way.
+    normalized = PurePosixPath(path.replace("\\", "/"))
+    parts = normalized.parts
 
-    # Find the last occurrence of certain known repo-root indicators
-    # If we find 'commands' or 'skills' AFTER any of these, it's a project directory
-    root_indicators = {'packages', 'src', '.git', 'worktrees'}
-    last_root_idx = -1
-    for i, part in enumerate(parts):
-        if part in root_indicators or part.startswith('GW-'):
-            last_root_idx = i
+    # A file is contract-tier only if one of its ANCESTOR DIRECTORIES is
+    # literally named "commands" or "skills". The immediate parent chain
+    # is the only thing that matters — repo-root path segments don't.
+    # parts[-1] is the filename itself, so scan parents only.
+    parent_dirs = parts[:-1]
+    # Walk from closest parent outward; stop at the first directory that is
+    # either 'commands' / 'skills' (→ contract-tier) or one of the known
+    # reference-tier siblings (docs / templates / config / packages / tests).
+    for segment in reversed(parent_dirs):
+        if segment in {"commands", "skills"}:
+            return ("error", f"PARSE_{error_type.upper()}")
+        reference_siblings = {
+            "docs", "templates", "config", "packages",
+            "tests", "agents", "teams", "hooks", "scripts",
+        }
+        if segment in reference_siblings:
+            return ("warning", f"PARSE_{error_type.upper()}_REFERENCE")
 
-    # Check the parts after the last root indicator
-    relevant_parts = parts[last_root_idx + 1:] if last_root_idx >= 0 else parts
-
-    # If commands or skills appears in the relevant portion, it's contract-tier
-    if "commands" in relevant_parts or "skills" in relevant_parts:
-        return ("error", f"PARSE_{error_type.upper()}")
-
-    # Everything else is reference-tier (docs, templates, etc.)
+    # No recognized parent anywhere — default to reference-tier warning so
+    # unknown layouts don't break the smoke test.
     return ("warning", f"PARSE_{error_type.upper()}_REFERENCE")
 
 
