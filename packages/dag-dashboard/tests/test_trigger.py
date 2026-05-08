@@ -176,6 +176,51 @@ def test_trigger_returns_404_when_trigger_disabled(tmp_path: Path, test_db: Path
     assert response.status_code == 404
 
 
+def test_trigger_respects_runtime_enable_via_db(tmp_path: Path, events_dir: Path, workflows_dir: Path):
+    """Operator enables trigger via the Settings UI (dashboard_settings DB row);
+    the live endpoint must honour the change without a restart.
+
+    Regression guard for the root-cause family of GW-5770: build-time
+    conditionals like `if settings.trigger_enabled: app.include_router(...)`
+    capture the default False at create_app() time and ignore any DB
+    override picked up later by reload_from_db.
+    """
+    from dag_dashboard.config import Settings
+    from dag_dashboard.settings_store import put_setting
+    from dag_dashboard.database import init_db
+
+    db_path = tmp_path / "dashboard.db"
+    init_db(db_path)
+
+    # Simulate the user saving trigger_enabled=true via /api/settings.
+    put_setting(db_path, "trigger_enabled", True, updated_by="test")
+
+    # Fresh Settings() sees the default False; the router must still be
+    # mounted, and reload_from_db (run inside lifespan startup) must flip
+    # the flag to True so the endpoint returns 400 (validation error on
+    # missing workflow) rather than 404 (route not mounted).
+    settings = Settings()
+    assert settings.trigger_enabled is False
+
+    app = create_app(db_path=db_path, events_dir=events_dir, settings=settings, workflows_dirs=[workflows_dir])
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/trigger",
+            json={
+                "workflow": "nonexistent-workflow",
+                "inputs": {},
+                "source": "test",
+            },
+        )
+        # 404 would mean the router wasn't mounted OR the gate still reads False.
+        # We expect a 400 (bad workflow name) — anything but 404 proves the
+        # endpoint is live after the DB reload.
+        assert response.status_code != 404, (
+            f"Expected trigger endpoint to be live after DB reload, got 404. "
+            f"Body: {response.text}"
+        )
+
+
 def test_trigger_rejects_workflow_path_traversal(client: TestClient):
     """Test POST /api/trigger rejects workflow names with path traversal."""
     response = client.post(
