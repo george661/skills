@@ -15,7 +15,7 @@ from __future__ import annotations
 import ast
 import operator
 import re
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 
 class ExpressionError(Exception):
@@ -174,3 +174,47 @@ def _walk(node: ast.AST, names: Mapping[str, Any]) -> Any:
 
     # Everything else is rejected
     raise ExpressionError(f"unsupported construct: {type(node).__name__}")
+
+
+def validate_expr(expr: str, known_names: Iterable[str]) -> list[str]:
+    """Syntax-check a {% when %} expression without evaluating it.
+
+    Returns a list of human-readable issue messages (empty = OK).
+    Rejects:
+      - ast.parse failures
+      - unsupported AST node types (same set as _walk rejects)
+      - calls to non-whitelisted functions
+      - variable references not in known_names (reserved: true/false/null always allowed)
+    """
+    issues: list[str] = []
+    known = set(known_names) | {"true", "false", "null"}
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError as e:
+        return [f"syntax error: {e.msg}"]
+
+    for node in ast.walk(tree):
+        # Reject same node types that _walk rejects
+        if isinstance(node, ast.Name):
+            if node.id not in known and node.id not in _FUNCS:
+                issues.append(f"unknown variable: {node.id}")
+        elif isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name):
+                issues.append(f"unsupported call target: {type(node.func).__name__}")
+            elif node.func.id not in _FUNCS:
+                issues.append(f"call to non-whitelisted function: {node.func.id}")
+            if node.keywords:
+                issues.append("keyword arguments are not supported")
+        elif isinstance(node, ast.Compare):
+            if len(node.ops) != 1:
+                issues.append("chained comparisons are not supported")
+            for op in node.ops:
+                if type(op) not in _COMPARE_OPS:
+                    issues.append(f"unsupported comparison: {type(op).__name__}")
+        elif isinstance(node, (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
+                                ast.GeneratorExp, ast.Subscript, ast.Attribute,
+                                ast.Starred, ast.JoinedStr, ast.FormattedValue,
+                                ast.NamedExpr, ast.IfExp, ast.Dict, ast.Set)):
+            issues.append(f"unsupported construct: {type(node).__name__}")
+
+    return issues

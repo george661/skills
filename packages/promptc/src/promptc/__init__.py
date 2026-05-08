@@ -25,6 +25,7 @@ from promptc.schema import (
     ValidationReport,
     WhenNode,
 )
+from promptc.validator import validate, validate_path
 
 __all__ = [
     "load",
@@ -32,6 +33,8 @@ __all__ = [
     "parse_str",
     "render",
     "parse_output",
+    "validate",
+    "validate_path",
     "ParserConfig",
     "Node",
     "SourceSpan",

@@ -221,3 +221,41 @@ class TestStaticInvariants:
         assert (
             "expression_parity.json" in doc
         ), "docstring missing parity fixture reference"
+
+
+def test_validate_expr_parity_with_evaluate() -> None:
+    """validate_expr should return [] iff evaluate does not raise ExpressionError."""
+    import json
+
+    from promptc.expression import validate_expr
+
+    # Load parity fixtures
+    fixtures_path = Path(__file__).parent / "fixtures" / "expression_parity.json"
+    if not fixtures_path.exists():
+        pytest.skip("expression_parity.json not found")
+
+    with open(fixtures_path) as f:
+        cases = json.load(f)
+
+    for case in cases:
+        expr = case["expr"]
+        bindings = case["bindings"]
+
+        # Test validate_expr
+        known_names = list(bindings.keys())
+        issues = validate_expr(expr, known_names)
+        validate_ok = len(issues) == 0
+
+        # Test evaluate
+        from promptc.expression import ExpressionError, evaluate
+        try:
+            evaluate(expr, bindings)
+            eval_ok = True
+        except ExpressionError:
+            eval_ok = False
+
+        # They should agree
+        assert validate_ok == eval_ok, (
+            f"validate_expr and evaluate disagree on '{expr}': "
+            f"validate_ok={validate_ok}, eval_ok={eval_ok}, issues={issues}"
+        )
