@@ -239,17 +239,17 @@ def test_validate_expr_parity_with_evaluate() -> None:
 
     for case in cases:
         expr = case["expr"]
-        bindings = case["bindings"]
+        names = case["names"]
 
         # Test validate_expr
-        known_names = list(bindings.keys())
+        known_names = list(names.keys())
         issues = validate_expr(expr, known_names)
         validate_ok = len(issues) == 0
 
         # Test evaluate
         from promptc.expression import ExpressionError, evaluate
         try:
-            evaluate(expr, bindings)
+            evaluate(expr, names)
             eval_ok = True
         except ExpressionError:
             eval_ok = False

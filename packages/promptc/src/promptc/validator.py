@@ -7,13 +7,13 @@
 from __future__ import annotations
 
 import ast
+import multiprocessing
 import re
+import signal
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 from pydantic import ValidationError
 
@@ -26,8 +26,14 @@ from promptc.parser import Parser, parse_str
 from promptc.resolver import resolve_command, resolve_file, resolve_skill
 from promptc.schema import (
     Doc,
+    PhaseNode,
+    RefNode,
+    RunNode,
+    TextNode,
+    RawNode,
     ValidationIssue,
     ValidationReport,
+    WhenNode,
 )
 
 Tier = Literal["contract", "mixed", "reference"]
@@ -169,15 +175,14 @@ def _build_ctx(doc: Doc, cfg: ParserConfig) -> _RuleCtx:
     run_ids: set[str] = set()
 
     for node in doc.nodes:
-        kind = node.kind if hasattr(node, "kind") else None
-        if kind == "text":
+        if isinstance(node, TextNode):
             text_parts.append(node.content)
-        elif kind == "raw":
+        elif isinstance(node, RawNode):
             pass
-        elif kind == "run":
+        elif isinstance(node, RunNode):
             if node.id:
                 run_ids.add(node.id)
-        elif kind in ("phase", "when"):
+        elif isinstance(node, (PhaseNode, WhenNode)):
             for child_dict in node.children:
                 _collect_from_dict(child_dict, text_parts, run_ids)
 
@@ -193,7 +198,7 @@ def _build_ctx(doc: Doc, cfg: ParserConfig) -> _RuleCtx:
 
 
 def _collect_from_dict(
-    node_dict: dict, text_parts: list[str], run_ids: set[str],
+    node_dict: dict[str, Any], text_parts: list[str], run_ids: set[str],
 ) -> None:
     """Walk the ast_nodes-dict representation used for phase/when children."""
     kind = node_dict.get("kind")
@@ -210,6 +215,12 @@ def _collect_from_dict(
 
 # ---- ReDoS probe ----
 
+def _regex_match_worker(pattern: str, payload: str) -> None:
+    """Worker function for regex matching in subprocess."""
+    compiled = re.compile(pattern)
+    compiled.match(payload)
+
+
 def _probe_redos(doc: Doc, cfg: ParserConfig) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     for inp in doc.inputs:
@@ -224,11 +235,14 @@ def _probe_redos(doc: Doc, cfg: ParserConfig) -> list[ValidationIssue]:
                 source_span=None,
             ))
             continue
-        with ThreadPoolExecutor(max_workers=1) as ex:
-            fut = ex.submit(compiled.match, _REDOS_PROBE)
+        # Use multiprocessing.Pool to ensure timeout kills the worker process
+        with multiprocessing.Pool(processes=1) as pool:
+            result = pool.apply_async(_regex_match_worker, (inp.pattern, _REDOS_PROBE))
             try:
-                fut.result(timeout=cfg.regex_timeout_ms / 1000.0)
-            except FuturesTimeoutError:
+                result.get(timeout=cfg.regex_timeout_ms / 1000.0)
+            except multiprocessing.TimeoutError:
+                pool.terminate()  # Kill the worker process
+                pool.join()
                 issues.append(ValidationIssue(
                     severity="error", code="REDOS_PROBE",
                     message=(
@@ -313,12 +327,11 @@ def _rule_duplicate_phase_run_ids(doc: Doc, ctx: _RuleCtx) -> list[ValidationIss
     all_ids: list[str] = []
 
     for node in doc.nodes:
-        kind = node.kind if hasattr(node, "kind") else None
-        if kind == "phase" and hasattr(node, "name") and node.name:
+        if isinstance(node, PhaseNode) and node.name:
             all_ids.append(node.name)
-        elif kind == "run" and hasattr(node, "id") and node.id:
+        elif isinstance(node, RunNode) and node.id:
             all_ids.append(node.id)
-        elif kind in ("phase", "when"):
+        elif isinstance(node, (PhaseNode, WhenNode)):
             for child_dict in node.children:
                 _collect_ids_from_dict(child_dict, all_ids)
 
@@ -334,7 +347,7 @@ def _rule_duplicate_phase_run_ids(doc: Doc, ctx: _RuleCtx) -> list[ValidationIss
     return issues
 
 
-def _collect_ids_from_dict(node_dict: dict, all_ids: list[str]) -> None:
+def _collect_ids_from_dict(node_dict: dict[str, Any], all_ids: list[str]) -> None:
     """Helper for collecting IDs from nested structures."""
     kind = node_dict.get("kind")
     if kind == "phase":
@@ -390,15 +403,13 @@ def _rule_invalid_when_expressions(doc: Doc, ctx: _RuleCtx) -> list[ValidationIs
     # Collect all when expressions from nodes
     when_exprs: list[str] = []
     for node in doc.nodes:
-        kind = node.kind if hasattr(node, "kind") else None
-        if kind == "when" and hasattr(node, "expr"):
+        if isinstance(node, WhenNode):
             when_exprs.append(node.expr)
-        elif kind == "phase":
-            if hasattr(node, "when") and node.when:
-                when_exprs.append(node.when)
             for child_dict in node.children:
                 _collect_when_from_dict(child_dict, when_exprs)
-        elif kind == "when":
+        elif isinstance(node, PhaseNode):
+            if node.when:
+                when_exprs.append(node.when)
             for child_dict in node.children:
                 _collect_when_from_dict(child_dict, when_exprs)
 
@@ -414,7 +425,7 @@ def _rule_invalid_when_expressions(doc: Doc, ctx: _RuleCtx) -> list[ValidationIs
     return issues
 
 
-def _collect_when_from_dict(node_dict: dict, when_exprs: list[str]) -> None:
+def _collect_when_from_dict(node_dict: dict[str, Any], when_exprs: list[str]) -> None:
     """Helper for collecting when expressions from nested structures."""
     kind = node_dict.get("kind")
     if kind == "when":
@@ -525,18 +536,13 @@ def _rule_cyclic_or_deep_includes(doc: Doc, ctx: _RuleCtx) -> list[ValidationIss
 
         # Find ref nodes with include=true in the parsed doc
         for node in parsed_doc.nodes:
-            if hasattr(node, "kind") and node.kind == "ref":
-                is_include_ref = (
-                    hasattr(node, "include") and node.include
-                    and hasattr(node, "file") and node.file
-                )
-                if is_include_ref:
-                    try:
-                        resolved = resolve_file(node.file, path.parent)
-                        if resolved:
-                            issues.extend(walk_includes(resolved, stack + [path_str], cfg))
-                    except ValueError:
-                        pass
+            if isinstance(node, RefNode) and node.include and node.file is not None:
+                try:
+                    resolved = resolve_file(node.file, path.parent)
+                    if resolved:
+                        issues.extend(walk_includes(resolved, stack + [path_str], cfg))
+                except ValueError:
+                    pass
 
         return issues
 
@@ -636,10 +642,8 @@ def _rule_empty_phases(doc: Doc, ctx: _RuleCtx) -> list[ValidationIssue]:
     """Phase with no body (warning)."""
     issues: list[ValidationIssue] = []
     for node in doc.nodes:
-        if hasattr(node, "kind") and node.kind == "phase":
+        if isinstance(node, PhaseNode):
             if not node.children or all(
-                (hasattr(c, "kind") and c.kind == "text" and not c.content.strip())
-                if hasattr(c, "kind") else
                 (c.get("kind") == "text" and not (c.get("body") or c.get("content", "")).strip())
                 for c in node.children
             ):
