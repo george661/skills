@@ -283,10 +283,11 @@ class CommandNodeConfig(BaseModel):
 class PromptNodeConfig(BaseModel):
     """Configuration for LLM prompt nodes."""
     model_config = {"extra": "forbid"}
-    
+
     prompt: Optional[str] = Field(default=None, description="Direct prompt text")
     prompt_file: Optional[str] = Field(default=None, description="Path to prompt file")
     model: ModelTier = Field(..., description="LLM model tier to use")
+    inputs: Dict[str, Any] = Field(default_factory=dict, description="Named input parameters available as substitution context when rendering prompt_file")
     
     def model_post_init(self, __context: Any) -> None:
         """Validate prompt/prompt_file mutual exclusivity."""
@@ -402,6 +403,7 @@ class NodeDef(BaseModel):
     # Prompt node
     prompt: Optional[str] = Field(default=None, description="Prompt text (for type=prompt)")
     prompt_file: Optional[str] = Field(default=None, description="Prompt file (for type=prompt)")
+    prompt_inputs: Optional[Dict[str, Any]] = Field(default=None, description="Inputs dict for prompt-file substitution (for type=prompt)")
     model: Optional[ModelTier] = Field(default=None, description="Model tier (for type=prompt)")
     strict_model: bool = Field(default=False, description="Block model_override (for type=prompt)")
     context: ContextMode = Field(default=ContextMode.SHARED, description="Session context mode (for type=prompt)")
@@ -438,6 +440,10 @@ class NodeDef(BaseModel):
         # mode field is only valid on prompt nodes
         if self.type != "prompt" and self.mode is not None:
             raise ValueError("mode field is only allowed on type=prompt nodes")
+
+        # prompt_inputs field is only valid on prompt nodes
+        if self.type != "prompt" and self.prompt_inputs is not None:
+            raise ValueError("prompt_inputs field is only allowed on type=prompt nodes")
 
         if self.type == "skill":
             if self.skill is None:
