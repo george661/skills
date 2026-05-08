@@ -184,6 +184,23 @@ class TestExplainSubcommand:
         assert "refs" in data
         assert "skills" in data
 
+    def test_explain_extracts_nested_skills_from_phases(self) -> None:
+        """explain should extract skills from runs nested inside phases.
+
+        Regression test for GW-5482: the _walk_node function now normalizes
+        child dicts from raw AST shape {attrs: {skill: ...}} to top-level
+        {skill: ...} so the skills_set loop can extract them.
+        """
+        fixture = FIXTURES_DIR / "validate-deploy-status.md"
+        result = run_cli("--format", "json", "explain", str(fixture))
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        # validate-deploy-status.md has {% run skill="issues/get_issue" %} inside a phase
+        assert "skills" in data
+        assert "issues/get_issue" in data["skills"], (
+            f"Expected 'issues/get_issue' in skills list, got {data['skills']}"
+        )
+
 
 class TestParseSubcommand:
     """Test parse subcommand."""

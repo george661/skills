@@ -250,6 +250,21 @@ def _cmd_explain(args: argparse.Namespace) -> int:
     runs_list = []
     refs_list = []
 
+    # Normalize a dict from raw AST shape to model_dump() shape
+    def _normalize_dict(d: dict[str, Any]) -> dict[str, Any]:
+        """Hoist attrs.{skill,tool,bash,id,capture} to top-level keys."""
+        if "attrs" in d:
+            # Raw AST shape: {kind: "run", attrs: {skill: "..."}}
+            normalized = {"kind": d["kind"]}
+            attrs = d.get("attrs", {})
+            # Hoist common attrs to top-level
+            for key in ["skill", "tool", "bash", "id", "capture"]:
+                if key in attrs:
+                    normalized[key] = attrs[key]
+            return normalized
+        # Already normalized (model_dump() shape)
+        return d
+
     # Walk all nodes to find phases, runs, and refs
     def _walk_node(node: Any) -> None:
         from promptc.schema import PhaseNode, RefNode, RunNode, WhenNode
@@ -260,22 +275,22 @@ def _cmd_explain(args: argparse.Namespace) -> int:
                 # Children are dicts from to_dict(), need to reconstruct
                 kind = child_dict.get("kind")
                 if kind == "run":
-                    runs_list.append(child_dict)
+                    runs_list.append(_normalize_dict(child_dict))
                 elif kind == "ref":
-                    refs_list.append(child_dict)
+                    refs_list.append(_normalize_dict(child_dict))
                 elif kind == "when":
                     # Recursively walk when children
                     when_children = child_dict.get("children", [])
                     for when_child in when_children:
                         if when_child.get("kind") == "run":
-                            runs_list.append(when_child)
+                            runs_list.append(_normalize_dict(when_child))
                         elif when_child.get("kind") == "ref":
-                            refs_list.append(when_child)
+                            refs_list.append(_normalize_dict(when_child))
         elif isinstance(node, WhenNode):
             for child_dict in node.children:
                 kind = child_dict.get("kind")
                 if kind == "run":
-                    runs_list.append(child_dict)
+                    runs_list.append(_normalize_dict(child_dict))
                 elif kind == "ref":
                     refs_list.append(child_dict)
         elif isinstance(node, RunNode):
