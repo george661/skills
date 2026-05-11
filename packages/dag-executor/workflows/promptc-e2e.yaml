@@ -1,0 +1,39 @@
+name: promptc-e2e-workflow
+
+config:
+  checkpoint_prefix: .dag-checkpoints
+
+inputs:
+  task_description:
+    type: string
+    required: false
+    default: "Implement a new feature for the application"
+
+outputs:
+  verdict:
+    node: review_task
+    field: verdict
+  summary:
+    node: review_task
+    field: summary
+
+state:
+  verdict:
+    type: string
+    reducer: overwrite
+  summary:
+    type: string
+    reducer: overwrite
+
+nodes:
+  - id: review_task
+    name: Review Task with Promptc
+    type: prompt
+    model: haiku
+    mode: completion
+    prompt_file: workflows/promptc-e2e.prompt.md
+    prompt_inputs:
+      task: ${task_description}
+    writes:
+      - verdict
+      - summary
