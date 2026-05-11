@@ -241,6 +241,146 @@ If the LLM responds with `{"result": "success", "count": 42}`:
 
 This enables downstream nodes to reference `state.result` for fan-out writes.
 
+## promptc Integration
+
+The dag-executor supports loading prompts from external `.md` files using the [promptc](../promptc/README.md) specification. This integration enables prompts authored in declarative markdown to leverage side-effecting `{% run %}` blocks while keeping the LLM's input limited to the rendered content body—the executor hoists and executes runs in-process before model invocation.
+
+### Configuration
+
+Prompt nodes can reference external prompt files using two fields:
+
+- **`prompt_file: <path>`** — Path to a `.md` file containing a promptc-compliant prompt specification. Mutually exclusive with inline `prompt:` text.
+- **`prompt_inputs: {key: value, ...}`** — Dictionary of inputs bound into the prompt file's `{% input %}` declarations during rendering.
+
+Example node configuration:
+
+```yaml
+nodes:
+  - id: analyze
+    type: prompt
+    prompt_file: prompts/analyze-issue.md
+    prompt_inputs:
+      issue_key: "PROJ-456"  # literal value bound into prompt file
+      threshold: 0.8
+```
+
+**Note:** `prompt_inputs` values can use node-level variable substitution (e.g., `issue_key: $fetch.issue_data`) to bind upstream DAG node outputs into the prompt file. This is distinct from the prompt file's internal `{% $inputs.X %}` references, which are resolved during `promptc.render()` from the `prompt_inputs` dictionary.
+
+### Execution Behavior
+
+When `prompt_file` is set, the executor:
+
+1. **Loads** the prompt file via `promptc.load(prompt_file)`.
+2. **Collects** all `{% run %}` blocks from the document in document order.
+3. **Executes** each run sequentially **within the prompt node** (not as separate graph nodes):
+   - **Bash runs** (`{% run id="example" bash="..." %}`) execute shell commands.
+   - **Skill runs** (`{% run id="example" skill="..." %}`) invoke TypeScript skill modules.
+   - Runs without an `id=` attribute are skipped (their output cannot be bound).
+   - Runs using `tool:`, `command:`, or nested `prompt_file:` raise `NotImplementedError` (reserved for future implementation).
+4. **Captures** each run's output according to its `capture=` mode:
+   - `capture="json"` parses output as JSON and binds the resulting dictionary to `$id`. Fields are accessible via `$id.field`.
+   - `capture="text"` binds the raw text directly to `$id` (not `$id.output`).
+   - `capture="lines"` binds the line array directly to `$id` (not `$id.lines`).
+5. **Renders** the prompt file in Mode B (`promptc.render(doc, inputs, mode="b")`), which:
+   - Strips all `{% run %}` blocks from the document.
+   - Substitutes `{% $inputs.X %}` references with values from `prompt_inputs`.
+6. **Substitutes** run output bindings: the executor performs a second pass via `_substitute_variables(mode_b_body, run_bindings)` to replace `$id` and `$id.field` references with the captured run outputs.
+7. **Invokes** the model with the rendered prompt body as input.
+
+**Conceptually**, the executor "hoists" the side-effecting runs out of the prompt so the model sees only the declarative content. **In practice**, this hoisting happens in-process—no separate DAG nodes are created for runs.
+
+### Worked Example
+
+Given `prompts/analyze-issue.md`:
+
+```markdown
+{% input name="issue_key" type="string" description="Jira issue key" /%}
+
+{% run id="fetch_issue" bash="curl -s https://api.example.com/issues/{% $inputs.issue_key %}" capture="json" /%}
+
+## Issue Analysis
+
+**Issue:** $fetch_issue.key  
+**Status:** $fetch_issue.status  
+**Summary:** $fetch_issue.summary
+
+Based on the above, classify the urgency (low/medium/high):
+```
+
+And node configuration:
+
+```yaml
+nodes:
+  - id: analyze
+    type: prompt
+    prompt_file: prompts/analyze-issue.md
+    prompt_inputs:
+      issue_key: "PROJ-123"
+```
+
+**Execution flow:**
+
+1. Executor loads `analyze-issue.md`.
+2. Executor finds the `{% run id="fetch_issue" ... %}` block.
+3. Executor executes `curl -s https://api.example.com/issues/PROJ-123`, captures JSON output (e.g., `{"key": "PROJ-123", "status": "Open", "summary": "Bug in API"}`), and binds it to `$fetch_issue`.
+4. Executor renders the body with `{% run %}` stripped and `$fetch_issue.key`, `$fetch_issue.status`, `$fetch_issue.summary` substituted:
+
+   ```markdown
+   ## Issue Analysis
+
+   **Issue:** PROJ-123  
+   **Status:** Open  
+   **Summary:** Bug in API
+
+   Based on the above, classify the urgency (low/medium/high):
+   ```
+
+5. The rendered body is sent to the model.
+
+### Output Contract with `{% output %}`
+
+Prompt files may declare output contracts using `{% output name="..." type="..." /%}` tags. When present, the executor:
+
+- Passes the model's response through `promptc.parse_output(response, doc)`.
+- If parsing succeeds, the parsed fields are spread into the node's output dictionary.
+- If parsing fails, the node fails with a parse error.
+
+For prompts **without** `{% output %}` declarations, the executor falls back to the standard [Prompt Node Output Contract](#prompt-node-output-contract) behavior (JSON or text mode).
+
+### Supported Run Shapes
+
+As of GW-5487, the executor supports:
+
+- **`bash:`** — Execute shell commands.
+- **`skill:`** — Invoke TypeScript skill modules. The executor resolves skill paths by checking `~/.claude/skills/<name>.ts` and `$PROJECT_ROOT/.claude/skills/<name>.ts`, then runs the skill using `npx tsx <path>`. This is an implementation convention of the current skill tree, not a language-level property.
+
+Reserved but **not yet implemented** (will raise `NotImplementedError` if used):
+
+- **`tool:`** — MCP tool invocation.
+- **`command:`** — Nested slash-command execution.
+- **Nested `prompt_file:`** — Prompt-within-prompt.
+
+### Variable Substitution
+
+Within a prompt file, both `{% run %}` output bindings and upstream DAG node outputs use the same `$id` or `$id.field` syntax. The executor disambiguates by checking which binding dictionary contains the name:
+
+- If the name exists in the run bindings dictionary (populated from `{% run %}` blocks), it resolves to the run's captured output.
+- Otherwise, if the name exists in the DAG node outputs dictionary, it resolves to the upstream node's output.
+- If neither dictionary contains the name, the reference is left as-is (unresolved).
+
+This means a run ID and a node ID can have the same name—the run binding shadows the node binding within the prompt file.
+
+### Fallback Behavior
+
+If `promptc` is not importable at runtime (e.g., package not installed), the executor falls back to reading `prompt_file` as plain text with no run hoisting and no variable substitution. This provides a compatibility escape hatch for environments without promptc.
+
+### Cross-References
+
+- **Full promptc language specification:** [docs/promptc-spec.md](../../docs/promptc-spec.md) (see "Integration modes" and "`{% run %}`" sections)
+- **promptc API documentation:** [packages/promptc/README.md](../promptc/README.md)
+- **Variable substitution for non-promptc prompts:** [Variable Substitution](#variable-substitution)
+- **Output behavior for non-promptc prompts:** [Prompt Node Output Contract](#prompt-node-output-contract)
+
 ## Execution Model
 
 The executor uses Kahn's algorithm to sort nodes into parallel layers:
