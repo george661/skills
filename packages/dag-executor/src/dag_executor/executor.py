@@ -1677,6 +1677,8 @@ class WorkflowExecutor:
             inputs_to_resolve["prompt"] = node_def.prompt
         if node_def.condition:
             inputs_to_resolve["condition"] = node_def.condition
+        if node_def.prompt_inputs:
+            inputs_to_resolve["prompt_inputs"] = node_def.prompt_inputs
 
         # For bash scripts, extract names assigned inside the script itself.
         # Those are bash-local variables — the subshell expands them, so

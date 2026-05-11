@@ -10,7 +10,8 @@ dependencies = [
     "pyyaml>=6.0",
     "pydantic>=2.0",
     "simpleeval>=0.9.13",
-    "httpx>=0.24.0"
+    "httpx>=0.24.0",
+    "promptc"
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,9 @@ dev = [
 
 [project.scripts]
 dag-exec = "dag_executor:main"
+
+[tool.uv.sources]
+promptc = { path = "../promptc", editable = true }
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -44,6 +48,12 @@ disallow_untyped_defs = true
 # tolerant regardless of install order.
 [[tool.mypy.overrides]]
 module = "dag_dashboard.*"
+ignore_missing_imports = true
+
+# promptc is a sibling package without py.typed (yet). Import is guarded by
+# try/except so runtime is safe. Allow untyped import.
+[[tool.mypy.overrides]]
+module = "promptc.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -3,3 +3,11 @@ dist/
 .env
 *.log
 coverage/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/

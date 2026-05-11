@@ -1,11 +1,19 @@
 """Prompt runner for LLM invocation nodes."""
 import json
 import logging
+import os
 import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    import promptc
+    from promptc import Doc, RunNode, ParseError, RenderError
+    PROMPTC_AVAILABLE = True
+except ImportError:
+    PROMPTC_AVAILABLE = False
 
 
 _JSON_FENCE_RE = re.compile(
@@ -78,6 +86,188 @@ from dag_executor.schema import (
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 
 logger = logging.getLogger(__name__)
+
+
+def _collect_run_nodes(nodes: List[Any]) -> List[Any]:
+    """Recursively collect all RunNode instances from document nodes.
+
+    Walks through PhaseNode and WhenNode children to find hoisted runs.
+
+    Args:
+        nodes: List of schema nodes (TextNode, RunNode, PhaseNode, WhenNode, etc.)
+
+    Returns:
+        Ordered list of RunNode instances in document order
+    """
+    if not PROMPTC_AVAILABLE:
+        return []
+
+    run_nodes = []
+    for node in nodes:
+        if isinstance(node, RunNode):
+            run_nodes.append(node)
+        elif hasattr(node, 'children') and node.children:
+            # Recursively collect from PhaseNode and WhenNode
+            run_nodes.extend(_collect_run_nodes(node.children))
+    return run_nodes
+
+
+def _substitute_variables(text: str, bindings: Dict[str, Any]) -> str:
+    """Substitute $id and $id.field references in text.
+
+    Implements the same substitution logic as promptc's mode-B renderer.
+
+    Args:
+        text: Text containing variable references
+        bindings: Dict mapping variable names to values
+
+    Returns:
+        Text with variables substituted
+    """
+    # Match $id or $id.field patterns
+    pattern = r'\$([a-zA-Z_][a-zA-Z0-9_]*)(?:\.([a-zA-Z_][a-zA-Z0-9_]*))?'
+
+    def replace(match: re.Match[str]) -> str:
+        var_name = match.group(1)
+        field_name = match.group(2)
+
+        if var_name not in bindings:
+            # Leave unresolved references as-is
+            return match.group(0)
+
+        value = bindings[var_name]
+
+        if field_name:
+            # Field access: $id.field
+            if isinstance(value, dict) and field_name in value:
+                result = value[field_name]
+            else:
+                # Can't resolve field, leave as-is
+                return match.group(0)
+        else:
+            # Simple variable: $id
+            result = value
+
+        # Convert to string if needed
+        if isinstance(result, str):
+            return result
+        elif result is None:
+            return ""
+        else:
+            return str(result)
+
+    return re.sub(pattern, replace, text)
+
+
+def _execute_hoisted_run(
+    run_node: Any,
+    context_bindings: Dict[str, Any],
+    timeout_sec: int = 300
+) -> Any:
+    """Execute a hoisted run node and return its captured output.
+
+    Args:
+        run_node: RunNode instance
+        context_bindings: Current variable bindings for substitution
+        timeout_sec: Timeout in seconds
+
+    Returns:
+        Captured output (string, dict, or list depending on capture mode)
+
+    Raises:
+        NotImplementedError: For unsupported run shapes
+        subprocess.CalledProcessError: If run fails
+    """
+    # Determine which run shape we have
+    if run_node.bash:
+        # Substitute variables in bash command
+        bash_cmd = _substitute_variables(run_node.bash, context_bindings)
+
+        # Execute bash using Popen to match model invocation pattern
+        process = subprocess.Popen(
+            ["bash", "-c", bash_cmd],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            raise subprocess.CalledProcessError(1, bash_cmd, stdout, stderr)
+
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, bash_cmd, stdout, stderr)
+
+        # Handle capture mode
+        capture = run_node.capture or "text"
+        if capture == "json":
+            return json.loads(stdout)
+        elif capture == "lines":
+            return stdout.splitlines()
+        else:  # text or None
+            return stdout.strip()
+
+    elif run_node.skill:
+        # Resolve skill path
+        skill_name = run_node.skill
+        body = run_node.body or ""
+
+        # Substitute variables in body
+        body = _substitute_variables(body, context_bindings)
+
+        # Try to find skill in standard locations
+        skill_paths = [
+            os.path.expanduser(f"~/.claude/skills/{skill_name}.ts"),
+            os.path.join(os.environ.get("PROJECT_ROOT", ""), f".claude/skills/{skill_name}.ts")
+        ]
+
+        skill_path = None
+        for path in skill_paths:
+            if os.path.exists(path):
+                skill_path = path
+                break
+
+        if not skill_path:
+            raise FileNotFoundError(f"Skill not found: {skill_name}")
+
+        # Execute skill using Popen
+        process = subprocess.Popen(
+            ["npx", "tsx", skill_path],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        try:
+            stdout, stderr = process.communicate(input=body, timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            raise subprocess.CalledProcessError(1, skill_name, stdout, stderr)
+
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, skill_name, stdout, stderr)
+
+        # Handle capture mode
+        capture = run_node.capture or "json"  # Skills default to json
+        if capture == "json":
+            return json.loads(stdout)
+        elif capture == "lines":
+            return stdout.splitlines()
+        else:  # text
+            return stdout.strip()
+
+    else:
+        # Unsupported shapes: tool, command, prompt_file
+        raise NotImplementedError(
+            f"Hoisted run shape not yet supported. "
+            f"Only bash: and skill: are implemented. "
+            f"Found: {run_node.model_dump(exclude_unset=True, exclude={'source_span'})}"
+        )
 
 
 def _resolve_session(ctx: RunnerContext) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -164,14 +354,92 @@ class PromptRunner(BaseRunner):
         # Resolve the prompt text. prompt_file takes precedence over inline
         # prompt (schema enforces they're mutually exclusive). Both paths end
         # up as a single string fed to the subprocess on stdin.
+        doc: Optional[Doc] = None
+        run_bindings: Dict[str, Any] = {}
+
         if node.prompt_file is not None:
-            try:
-                prompt_input: str = Path(node.prompt_file).read_text()
-            except OSError as exc:
-                return NodeResult(
-                    status=NodeStatus.FAILED,
-                    error=f"prompt_file read failed: {exc}",
-                )
+            # GW-5487: Use promptc to parse, hoist runs, and render mode-B body
+            if not PROMPTC_AVAILABLE:
+                # Fallback for environments without promptc
+                try:
+                    prompt_input: str = Path(node.prompt_file).read_text()
+                except OSError as exc:
+                    return NodeResult(
+                        status=NodeStatus.FAILED,
+                        error=f"prompt_file read failed: {exc}",
+                    )
+            else:
+                try:
+                    # Load and parse the prompt file
+                    doc = promptc.load(node.prompt_file)
+
+                    # Collect hoisted run nodes
+                    run_nodes = _collect_run_nodes(doc.nodes)
+
+                    # Execute hoisted runs in document order
+                    for run_node in run_nodes:
+                        if run_node.id is None:
+                            # Skip runs without an id (can't bind output)
+                            continue
+
+                        try:
+                            # Execute the run with current bindings
+                            output = _execute_hoisted_run(
+                                run_node,
+                                run_bindings,
+                                timeout_sec=run_node.timeout_ms // 1000 if run_node.timeout_ms else 300
+                            )
+                            # Bind output for use in subsequent runs and mode-B rendering
+                            run_bindings[run_node.id] = output
+
+                        except NotImplementedError as exc:
+                            return NodeResult(
+                                status=NodeStatus.FAILED,
+                                error=f"Hoisted run '{run_node.id}' failed: {str(exc)}"
+                            )
+                        except subprocess.CalledProcessError as exc:
+                            stderr = exc.stderr if exc.stderr else f"exit code {exc.returncode}"
+                            return NodeResult(
+                                status=NodeStatus.FAILED,
+                                error=f"Hoisted run '{run_node.id}' failed: {stderr}"
+                            )
+                        except Exception as exc:
+                            return NodeResult(
+                                status=NodeStatus.FAILED,
+                                error=f"Hoisted run '{run_node.id}' failed: {str(exc)}"
+                            )
+
+                    # Get resolved prompt_inputs from executor (GW-5486 + plan review warning #2)
+                    prompt_inputs = ctx.resolved_inputs.get("prompt_inputs") if ctx.resolved_inputs else None
+                    if prompt_inputs is None:
+                        prompt_inputs = node.prompt_inputs or {}
+
+                    # Render mode-B body with inputs
+                    mode_b_body = promptc.render(doc, inputs=prompt_inputs, mode="b")
+
+                    # Substitute hoisted run bindings in the rendered body
+                    prompt_input = _substitute_variables(mode_b_body, run_bindings)
+
+                except ParseError as exc:
+                    return NodeResult(
+                        status=NodeStatus.FAILED,
+                        error=f"prompt_file parse failed: {exc}"
+                    )
+                except RenderError as exc:
+                    return NodeResult(
+                        status=NodeStatus.FAILED,
+                        error=f"prompt_file render failed: {exc}"
+                    )
+                except FileNotFoundError as exc:
+                    return NodeResult(
+                        status=NodeStatus.FAILED,
+                        error=f"prompt_file not found: {exc}"
+                    )
+                except Exception as exc:
+                    return NodeResult(
+                        status=NodeStatus.FAILED,
+                        error=f"prompt_file processing failed: {exc}"
+                    )
         else:
             # Use resolved prompt from executor if available, else fall back to node.prompt
             resolved_prompt = ctx.resolved_inputs.get("prompt") if ctx.resolved_inputs else None
@@ -378,12 +646,38 @@ class PromptRunner(BaseRunner):
                     # Log but don't fail the node - session data is secondary to LLM response
                     logger.warning(f"Failed to append conversation message: {e}")
 
+            # GW-5487: If promptc doc is contract-tier, parse output via promptc
+            output_dict = {}
+            parsed_json: Any = None
+
+            if doc is not None and PROMPTC_AVAILABLE and len(doc.outputs) > 0:
+                # Contract tier: use promptc.parse_output
+                try:
+                    parse_result = promptc.parse_output(full_output, doc.outputs)
+
+                    # Check for errors
+                    if parse_result.errors:
+                        # Fail the node on parse errors
+                        error_msgs = [f"{err.field}: {err.message}" for err in parse_result.errors]
+                        return NodeResult(
+                            status=NodeStatus.FAILED,
+                            error=f"Output parsing failed: {'; '.join(error_msgs)}"
+                        )
+
+                    # Populate output_dict with parsed fields
+                    for field_name, value in parse_result.fields.items():
+                        output_dict[field_name] = value
+
+                except Exception as exc:
+                    return NodeResult(
+                        status=NodeStatus.FAILED,
+                        error=f"Output parsing failed: {str(exc)}"
+                    )
+
             # GW-5308 / GW-5356: If output_format is JSON, spread parsed fields
             # into output dict. Agent-mode output typically wraps the JSON in
             # prose + markdown fences (e.g. ```json ... ```); try those paths
             # in order before giving up.
-            output_dict = {}
-            parsed_json: Any = None
             if node.output_format == OutputFormat.JSON:
                 parsed_json = _extract_json_object(full_output)
                 if isinstance(parsed_json, dict):
