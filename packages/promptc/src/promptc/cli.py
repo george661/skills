@@ -6,7 +6,7 @@ import json
 import sys
 from typing import Any, Optional
 
-from promptc import contract, parser, render, validator
+from promptc import contract, migrate, parser, render, validator
 from promptc.errors import ParseError, RenderError
 from promptc.schema import Doc
 
@@ -432,7 +432,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to LLM response file",
     )
 
+    # migrate subcommand
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="Migrate legacy command format to promptc",
+    )
+    migrate_parser.add_argument("file", help="Path to legacy command file")
+
     return root
+
+
+def _cmd_migrate(args: argparse.Namespace) -> int:
+    """Handle migrate subcommand: convert legacy command to promptc format.
+
+    Reads a legacy command file and outputs the converted promptc format to stdout.
+    The original file is never modified.
+
+    Returns:
+        0 on success (including warnings), 1 on error
+    """
+    try:
+        result = migrate.migrate_file(args.file)
+        print(result, end='')
+        return 0
+    except FileNotFoundError:
+        print(f"Error: File not found: {args.file}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"Error parsing frontmatter: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Error migrating file: {e}", file=sys.stderr)
+        return 1
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -462,6 +493,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return _cmd_explain(args)
     elif args.subcommand == "parse":
         return _cmd_parse(args)
+    elif args.subcommand == "migrate":
+        return _cmd_migrate(args)
     else:
         # Should never reach here if subparsers required=True
         print(f"Unknown subcommand: {args.subcommand}", file=sys.stderr)
