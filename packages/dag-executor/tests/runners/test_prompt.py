@@ -904,7 +904,11 @@ def test_prompt_file_hoists_skill_run(tmp_path):
         calls.append((args, kwargs))
         return mock_proc
     
-    with patch("subprocess.Popen", side_effect=side_effect):
+    # Patch os.path.exists so the skill-path resolver doesn't reject CI runners
+    # that have no ~/.claude/skills/ staged. The real resolver shells out to
+    # `npx tsx <path>` — the subprocess itself is mocked by side_effect.
+    with patch("subprocess.Popen", side_effect=side_effect), \
+         patch("dag_executor.runners.prompt.os.path.exists", return_value=True):
         runner = PromptRunner()
         result = runner.run(ctx)
 
