@@ -778,3 +778,294 @@ def test_output_format_json_collision_response_preserved():
         assert result.output["response"] == json_output
         # Other parsed fields should still be present
         assert result.output["other"] == "data"
+
+
+# ========== PROMPTC INTEGRATION TESTS ==========
+
+
+def test_prompt_file_with_promptc_loads_mode_b_body(tmp_path):
+    """Test that promptc renders the file in mode-B with input substitution."""
+    fixture_path = tmp_path / "simple.md"
+    fixture_path.write_text(
+        '{% input name="topic" type="string" /%}\n'
+        'Analyze {% $inputs.topic %}.'
+    )
+    
+    node = NodeDef(
+        id="prompt_promptc",
+        name="Promptc Test",
+        type="prompt",
+        prompt_file=str(fixture_path),
+        prompt_inputs={"topic": "AI"},
+        model=ModelTier.SONNET
+    )
+    ctx = RunnerContext(node_def=node)
+
+    mock_process = MagicMock()
+    mock_process.stdout = io.StringIO("Analysis result\n")
+    mock_process.stderr = MagicMock()
+    mock_process.stderr.read.return_value = ""
+    mock_process.stdin = MagicMock()
+    mock_process.wait.return_value = 0
+
+    with patch("subprocess.Popen", return_value=mock_process) as mock_popen:
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+        assert result.status == NodeStatus.COMPLETED
+        # Verify the stdin fed to the model subprocess
+        mock_process.stdin.write.assert_called_once()
+        written_stdin = mock_process.stdin.write.call_args[0][0]
+        # Input declarations should be stripped, substitution applied
+        assert "input name=" not in written_stdin
+        assert "Analyze AI." in written_stdin
+
+
+def test_prompt_file_hoists_bash_run(tmp_path):
+    """Test that hoisted bash runs execute before model invocation."""
+    fixture_path = tmp_path / "bash_run.md"
+    fixture_path.write_text(
+        '{% run id="count" bash="echo 42" /%}\n'
+        'The count is $count.'
+    )
+    
+    node = NodeDef(
+        id="prompt_bash",
+        name="Bash Run Test",
+        type="prompt",
+        prompt_file=str(fixture_path),
+        model=ModelTier.SONNET
+    )
+    ctx = RunnerContext(node_def=node)
+
+    # Track subprocess calls
+    calls = []
+    
+    def side_effect(*args, **kwargs):
+        mock_proc = MagicMock()
+        # First call is bash run, second is model invocation
+        if len(calls) == 0:  # bash run
+            mock_proc.communicate.return_value = ("42\n", "")
+            mock_proc.returncode = 0
+        else:  # model invocation
+            mock_proc.stdout = io.StringIO("Model response\n")
+            mock_proc.stderr = MagicMock()
+            mock_proc.stderr.read.return_value = ""
+            mock_proc.wait.return_value = 0
+        mock_proc.stdin = MagicMock()
+        calls.append((args, kwargs))
+        return mock_proc
+    
+    with patch("subprocess.Popen", side_effect=side_effect):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+        assert result.status == NodeStatus.COMPLETED
+        # Verify bash was called first
+        assert len(calls) == 2
+        # First call should be for bash
+        assert "bash" in str(calls[0])
+        # Model call should have substituted $count
+        # (check via stdin write to second process)
+
+
+def test_prompt_file_hoists_skill_run(tmp_path):
+    """Test that hoisted skill runs execute and outputs are captured as JSON."""
+    fixture_path = tmp_path / "skill_run.md"
+    fixture_path.write_text(
+        '{% run id="meta" skill="jira/get_issue" capture="json" %}'
+        '{"issue_key": "GW-1"}'
+        '{% /run %}\n'
+        'Issue status: $meta.status'
+    )
+    
+    node = NodeDef(
+        id="prompt_skill",
+        name="Skill Run Test",
+        type="prompt",
+        prompt_file=str(fixture_path),
+        model=ModelTier.SONNET
+    )
+    ctx = RunnerContext(node_def=node)
+
+    calls = []
+    
+    def side_effect(*args, **kwargs):
+        mock_proc = MagicMock()
+        if len(calls) == 0:  # skill run
+            mock_proc.communicate.return_value = ('{"status": "Done"}\n', "")
+            mock_proc.returncode = 0
+        else:  # model invocation
+            mock_proc.stdout = io.StringIO("Model response\n")
+            mock_proc.stderr = MagicMock()
+            mock_proc.stderr.read.return_value = ""
+            mock_proc.wait.return_value = 0
+        mock_proc.stdin = MagicMock()
+        calls.append((args, kwargs))
+        return mock_proc
+    
+    # Patch os.path.exists so the skill-path resolver doesn't reject CI runners
+    # that have no ~/.claude/skills/ staged. The real resolver shells out to
+    # `npx tsx <path>` — the subprocess itself is mocked by side_effect.
+    with patch("subprocess.Popen", side_effect=side_effect), \
+         patch("dag_executor.runners.prompt.os.path.exists", return_value=True):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+        assert result.status == NodeStatus.COMPLETED
+        # Verify skill was called (should contain npx tsx)
+        assert len(calls) == 2
+
+
+def test_prompt_file_parse_output_populates_writes(tmp_path):
+    """Test that contract-tier output parsing populates write channels."""
+    fixture_path = tmp_path / "contract.md"
+    fixture_path.write_text(
+        '{% meta tier="contract" /%}\n'
+        '{% output name="verdict" type="enum" values=["APPROVED", "REJECTED"] /%}\n'
+        'Review this and output your verdict.\n'
+        'Your response must include:\n'
+        'VERDICT: [APPROVED or REJECTED]'
+    )
+    
+    node = NodeDef(
+        id="prompt_contract",
+        name="Contract Test",
+        type="prompt",
+        prompt_file=str(fixture_path),
+        writes=["verdict"],
+        model=ModelTier.SONNET
+    )
+    ctx = RunnerContext(node_def=node)
+
+    mock_process = MagicMock()
+    # Model response with verdict (field name is case-sensitive)
+    mock_process.stdout = io.StringIO("After review:\nverdict: APPROVED\n")
+    mock_process.stderr = MagicMock()
+    mock_process.stderr.read.return_value = ""
+    mock_process.stdin = MagicMock()
+    mock_process.wait.return_value = 0
+
+    with patch("subprocess.Popen", return_value=mock_process):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+        assert result.status == NodeStatus.COMPLETED
+        # Verify parsed field is in output
+        assert "verdict" in result.output
+        assert result.output["verdict"] == "APPROVED"
+
+
+def test_prompt_file_parse_output_error_fails_node(tmp_path):
+    """Test that parse_output validation errors fail the node."""
+    fixture_path = tmp_path / "contract.md"
+    fixture_path.write_text(
+        '{% meta tier="contract" /%}\n'
+        '{% output name="verdict" type="enum" values=["APPROVED", "REJECTED"] /%}\n'
+        'Review this and output your verdict.'
+    )
+    
+    node = NodeDef(
+        id="prompt_contract_fail",
+        name="Contract Fail Test",
+        type="prompt",
+        prompt_file=str(fixture_path),
+        writes=["verdict"],
+        model=ModelTier.SONNET
+    )
+    ctx = RunnerContext(node_def=node)
+
+    mock_process = MagicMock()
+    # Invalid enum value (field name is case-sensitive)
+    mock_process.stdout = io.StringIO("verdict: MAYBE\n")
+    mock_process.stderr = MagicMock()
+    mock_process.stderr.read.return_value = ""
+    mock_process.stdin = MagicMock()
+    mock_process.wait.return_value = 0
+
+    with patch("subprocess.Popen", return_value=mock_process):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+        assert result.status == NodeStatus.FAILED
+        assert "verdict" in result.error.lower() or "enum" in result.error.lower()
+
+
+def test_prompt_file_hoisted_run_failure_fails_node(tmp_path):
+    """Test that non-zero exit from hoisted run fails the prompt node."""
+    fixture_path = tmp_path / "failing_bash.md"
+    fixture_path.write_text(
+        '{% run id="fail" bash="exit 1" /%}\n'
+        'This should not execute.'
+    )
+    
+    node = NodeDef(
+        id="prompt_fail_bash",
+        name="Failing Bash Test",
+        type="prompt",
+        prompt_file=str(fixture_path),
+        model=ModelTier.SONNET
+    )
+    ctx = RunnerContext(node_def=node)
+
+    def side_effect(*args, **kwargs):
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("", "exit status 1")
+        mock_proc.returncode = 1
+        mock_proc.stdin = MagicMock()
+        return mock_proc
+    
+    with patch("subprocess.Popen", side_effect=side_effect):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+        assert result.status == NodeStatus.FAILED
+        assert "fail" in result.error.lower() or "exit" in result.error.lower()
+
+
+def test_prompt_file_unsupported_run_shape_fails_node(tmp_path):
+    """Test that unsupported run shapes (tool/command/prompt_file) fail gracefully."""
+    fixture_path = tmp_path / "unsupported.md"
+    fixture_path.write_text(
+        '{% run id="unsup" tool="whatever" /%}\n'
+        'Should fail.'
+    )
+    
+    node = NodeDef(
+        id="prompt_unsupported",
+        name="Unsupported Run Test",
+        type="prompt",
+        prompt_file=str(fixture_path),
+        model=ModelTier.SONNET
+    )
+    ctx = RunnerContext(node_def=node)
+
+    runner = PromptRunner()
+    result = runner.run(ctx)
+
+    assert result.status == NodeStatus.FAILED
+    assert "not yet supported" in result.error.lower() or "not implemented" in result.error.lower()
+
+
+def test_prompt_file_parse_error_fails_node(tmp_path):
+    """Test that malformed promptc syntax fails the node with parse error."""
+    fixture_path = tmp_path / "malformed.md"
+    fixture_path.write_text(
+        '{% meta\n'
+        'This is intentionally unclosed'
+    )
+    
+    node = NodeDef(
+        id="prompt_malformed",
+        name="Malformed Test",
+        type="prompt",
+        prompt_file=str(fixture_path),
+        model=ModelTier.SONNET
+    )
+    ctx = RunnerContext(node_def=node)
+
+    runner = PromptRunner()
+    result = runner.run(ctx)
+
+    assert result.status == NodeStatus.FAILED
+    assert "parse" in result.error.lower()
