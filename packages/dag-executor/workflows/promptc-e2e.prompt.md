@@ -6,29 +6,32 @@
 
 # Task Review
 
-You are reviewing the following task:
+This is a synthetic integration test. You are reviewing the following task description and must always produce a verdict.
 
-**Task:** ${task}
-**Date:** ${timestamp}
+**Task:** {% $inputs.task %}
+**Date:** $timestamp
 
-Please review this task and provide your verdict.
+**Review Guidelines:**
+- If the task description is non-empty and describes a concrete action, respond with APPROVED
+- If the task description is empty or meaningless, respond with REJECTED
+- Always emit both VERDICT and SUMMARY, regardless of whether you have questions
 
 You MUST respond in the following format:
 
 ```
-VERDICT: APPROVED
-SUMMARY: Your one-line summary here
+verdict: APPROVED
+summary: Your one-line summary here
 ```
 
 Or:
 
 ```
-VERDICT: REJECTED
-SUMMARY: Your one-line summary here
+verdict: REJECTED
+summary: Your one-line summary here
 ```
 
-The VERDICT must be exactly one of: APPROVED or REJECTED.
-The SUMMARY should be a brief one-line explanation.
+The verdict must be exactly one of: APPROVED or REJECTED.
+The summary should be a brief one-line explanation.
 
-{% output name="verdict" type="enum" values=["APPROVED", "REJECTED"] pattern="VERDICT: (.+)" /%}
-{% output name="summary" type="string" pattern="SUMMARY: (.+)" /%}
+{% output name="verdict" type="enum" values=["APPROVED", "REJECTED"] /%}
+{% output name="summary" type="string" /%}
