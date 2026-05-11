@@ -260,9 +260,11 @@ nodes:
     type: prompt
     prompt_file: prompts/analyze-issue.md
     prompt_inputs:
-      issue: $fetch.issue_data
+      issue_key: "PROJ-456"  # literal value bound into prompt file
       threshold: 0.8
 ```
+
+**Note:** `prompt_inputs` values can use node-level variable substitution (e.g., `issue_key: $fetch.issue_data`) to bind upstream DAG node outputs into the prompt file. This is distinct from the prompt file's internal `{% $inputs.X %}` references, which are resolved during `promptc.render()` from the `prompt_inputs` dictionary.
 
 ### Execution Behavior
 
@@ -276,14 +278,14 @@ When `prompt_file` is set, the executor:
    - Runs without an `id=` attribute are skipped (their output cannot be bound).
    - Runs using `tool:`, `command:`, or nested `prompt_file:` raise `NotImplementedError` (reserved for future implementation).
 4. **Captures** each run's output according to its `capture=` mode:
-   - `capture="json"` parses output as JSON and makes fields accessible via `$id.field`.
-   - `capture="text"` stores the raw text in `$id.output`.
-   - `capture="lines"` splits output into an array at `$id.lines`.
+   - `capture="json"` parses output as JSON and binds the resulting dictionary to `$id`. Fields are accessible via `$id.field`.
+   - `capture="text"` binds the raw text directly to `$id` (not `$id.output`).
+   - `capture="lines"` binds the line array directly to `$id` (not `$id.lines`).
 5. **Renders** the prompt file in Mode B (`promptc.render(doc, inputs, mode="b")`), which:
    - Strips all `{% run %}` blocks from the document.
    - Substitutes `{% $inputs.X %}` references with values from `prompt_inputs`.
-   - Replaces `$id.field` references with the captured run outputs.
-6. **Invokes** the model with the rendered prompt body as input.
+6. **Substitutes** run output bindings: the executor performs a second pass via `_substitute_variables(mode_b_body, run_bindings)` to replace `$id` and `$id.field` references with the captured run outputs.
+7. **Invokes** the model with the rendered prompt body as input.
 
 **Conceptually**, the executor "hoists" the side-effecting runs out of the prompt so the model sees only the declarative content. **In practice**, this hoisting happens in-process—no separate DAG nodes are created for runs.
 
@@ -294,7 +296,7 @@ Given `prompts/analyze-issue.md`:
 ```markdown
 {% input name="issue_key" type="string" description="Jira issue key" /%}
 
-{% run id="fetch_issue" bash="curl -s https://api.example.com/issues/$inputs.issue_key" capture="json" /%}
+{% run id="fetch_issue" bash="curl -s https://api.example.com/issues/{% $inputs.issue_key %}" capture="json" /%}
 
 ## Issue Analysis
 
@@ -350,7 +352,7 @@ For prompts **without** `{% output %}` declarations, the executor falls back to 
 As of GW-5487, the executor supports:
 
 - **`bash:`** — Execute shell commands.
-- **`skill:`** — Invoke TypeScript skill modules.
+- **`skill:`** — Invoke TypeScript skill modules. The executor resolves skill paths by checking `~/.claude/skills/<name>.ts` and `$PROJECT_ROOT/.claude/skills/<name>.ts`, then runs the skill using `npx tsx <path>`. This is an implementation convention of the current skill tree, not a language-level property.
 
 Reserved but **not yet implemented** (will raise `NotImplementedError` if used):
 
@@ -360,7 +362,13 @@ Reserved but **not yet implemented** (will raise `NotImplementedError` if used):
 
 ### Variable Substitution
 
-Run output bindings use the same `$id.field` syntax documented in the [Variable Substitution](#variable-substitution) section for upstream node outputs. Within the prompt file, `$id` resolves to the captured run output, while `$node_id` (without run prefix) resolves to upstream DAG node outputs.
+Within a prompt file, both `{% run %}` output bindings and upstream DAG node outputs use the same `$id` or `$id.field` syntax. The executor disambiguates by checking which binding dictionary contains the name:
+
+- If the name exists in the run bindings dictionary (populated from `{% run %}` blocks), it resolves to the run's captured output.
+- Otherwise, if the name exists in the DAG node outputs dictionary, it resolves to the upstream node's output.
+- If neither dictionary contains the name, the reference is left as-is (unresolved).
+
+This means a run ID and a node ID can have the same name—the run binding shadows the node binding within the prompt file.
 
 ### Fallback Behavior
 
