@@ -29,8 +29,16 @@ cd "$REPO_ROOT"
 
 # Prefer the repo's .venv if present (local dev); CI sources its own venv
 # before launching so `python` resolves correctly there.
+#
+# Prepend the venv's bin/ to PATH so subprocesses the dashboard spawns —
+# notably the `dag-exec` invocation inside /api/trigger — resolve the venv's
+# console script rather than any stale system/miniconda one. Without this,
+# trigger silently fails because the child dag-exec can't import
+# dag_executor; the DB row stays pending forever (observed while writing
+# the workflow-trigger-e2e Playwright spec).
 if [ -x ".venv/bin/python" ]; then
   PY=".venv/bin/python"
+  export PATH="$REPO_ROOT/.venv/bin:$PATH"
 else
   PY="python"
 fi
