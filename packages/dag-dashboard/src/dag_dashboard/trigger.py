@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
@@ -287,13 +288,27 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
         # watches) and polls {events_dir}/{run_id}.cancel for cancel markers.
         child_env = {**os.environ, "DAG_EVENTS_DIR": str(settings.events_dir.resolve())}
 
-        # Build dag-exec command. --conversation + --db enable the executor's
-        # session-continuity path (see executor.py:_get_or_mint_session) so
-        # prompt nodes can resume a single Claude session across the run and
-        # the orchestrator chat can join the same conversation.
+        # Build dag-exec command. Invoke via `sys.executable -m dag_executor`
+        # rather than the `dag-exec` console script so the subprocess runs
+        # under the same interpreter as the dashboard — no dependence on
+        # PATH lookup. Without this, a stale `dag-exec` shim from a system
+        # Python (e.g. miniconda) earlier on PATH would execute but
+        # ModuleNotFoundError on dag_executor, silently failing the run.
+        # --conversation + --db enable the executor's session-continuity
+        # path (see executor.py:_get_or_mint_session) so prompt nodes can
+        # resume a single Claude session across the run and the
+        # orchestrator chat can join the same conversation.
+        # Build cmdline with ALL positionals (workflow + inputs) first, then
+        # optionals. argparse with nargs="*" positionals + intervening
+        # optionals in the cmdline has been observed to fail on Linux Python
+        # 3.12.3 even when macOS 3.12.9 accepts it (the `inputs` token gets
+        # swallowed by a "greedy" rollback). Positional-first eliminates the
+        # ambiguity entirely.
         dag_exec_args = [
-            "dag-exec",
-            str(workflow_file),  # Pass resolved file path, not workflow name
+            sys.executable,
+            "-m", "dag_executor",
+            str(workflow_file),
+            *input_args,
             "--run-id", run_id,
             "--conversation", conversation_id,
             "--db", str(db_path),
@@ -303,19 +318,35 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
         if request_body.model_override:
             dag_exec_args.extend(["--model-override", request_body.model_override])
 
-        dag_exec_args.extend(input_args)
-
         # Spawn the subprocess (detached, survives dashboard restart).
         # CRITICAL: Pass --run-id so the executor uses the same run_id we
         # INSERTed into workflow_runs above. Otherwise it generates a new
         # UUID and emits events under a run_id the DB row does not know.
-        await asyncio.create_subprocess_exec(
-            *dag_exec_args,
-            stdout=asyncio.subprocess.DEVNULL,  # Avoid pipe leak
-            stderr=asyncio.subprocess.DEVNULL,  # Avoid pipe leak
-            cwd=str(settings.events_dir.parent) if settings.events_dir.parent != Path(".") else None,
-            env=child_env,
-        )
+        #
+        # Redirect subprocess stderr/stdout to a per-run log file under
+        # events_dir so crashes (import errors, CLI arg errors, unhandled
+        # exceptions) are observable after the fact. Previously /dev/null
+        # meant "run stays pending forever" with zero diagnostic signal.
+        log_path = settings.events_dir.resolve() / f"{run_id}.subprocess.log"
+        log_handle = open(log_path, "wb")  # noqa: SIM115 — handle closed by subprocess lifecycle
+        try:
+            # Prologue: record the exact argv the subprocess was spawned with,
+            # so if it exits with argparse-unrecognized-argument errors we can
+            # see each token without guessing from the CI env.
+            log_handle.write(
+                ("dag-exec argv: " + repr(list(dag_exec_args)) + "\n").encode("utf-8"),
+            )
+            log_handle.flush()
+            await asyncio.create_subprocess_exec(
+                *dag_exec_args,
+                stdout=log_handle,
+                stderr=log_handle,
+                cwd=str(settings.events_dir.parent) if settings.events_dir.parent != Path(".") else None,
+                env=child_env,
+            )
+        finally:
+            # The subprocess inherits the fd; we can close our handle.
+            log_handle.close()
 
         return TriggerResponse(run_id=run_id, conversation_id=conversation_id)
 
