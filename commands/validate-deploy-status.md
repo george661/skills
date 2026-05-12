@@ -69,7 +69,7 @@ Follow the repo-specific instructions to verify the code is actually deployed.
    Compare the deployment timestamp/build date against the PR merge date.
 
 3. If the repo's CLAUDE.md has no Deployment Verification section,
-   fall back to checking the CI pipeline status from Phase 2.
+   fall back to the pipeline status check from the previous phase.
 
 If deployment artifact is older than the PR merge, output `DEPLOY_STATUS: NEEDS_DEPLOY`.
 

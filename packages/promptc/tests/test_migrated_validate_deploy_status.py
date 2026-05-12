@@ -85,6 +85,12 @@ def test_production_file_emits_output_contract(production_doc):
 
 def test_production_file_parse_output_extracts_all_fields(production_doc):
     """Verify that parse_output can extract all declared output fields from a canned response."""
+    # NOTE: Using an inline canned response instead of packages/promptc/tests/fixtures/responses/validate-deploy-status-DEPLOYED.txt
+    # because the fixture preamble shape differs from the actual LLM response format. This test proves parse_output
+    # can extract declared fields from a clean response but does NOT prove it handles real LLM response variance
+    # (e.g., extra preamble text, markdown formatting, etc.). This is the narrowest feasible substitute today,
+    # as packages/dag-executor/workflows/validate-deploy-status.yaml is a bash pipeline that does NOT load
+    # commands/validate-deploy-status.md via promptc.render or parse_output.
     # Canned DEPLOYED response fixture
     canned_response = """
 ## Phase 3: Output Result
