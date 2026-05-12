@@ -311,7 +311,13 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
         if request_body.model_override:
             dag_exec_args.extend(["--model-override", request_body.model_override])
 
-        dag_exec_args.extend(input_args)
+        # Separator before positional input key=value pairs so argparse does
+        # not interpret `key=value` as an unknown `--key=value` flag when the
+        # cmdline has intervening optionals. Observed under some argparse
+        # builds on Linux CI; local macOS argparse accepted the bare form.
+        if input_args:
+            dag_exec_args.append("--")
+            dag_exec_args.extend(input_args)
 
         # Spawn the subprocess (detached, survives dashboard restart).
         # CRITICAL: Pass --run-id so the executor uses the same run_id we
