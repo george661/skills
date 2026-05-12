@@ -298,10 +298,17 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
         # path (see executor.py:_get_or_mint_session) so prompt nodes can
         # resume a single Claude session across the run and the
         # orchestrator chat can join the same conversation.
+        # Build cmdline with ALL positionals (workflow + inputs) first, then
+        # optionals. argparse with nargs="*" positionals + intervening
+        # optionals in the cmdline has been observed to fail on Linux Python
+        # 3.12.3 even when macOS 3.12.9 accepts it (the `inputs` token gets
+        # swallowed by a "greedy" rollback). Positional-first eliminates the
+        # ambiguity entirely.
         dag_exec_args = [
             sys.executable,
             "-m", "dag_executor",
-            str(workflow_file),  # Pass resolved file path, not workflow name
+            str(workflow_file),
+            *input_args,
             "--run-id", run_id,
             "--conversation", conversation_id,
             "--db", str(db_path),
@@ -310,14 +317,6 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
         # Add model override if provided
         if request_body.model_override:
             dag_exec_args.extend(["--model-override", request_body.model_override])
-
-        # Separator before positional input key=value pairs so argparse does
-        # not interpret `key=value` as an unknown `--key=value` flag when the
-        # cmdline has intervening optionals. Observed under some argparse
-        # builds on Linux CI; local macOS argparse accepted the bare form.
-        if input_args:
-            dag_exec_args.append("--")
-            dag_exec_args.extend(input_args)
 
         # Spawn the subprocess (detached, survives dashboard restart).
         # CRITICAL: Pass --run-id so the executor uses the same run_id we
