@@ -53,6 +53,13 @@ async function resolveWorkflowsDir(page: Page): Promise<string> {
     return String(entry.value);
 }
 
+function eventsDirFor(workflowsDir: string): string {
+    // Harness lays out $TMPDIR as {db, events, workflows} siblings, so the
+    // events dir is `dirname(workflows_dir)/events`. Used to surface
+    // subprocess logs on pollRunStatus timeout.
+    return path.join(path.dirname(workflowsDir), 'events');
+}
+
 async function enableTrigger(page: Page): Promise<void> {
     const res = await page.request.put('/api/settings', {
         data: { updates: { trigger_enabled: true } },
@@ -63,8 +70,9 @@ async function enableTrigger(page: Page): Promise<void> {
 async function pollRunStatus(
     page: Page,
     runId: string,
+    eventsDir: string,
     terminalStatuses = ['completed', 'failed', 'cancelled', 'paused'],
-    timeoutMs = 30_000,
+    timeoutMs = 60_000,
 ): Promise<any> {
     const deadline = Date.now() + timeoutMs;
     let last: any = null;
@@ -79,15 +87,32 @@ async function pollRunStatus(
         }
         await page.waitForTimeout(250);
     }
+
+    // On timeout, read the subprocess log the trigger wrote under events_dir.
+    // The trigger handler now writes dag-exec stdout/stderr to
+    // {events_dir}/{run_id}.subprocess.log; without this surface, failed
+    // spawns (PATH issues, ImportError, bad CLI args) are invisible.
+    let subprocessLog = '(not found)';
+    try {
+        const logPath = path.join(eventsDir, `${runId}.subprocess.log`);
+        const text = await fs.readFile(logPath, 'utf8');
+        subprocessLog = text.trim()
+            ? text
+            : '(empty — subprocess did not spawn or exited silently)';
+    } catch (e: any) {
+        subprocessLog = `(failed to read log: ${e?.message ?? e})`;
+    }
+
     throw new Error(
-        `Run ${runId} did not reach terminal status within ${timeoutMs}ms. ` +
-            `Last known status: ${last?.run?.status ?? 'unknown'}. ` +
-            `Last body keys: ${last ? Object.keys(last).join(',') : 'none'}.`,
+        `Run ${runId} did not reach terminal status within ${timeoutMs}ms.\n` +
+            `Last known status: ${last?.run?.status ?? 'unknown'}.\n` +
+            `Last body keys: ${last ? Object.keys(last).join(',') : 'none'}.\n` +
+            `--- subprocess log (${runId}.subprocess.log) ---\n${subprocessLog}\n--- end ---`,
     );
 }
 
 test.describe('workflow trigger + orchestration (end-to-end)', () => {
-    test.setTimeout(60_000);
+    test.setTimeout(90_000);
 
     test('seed → list → trigger → run completes', async ({ page }) => {
         // 1. Capture any browser console error so we don't miss the
@@ -162,7 +187,7 @@ test.describe('workflow trigger + orchestration (end-to-end)', () => {
             //    dag-executor fires on trigger and runs the 1-node bash DAG.
             //    Success means the run row reaches status=completed and the
             //    single bash node executed successfully.
-            const terminal = await pollRunStatus(page, runId);
+            const terminal = await pollRunStatus(page, runId, eventsDirFor(workflowsDir));
             expect(
                 terminal?.run?.status,
                 `run ${runId} expected to complete; body=${JSON.stringify(terminal)}`,

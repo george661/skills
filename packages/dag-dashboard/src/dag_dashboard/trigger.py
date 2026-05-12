@@ -317,13 +317,24 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
         # CRITICAL: Pass --run-id so the executor uses the same run_id we
         # INSERTed into workflow_runs above. Otherwise it generates a new
         # UUID and emits events under a run_id the DB row does not know.
-        await asyncio.create_subprocess_exec(
-            *dag_exec_args,
-            stdout=asyncio.subprocess.DEVNULL,  # Avoid pipe leak
-            stderr=asyncio.subprocess.DEVNULL,  # Avoid pipe leak
-            cwd=str(settings.events_dir.parent) if settings.events_dir.parent != Path(".") else None,
-            env=child_env,
-        )
+        #
+        # Redirect subprocess stderr/stdout to a per-run log file under
+        # events_dir so crashes (import errors, CLI arg errors, unhandled
+        # exceptions) are observable after the fact. Previously /dev/null
+        # meant "run stays pending forever" with zero diagnostic signal.
+        log_path = settings.events_dir.resolve() / f"{run_id}.subprocess.log"
+        log_handle = open(log_path, "wb")  # noqa: SIM115 — handle closed by subprocess lifecycle
+        try:
+            await asyncio.create_subprocess_exec(
+                *dag_exec_args,
+                stdout=log_handle,
+                stderr=log_handle,
+                cwd=str(settings.events_dir.parent) if settings.events_dir.parent != Path(".") else None,
+                env=child_env,
+            )
+        finally:
+            # The subprocess inherits the fd; we can close our handle.
+            log_handle.close()
 
         return TriggerResponse(run_id=run_id, conversation_id=conversation_id)
 
