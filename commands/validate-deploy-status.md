@@ -1,31 +1,34 @@
-<!-- MODEL_TIER: local -->
----
-description: Check deployment status for a merged Jira issue
-arguments:
-  - name: issue
-    description: Jira issue key (e.g., PROJ-123)
-    required: true
----
+{% meta description="Check deployment status for a merged Jira issue" doc_type="command" tier="contract" /%}
 
-# Check Deployment Status: $ARGUMENTS.issue
+{% input name="issue" type="string" required="true" description="Jira issue key (e.g., PROJ-123)" /%}
+
+{% output name="DEPLOY_STATUS" type="string" description="DEPLOYED | FAILED | IN_PROGRESS | NEEDS_DEPLOY | UNKNOWN" /%}
+{% output name="REPO" type="string" description="Repository name from repo-* label" /%}
+{% output name="PIPELINE" type="string" description="CI pipeline name" /%}
+{% output name="BUILD_ID" type="string" description="CI build identifier" /%}
+{% output name="BUILD_STATUS" type="string" description="succeeded | failed | started | pending" /%}
+{% output name="ENV_URL" type="string" description="Environment base URL from repo CLAUDE.md or env-* labels (optional)" /%}
+{% output name="DEPLOY_GAP_REASON" type="string" description="Brief description of deployment gap (only if DEPLOY_STATUS is NEEDS_DEPLOY, optional)" /%}
+
+# Check Deployment Status: {% $inputs.issue %}
 
 ## Purpose
 
 Verify that the code for this issue has been deployed to the target environment.
 This is called by the `/validate` orchestrator — do not run standalone.
 
-## Phase 1: Load Issue Context
+{% phase name="Load Issue Context" %}
 
 1. Fetch the issue from Jira:
-   ```bash
-   npx tsx ~/.claude/skills/issues/get_issue.ts '{"issue_key": "$ARGUMENTS.issue", "fields": "status,labels,comment"}'
-   ```
+   {% run skill="jira/get_issue" %}{"issue_key": "{% $inputs.issue %}", "fields": "status,labels,comment"}{% /run %}
 
 2. Verify issue is in VALIDATION status. If not, STOP and report the current status.
 
 3. Extract the `repo-*` label to determine which repository was changed.
 
-## Phase 2: Check CI Pipeline on Main
+{% /phase %}
+
+{% phase name="Check CI Pipeline on Main" %}
 
 1. Find the most recent build for the affected repo's pipeline:
    ```bash
@@ -40,12 +43,14 @@ This is called by the `/validate` orchestrator — do not run standalone.
    fi
    ```
 
-3. Check the build status:
+2. Check the build status:
    - **succeeded** → deployment confirmed
    - **failed** → report failure details, STOP
    - **started/pending** → report "build in progress", STOP
 
-## Phase 2.5: Verify Deployment Artifacts
+{% /phase %}
+
+{% phase name="Verify Deployment Artifacts" %}
 
 Read the target repo's CLAUDE.md (look for `## Deployment Verification` section).
 Follow the repo-specific instructions to verify the code is actually deployed.
@@ -64,7 +69,7 @@ Follow the repo-specific instructions to verify the code is actually deployed.
    Compare the deployment timestamp/build date against the PR merge date.
 
 3. If the repo's CLAUDE.md has no Deployment Verification section,
-   fall back to checking the CI pipeline status from Phase 2.
+   fall back to the pipeline status check from the previous phase.
 
 If deployment artifact is older than the PR merge, output `DEPLOY_STATUS: NEEDS_DEPLOY`.
 
@@ -72,7 +77,9 @@ If deployment artifact is older than the PR merge, output `DEPLOY_STATUS: NEEDS_
 merge commit hash and verify it appears in the deployed build's git range. If no PR label,
 skip this check — pipeline status alone is sufficient.
 
-## Phase 3: Output Result
+{% /phase %}
+
+{% phase name="Output Result" %}
 
 Print a structured result block that the orchestrator will parse:
 
@@ -91,3 +98,5 @@ section (look for `### Environment URLs`). If not found, check for `env-*` label
 issue or `TENANT_ENV` in the environment.
 
 If FAILED, include the build log summary (first 50 lines of failure output).
+
+{% /phase %}
