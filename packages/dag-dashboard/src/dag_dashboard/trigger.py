@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
@@ -287,12 +288,19 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
         # watches) and polls {events_dir}/{run_id}.cancel for cancel markers.
         child_env = {**os.environ, "DAG_EVENTS_DIR": str(settings.events_dir.resolve())}
 
-        # Build dag-exec command. --conversation + --db enable the executor's
-        # session-continuity path (see executor.py:_get_or_mint_session) so
-        # prompt nodes can resume a single Claude session across the run and
-        # the orchestrator chat can join the same conversation.
+        # Build dag-exec command. Invoke via `sys.executable -m dag_executor`
+        # rather than the `dag-exec` console script so the subprocess runs
+        # under the same interpreter as the dashboard — no dependence on
+        # PATH lookup. Without this, a stale `dag-exec` shim from a system
+        # Python (e.g. miniconda) earlier on PATH would execute but
+        # ModuleNotFoundError on dag_executor, silently failing the run.
+        # --conversation + --db enable the executor's session-continuity
+        # path (see executor.py:_get_or_mint_session) so prompt nodes can
+        # resume a single Claude session across the run and the
+        # orchestrator chat can join the same conversation.
         dag_exec_args = [
-            "dag-exec",
+            sys.executable,
+            "-m", "dag_executor",
             str(workflow_file),  # Pass resolved file path, not workflow name
             "--run-id", run_id,
             "--conversation", conversation_id,
