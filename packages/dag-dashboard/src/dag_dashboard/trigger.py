@@ -325,6 +325,13 @@ def create_trigger_router(settings: Settings, db_path: Path) -> APIRouter:
         log_path = settings.events_dir.resolve() / f"{run_id}.subprocess.log"
         log_handle = open(log_path, "wb")  # noqa: SIM115 — handle closed by subprocess lifecycle
         try:
+            # Prologue: record the exact argv the subprocess was spawned with,
+            # so if it exits with argparse-unrecognized-argument errors we can
+            # see each token without guessing from the CI env.
+            log_handle.write(
+                ("dag-exec argv: " + repr(list(dag_exec_args)) + "\n").encode("utf-8"),
+            )
+            log_handle.flush()
             await asyncio.create_subprocess_exec(
                 *dag_exec_args,
                 stdout=log_handle,
