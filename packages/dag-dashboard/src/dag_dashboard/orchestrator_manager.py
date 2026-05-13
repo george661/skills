@@ -28,6 +28,7 @@ class OrchestratorManager:
         model: Optional[str] = None,
         dashboard_port: int = 8080,
         allow_edits: bool = False,
+        workflows_dirs: Optional[List[Path]] = None,
     ):
         self.db_path = db_path
         self.broadcaster = broadcaster
@@ -36,6 +37,10 @@ class OrchestratorManager:
         self.model = model
         self.dashboard_port = dashboard_port
         self.allow_edits = allow_edits
+        # Plumbed into every spawned OrchestratorRelay so the agent system
+        # prompt includes the concrete workflows dir path. Without this the
+        # agent does global filesystem walks looking for workflow YAML files.
+        self.workflows_dirs: List[Path] = list(workflows_dirs or [])
 
         self.relays: Dict[str, OrchestratorRelay] = {}
         self.lru: "OrderedDict[str, bool]" = OrderedDict()
@@ -188,6 +193,7 @@ class OrchestratorManager:
             dashboard_port=self.dashboard_port,
             session_uuid=session_uuid,
             allow_edits=self.allow_edits,
+            workflows_dirs=self.workflows_dirs,
         )
         relay.start()
         

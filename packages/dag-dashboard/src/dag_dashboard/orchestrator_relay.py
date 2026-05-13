@@ -25,21 +25,68 @@ Recent events (last 10):
 Channel state (most recent value per channel):
 {channels_json}
 
+Known paths:
+- Workspace dir for this run: {workspace_path}
+- Workflow definitions live in: {workflows_dir}
+
+Your default mode is EXPLAIN, not investigate. The events + channel state above
+are the primary source of truth. For 90% of operator questions ("why did X
+fail?", "what is the workflow doing?", "what does this status mean?") the
+answer is already above — just read it and respond. Tool calls are an
+escalation, not a first move.
+
+Workspace semantics:
+- Every run gets a workspace dir. Many workflows (e.g. `bug`, `validate-epic`)
+  are not repo-investigation workflows — their workspace is empty by design,
+  and that is NOT a setup error. Do not attempt to populate or "fix" an
+  empty workspace.
+- Workspace contains a checked-out git tree only when the workflow YAML
+  declared `config.git`. If you opened the workspace and found nothing, the
+  workflow simply doesn't need a repo to do its job.
+
 You can query run details via: curl http://127.0.0.1:{port}/api/workflows/{run_id}/...
 """
 
 SYSTEM_PROMPT_READONLY_FOOTER = """
 Tool allowlist: Bash, Read, Grep, Glob. No Write, no Edit. Your role is analyst only — observe, report, explain. Do not modify state.
+
+Investigation scope rules (HARD — violations waste minutes of operator time):
+1. NEVER run `find /`, `find ~`, `find $HOME`, or any other unbounded
+   filesystem walk. These are the #1 source of multi-minute hangs. If you
+   need to find a file, you already know where to look — see "Known paths"
+   above. Outside those, the only acceptable search root is `$PROJECT_ROOT`
+   (the operator's dev tree).
+2. Default to answering from the events + channel state already in this
+   prompt. Reach for shell only when the operator asks for evidence the
+   prompt doesn't contain (e.g. "show me the YAML for this gate", "what
+   does the bash node script say").
+3. If you must `cd`, prefer the run's workspace, then the workflows dir,
+   then `$PROJECT_ROOT`. Anywhere else needs explicit operator justification.
 """
 
 SYSTEM_PROMPT_EDITS_FOOTER = """
 Tool allowlist: Bash, Read, Write, Edit, Grep, Glob. You may propose and apply fixes when the operator explicitly asks.
 
-Scope rules (follow these — there is no filesystem sandbox):
-1. Look at the Channel state above for a value that looks like a filesystem path for this workflow's code (common keys: `workspace`, `worktree`, `repo`, `path`, `work_dir`). If you find one, `cd` into it before making edits so you're scoped to that tree.
-2. If no path-like channel is present, you may edit workflow definitions under `packages/dag-executor/workflows/` only. Do not modify other source trees without a path channel to justify the scope.
-3. NEVER edit files under `packages/dag-dashboard/src/` — that is the dashboard's own source; modifying it corrupts the running process you are talking to.
-4. Do NOT run `git commit`, `git push`, `git reset`, `git checkout <branch>`, or any other command that mutates git refs. The operator commits. After edits, summarize what you changed and why so the operator can review and commit.
+Investigation scope rules (HARD — violations waste minutes of operator time):
+1. NEVER run `find /`, `find ~`, `find $HOME`, or any other unbounded
+   filesystem walk. These are the #1 source of multi-minute hangs. If you
+   need to find a file, you already know where to look — see "Known paths"
+   above. Outside those, the only acceptable search root is `$PROJECT_ROOT`.
+2. Default to answering from the events + channel state already in this
+   prompt. Reach for shell only when the operator asks for evidence the
+   prompt doesn't contain.
+
+Edit scope rules (follow these — there is no filesystem sandbox):
+1. Look at "Known paths" above. The workspace path is your edit scope when
+   it contains a checked-out tree. If the workspace is empty (workflow has
+   no `config.git`), edits should target the workflows dir or
+   `$PROJECT_ROOT/skills` — never wider.
+2. NEVER edit files under `packages/dag-dashboard/src/` — that is the
+   dashboard's own source; modifying it corrupts the running process you
+   are talking to.
+3. Do NOT run `git commit`, `git push`, `git reset`, `git checkout <branch>`,
+   or any other command that mutates git refs. The operator commits. After
+   edits, summarize what you changed and why so the operator can review.
 """
 
 
@@ -62,6 +109,7 @@ class OrchestratorRelay:
         dashboard_port: int,
         session_uuid: Optional[str] = None,
         allow_edits: bool = False,
+        workflows_dirs: Optional[List[Path]] = None,
     ):
         self.conversation_id = conversation_id
         self.run_id = run_id
@@ -79,6 +127,11 @@ class OrchestratorRelay:
         # When True the orchestrator gets Write + Edit + no-git-commit rules
         # in the system prompt. See SYSTEM_PROMPT_EDITS_FOOTER for scope.
         self.allow_edits = allow_edits
+        # Workflows directories (the YAML source for every workflow this
+        # dashboard can run). Injected into the system prompt so the agent
+        # never has to `find /` looking for it. None / empty falls back to
+        # a placeholder string that documents the unset state.
+        self.workflows_dirs: List[Path] = list(workflows_dirs or [])
         
         self.process: Optional[subprocess.Popen[bytes]] = None
         # Queue items are (content, run_id) tuples. run_id is the workflow
@@ -167,6 +220,19 @@ class OrchestratorRelay:
                 {"_truncated": True, "keys": list(channels.keys())}, indent=2
             )
 
+        # Resolve known paths for the prompt. The workspace path comes from
+        # the `workspace` channel (written by the executor at run start);
+        # workflows_dir comes from the dashboard's settings, plumbed through
+        # OrchestratorManager. Both are best-effort — if missing we emit
+        # human-readable placeholders so the agent doesn't try to dereference
+        # the literal `{workspace_path}` template.
+        workspace_path_str = self._workspace_path_for_prompt(channels)
+        workflows_dir_str = (
+            str(self.workflows_dirs[0])
+            if self.workflows_dirs
+            else "(not configured — ask the operator)"
+        )
+
         footer = (
             SYSTEM_PROMPT_EDITS_FOOTER
             if self.allow_edits
@@ -181,9 +247,30 @@ class OrchestratorRelay:
                 events_json=events_json,
                 channels_json=channels_json,
                 port=self.dashboard_port,
+                workspace_path=workspace_path_str,
+                workflows_dir=workflows_dir_str,
             )
             + footer
         )
+
+    def _workspace_path_for_prompt(self, channels: Dict[str, Any]) -> str:
+        """Return a human-readable description of the run's workspace path.
+
+        Reads the `workspace` channel (set by the executor at run start) when
+        present. Returns a placeholder string when the channel is missing or
+        non-stringy so the prompt template never embeds a stale truthy-but-
+        unusable value.
+        """
+        ws = channels.get("workspace") if isinstance(channels, dict) else None
+        if isinstance(ws, str) and ws.strip():
+            return ws
+        if isinstance(ws, dict):
+            # Some workflows nest the path; accept common shapes.
+            for key in ("path", "value", "dir"):
+                v = ws.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v
+        return "(not set — workspace channel absent)"
 
     def _get_workspace_cwd(self) -> Optional[str]:
         """Get workspace path from channel_states to set as cwd.

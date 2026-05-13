@@ -135,6 +135,10 @@ def create_app(
                 model=settings.orchestrator_model,
                 dashboard_port=settings.port,
                 allow_edits=settings.orchestrator_allow_edits,
+                # GW-5912: pass the resolved workflows dirs so the orchestrator
+                # system prompt includes the concrete YAML location. Without
+                # this the agent does multi-minute global `find /` walks.
+                workflows_dirs=app.state.workflows_dirs,
             )
             orchestrator_manager.set_loop(loop)
             app.state.orchestrator_manager = orchestrator_manager

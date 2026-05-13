@@ -879,3 +879,172 @@ def test_broadcast_routes_to_per_turn_run_id(mock_popen, tmp_path: Path):
     )
 
     loop.close()
+
+
+def test_system_prompt_includes_known_paths_block(tmp_path: Path):
+    """GW-5912: prompt must include explicit `Known paths` with workspace + workflows_dir.
+
+    Without this the agent does global filesystem walks (`find /`) trying to
+    locate workflow YAML files. We inject the paths into every prompt so the
+    agent never has to guess.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run, get_connection
+
+    insert_run(
+        db_path=db_path, run_id="kp", workflow_name="bug", status="paused",
+        started_at="2026-05-13T00:00:00Z",
+    )
+    conn = get_connection(db_path)
+    conn.execute(
+        "INSERT INTO channel_states (run_id, channel_key, channel_type, value_json, updated_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("kp", "workspace", "default",
+         json.dumps("/Users/op/.dag-dashboard/workspaces/kp"),
+         "2026-05-13T12:00:00Z"),
+    )
+    conn.commit()
+    conn.close()
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="conv-kp", run_id="kp", db_path=db_path,
+        broadcaster=Mock(), model=None, event_loop=loop, dashboard_port=8080,
+        allow_edits=False,
+        workflows_dirs=[Path("/Users/op/dev/skills/packages/dag-executor/workflows")],
+    )
+    prompt = relay._build_system_prompt()
+    assert "Known paths:" in prompt
+    assert "/Users/op/.dag-dashboard/workspaces/kp" in prompt
+    assert "/Users/op/dev/skills/packages/dag-executor/workflows" in prompt
+    loop.close()
+
+
+def test_system_prompt_falls_back_when_workflows_dirs_unset(tmp_path: Path):
+    """When no workflows_dirs is plumbed in, the prompt emits a placeholder
+    that documents the unset state — not the literal `{workflows_dir}` token.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+
+    insert_run(
+        db_path=db_path, run_id="nws", workflow_name="bug", status="paused",
+        started_at="2026-05-13T00:00:00Z",
+    )
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="conv-nws", run_id="nws", db_path=db_path,
+        broadcaster=Mock(), model=None, event_loop=loop, dashboard_port=8080,
+        allow_edits=False,
+    )
+    prompt = relay._build_system_prompt()
+    assert "{workflows_dir}" not in prompt, (
+        "Template placeholder leaked into prompt — fallback not applied"
+    )
+    assert "(not configured" in prompt
+    loop.close()
+
+
+def test_system_prompt_falls_back_when_workspace_channel_absent(tmp_path: Path):
+    """When the workspace channel is missing, the prompt emits a placeholder
+    instead of the literal `{workspace_path}` template token.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+
+    insert_run(
+        db_path=db_path, run_id="nows", workflow_name="bug", status="paused",
+        started_at="2026-05-13T00:00:00Z",
+    )
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="conv-nows", run_id="nows", db_path=db_path,
+        broadcaster=Mock(), model=None, event_loop=loop, dashboard_port=8080,
+        allow_edits=False,
+    )
+    prompt = relay._build_system_prompt()
+    assert "{workspace_path}" not in prompt
+    assert "(not set" in prompt
+    loop.close()
+
+
+def test_system_prompt_default_is_explain_mode(tmp_path: Path):
+    """GW-5912: prompt must steer the agent toward explaining from
+    events + channel state instead of jumping straight to tool calls.
+
+    Empty workspaces (workflows without `config.git`) are normal — the agent
+    must not treat them as broken setups requiring investigation.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+
+    insert_run(
+        db_path=db_path, run_id="em", workflow_name="bug", status="paused",
+        started_at="2026-05-13T00:00:00Z",
+    )
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="conv-em", run_id="em", db_path=db_path,
+        broadcaster=Mock(), model=None, event_loop=loop, dashboard_port=8080,
+        allow_edits=False,
+    )
+    prompt = relay._build_system_prompt()
+    # Explain-first guidance is present.
+    assert "default mode is EXPLAIN" in prompt or "EXPLAIN" in prompt
+    # Empty workspace is documented as not-an-error.
+    assert "empty by design" in prompt or "not a setup error" in prompt.lower()
+    loop.close()
+
+
+def test_system_prompt_forbids_global_find_walks(tmp_path: Path):
+    """GW-5912: global filesystem walks (`find /`, `find ~`) cause multi-minute
+    hangs. The prompt must explicitly prohibit them, in both readonly and
+    edit footers (the agent reads whichever footer attaches to its run).
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    from dag_dashboard.queries import insert_run
+
+    insert_run(
+        db_path=db_path, run_id="nf", workflow_name="bug", status="paused",
+        started_at="2026-05-13T00:00:00Z",
+    )
+
+    loop = asyncio.new_event_loop()
+    for allow_edits in (False, True):
+        relay = OrchestratorRelay(
+            conversation_id=f"conv-nf-{allow_edits}", run_id="nf", db_path=db_path,
+            broadcaster=Mock(), model=None, event_loop=loop, dashboard_port=8080,
+            allow_edits=allow_edits,
+        )
+        prompt = relay._build_system_prompt()
+        assert "find /" in prompt, (
+            f"Prompt with allow_edits={allow_edits} must explicitly mention "
+            "`find /` so the agent recognizes the prohibition."
+        )
+        assert "NEVER" in prompt
+    loop.close()
+
+
+def test_orchestrator_manager_passes_workflows_dirs_to_relay(tmp_path: Path):
+    """OrchestratorManager.workflows_dirs must propagate to every spawned
+    relay so the system prompt knows where the workflow YAML files live.
+    """
+    from dag_dashboard.orchestrator_manager import OrchestratorManager
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+
+    mgr = OrchestratorManager(
+        db_path=db_path,
+        broadcaster=Mock(),
+        workflows_dirs=[Path("/tmp/my-workflows-dir")],
+    )
+    assert mgr.workflows_dirs == [Path("/tmp/my-workflows-dir")]
