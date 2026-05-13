@@ -7,8 +7,10 @@ T7 fixture tests (test_validate_deploy_status_fixture.py) — those remain uncha
 and test the narrower reference fixture.
 """
 
-import pytest
 from pathlib import Path
+
+import pytest
+
 from promptc import load, render, validate
 from promptc.contract import parse_output
 
@@ -28,8 +30,12 @@ def production_doc(production_file_path):
 
 def test_production_file_loads_as_contract_tier(production_doc):
     """Verify the production file loads as contract-tier."""
-    assert production_doc.tier == "contract", f"Expected tier='contract', got tier='{production_doc.tier}'"
-    assert len(production_doc.outputs) == 7, f"Expected 7 output declarations, got {len(production_doc.outputs)}"
+    assert production_doc.tier == "contract", (
+        f"Expected tier='contract', got tier='{production_doc.tier}'"
+    )
+    assert len(production_doc.outputs) == 7, (
+        f"Expected 7 output declarations, got {len(production_doc.outputs)}"
+    )
 
 
 def test_production_file_validates(production_file_path):
@@ -45,13 +51,13 @@ def test_production_file_validates(production_file_path):
 def test_production_file_renders_deterministic(production_doc):
     """Verify the production file renders deterministically."""
     inputs = {"issue": "GW-5189"}
-    
+
     # Render 10 times
     renders = []
     for _ in range(10):
         rendered = render(production_doc, inputs)
         renders.append(rendered)
-    
+
     # All renders should be byte-identical
     assert all(r == renders[0] for r in renders), "Renders are not deterministic"
 
@@ -60,25 +66,30 @@ def test_production_file_substitutes_issue_key(production_doc):
     """Verify the issue key is substituted in rendered output."""
     inputs = {"issue": "GW-5189"}
     rendered = render(production_doc, inputs)
-    
+
     # Should contain the literal issue key
     assert "GW-5189" in rendered, "Rendered output does not contain the issue key 'GW-5189'"
-    
+
     # Should NOT contain unsubstituted template syntax
-    assert "{% $inputs.issue %}" not in rendered, "Rendered output contains unsubstituted template syntax"
+    assert "{% $inputs.issue %}" not in rendered, (
+        "Rendered output contains unsubstituted template syntax"
+    )
 
 
 def test_production_file_emits_output_contract(production_doc):
     """Verify the rendered output contains the OUTPUT CONTRACT heading and all 7 fields."""
     inputs = {"issue": "GW-5189"}
     rendered = render(production_doc, inputs)
-    
+
     # Check for OUTPUT CONTRACT section
     assert "## OUTPUT CONTRACT" in rendered or "OUTPUT CONTRACT" in rendered, \
         "Rendered output does not contain OUTPUT CONTRACT heading"
-    
+
     # Check for all 7 output field names
-    expected_fields = ["DEPLOY_STATUS", "REPO", "PIPELINE", "BUILD_ID", "BUILD_STATUS", "ENV_URL", "DEPLOY_GAP_REASON"]
+    expected_fields = [
+        "DEPLOY_STATUS", "REPO", "PIPELINE", "BUILD_ID",
+        "BUILD_STATUS", "ENV_URL", "DEPLOY_GAP_REASON"
+    ]
     for field in expected_fields:
         assert field in rendered, f"Rendered output does not contain output field '{field}'"
 
