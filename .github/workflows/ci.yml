@@ -209,8 +209,8 @@ jobs:
           path: packages/dag-dashboard/src/dag_dashboard/static/js/builder/builder.js
           retention-days: 30
 
-  hooks-lint:
-    name: Python Hooks Lint
+  hooks-quality:
+    name: Python Hooks Lint + Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -218,8 +218,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install ruff + pytest
+        run: pip install ruff pytest
+
+      - name: Install promptc (editable, for hooks/test_dispatch_local.py)
+        # GW-5491: dispatch-local.py optionally imports promptc to render
+        # contract-tier command files. The test suite exercises that path,
+        # so promptc must be on sys.path when pytest runs.
+        run: pip install -e packages/promptc
 
       - name: Syntax check hooks
         run: |
@@ -231,6 +237,10 @@ jobs:
 
       - name: Lint hooks
         run: ruff check hooks/ --select E,F,W --ignore E501
+
+      - name: Test hooks
+        # GW-5491: covers hooks/test_dispatch_local.py (contract-tier router).
+        run: pytest hooks/ -v
 
   shellcheck:
     name: Shell Lint
@@ -344,3 +354,34 @@ jobs:
           name: playwright-traces
           path: packages/dag-dashboard/e2e/test-results
           retention-days: 14
+
+  promptc-real-llm-smoke:
+    # GW-5491: opt-in real-LLM smoke for the validate-deploy-status
+    # contract prompt. Runs only on PRs labeled `real-llm-smoke` to keep
+    # Bedrock cost off the default PR budget. Mirrors test_promptc_e2e.py
+    # in dag-executor (PROMPTC_E2E=1 gate).
+    name: promptc real-LLM smoke (opt-in)
+    if: contains(github.event.pull_request.labels.*.name, 'real-llm-smoke')
+    runs-on: ubuntu-latest
+    needs: [hooks-quality]
+    env:
+      PROMPTC_REAL_LLM_E2E: "1"
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ${{ secrets.BEDROCK_AWS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BEDROCK_AWS_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: false
+
+      - name: Install promptc + dag-executor (editable)
+        run: |
+          uv venv .venv --python 3.12
+          source .venv/bin/activate
+          uv pip install -e packages/promptc[dev] -e packages/dag-executor
+
+      - name: Run real-LLM smoke
+        run: |
+          source .venv/bin/activate
+          pytest packages/promptc/tests/test_real_llm_smoke.py -v

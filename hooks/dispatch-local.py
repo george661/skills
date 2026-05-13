@@ -21,6 +21,7 @@ Output: final text to stdout, progress to /dev/tty.
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -29,6 +30,19 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any, Optional
+
+# --- Optional promptc integration (GW-5491) ---
+# promptc lives in packages/promptc — only present when the active venv has
+# editable-installed it. Hooks run from ~/.claude/hooks via the dispatcher
+# wrapper, so promptc may or may not be on sys.path. The router silently
+# falls back to raw-markdown dispatch when promptc isn't available, matching
+# the pattern in packages/dag-executor/src/dag_executor/runners/prompt.py.
+try:
+    import promptc  # type: ignore[import-not-found]
+    PROMPTC_AVAILABLE = True
+except ImportError:
+    PROMPTC_AVAILABLE = False
 
 # --- Constants ---
 # Sentinel API key used when routing through an OpenAI-compatible local endpoint (Ollama).
@@ -871,6 +885,181 @@ def build_env(resolution: dict | None = None):
     return env
 
 
+def _load_contract_doc(command_name: str) -> Optional[Any]:
+    """Load and return the promptc Doc for a command if it's contract-tier.
+
+    Returns None when promptc isn't available, the command file is missing,
+    parsing fails, or the doc isn't contract tier (i.e., has no declared
+    outputs). All non-contract commands silently fall through to the
+    existing raw-markdown dispatch path.
+    """
+    if not PROMPTC_AVAILABLE:
+        return None
+
+    cmd_path = Path.home() / ".claude" / "commands" / f"{command_name}.md"
+    if not cmd_path.is_file():
+        return None
+
+    try:
+        doc = promptc.load(str(cmd_path))
+    except Exception:
+        # promptc.load can raise ParseError or any I/O error; treat any
+        # failure as "not a contract command" and fall through.
+        return None
+
+    if doc.tier != "contract":
+        return None
+    return doc
+
+
+def _coerce_input_value(value: str, decl: Any) -> Any:
+    """Coerce a positional CLI arg string to the declared input type.
+
+    Raises ValueError with a clear message when the value can't be coerced
+    or when pattern/enum validation fails. Caller is responsible for
+    converting required-but-missing into a separate error.
+    """
+    t = decl.type
+    if t == "string" or t == "url":
+        if decl.pattern is not None and not re.fullmatch(decl.pattern, value):
+            raise ValueError(
+                f"input '{decl.name}' value {value!r} does not match "
+                f"required pattern {decl.pattern!r}"
+            )
+        return value
+    if t == "int":
+        try:
+            return int(value)
+        except ValueError:
+            raise ValueError(
+                f"input '{decl.name}' must be an int, got {value!r}"
+            ) from None
+    if t == "float":
+        try:
+            return float(value)
+        except ValueError:
+            raise ValueError(
+                f"input '{decl.name}' must be a float, got {value!r}"
+            ) from None
+    if t == "bool":
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes"):
+            return True
+        if lowered in ("false", "0", "no"):
+            return False
+        raise ValueError(
+            f"input '{decl.name}' must be a bool, got {value!r}"
+        )
+    if t == "enum":
+        if decl.values is not None and value not in decl.values:
+            raise ValueError(
+                f"input '{decl.name}' value {value!r} not in allowed "
+                f"values {decl.values!r}"
+            )
+        return value
+    if t == "json":
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"input '{decl.name}' must be valid JSON: {exc}"
+            ) from None
+    # list/object: pass through as-is; promptc.render will validate further
+    return value
+
+
+def _build_input_dict(doc: Any, args: str) -> dict[str, Any]:
+    """Map positional args to the doc's declared {% input %} slots.
+
+    Args are split via shlex (so "GW-5491 some quoted thing" works). Each
+    positional arg binds to the input declarations in declaration order.
+    Required inputs without a value raise ValueError. Pattern/type
+    validation runs via _coerce_input_value.
+    """
+    tokens = shlex.split(args) if args else []
+    inputs: dict[str, Any] = {}
+    for idx, decl in enumerate(doc.inputs):
+        if idx < len(tokens):
+            inputs[decl.name] = _coerce_input_value(tokens[idx], decl)
+        elif decl.required and decl.default is None:
+            raise ValueError(
+                f"missing required input '{decl.name}' (declared in "
+                f"command frontmatter); pass it as a positional arg"
+            )
+        elif decl.default is not None:
+            inputs[decl.name] = decl.default
+    return inputs
+
+
+def _render_contract_prompt(doc: Any, args: str) -> str:
+    """Render a contract-tier command file as a mode-B prompt body.
+
+    Caller has already verified PROMPTC_AVAILABLE and doc.tier == "contract".
+    Raises ValueError on input validation failures and RuntimeError on
+    promptc render failures (both surface to the user before the LLM is
+    invoked).
+    """
+    inputs = _build_input_dict(doc, args)
+    try:
+        return promptc.render(doc, inputs=inputs, mode="b")
+    except Exception as exc:
+        # Wrap renderer errors with context — the caller decides whether
+        # to fall through to raw-markdown or surface the failure.
+        raise RuntimeError(f"promptc.render failed: {exc}") from exc
+
+
+def _emit_contract_response(full_output: str, doc: Any) -> None:
+    """Parse the LLM response via promptc.parse_output and emit the result.
+
+    Strategy:
+      * On clean parse, emit a `KEY: value` block to stdout (one line per
+        declared output) so orchestrators that regex-scrape (e.g. /validate's
+        `sed -n 's/.*DEPLOY_STATUS: \\([A-Z_]*\\).*/\\1/p'`) keep working.
+      * On parse errors, emit the raw LLM output verbatim to stdout
+        (preserving the existing fall-through behavior so orchestrators
+        don't silently see "unknown") AND emit a `PROMPTC_PARSE_ERRORS:`
+        block to stderr so operators can see the validation gap.
+
+    Never raises — output is best-effort.
+    """
+    try:
+        result = promptc.parse_output(full_output, doc.outputs)
+    except Exception as exc:
+        # Unexpected parse failure: emit raw output, log error to stderr.
+        sys.stdout.write(full_output)
+        if not full_output.endswith("\n"):
+            sys.stdout.write("\n")
+        sys.stderr.write(
+            f"PROMPTC_PARSE_ERRORS: parse_output raised {type(exc).__name__}: "
+            f"{exc}\n"
+        )
+        return
+
+    if result.errors:
+        # Parse returned structured errors — fall through to raw output so
+        # the orchestrator's regex still matches whatever was emitted, but
+        # surface the structured errors on stderr.
+        sys.stdout.write(full_output)
+        if not full_output.endswith("\n"):
+            sys.stdout.write("\n")
+        sys.stderr.write("PROMPTC_PARSE_ERRORS:\n")
+        for err in result.errors:
+            sys.stderr.write(f"  - {err.field}: {err.message}\n")
+        return
+
+    # Clean parse: emit one KEY: value line per declared output. This
+    # matches the format /validate already regex-scrapes (e.g.
+    # `DEPLOY_STATUS: DEPLOYED`).
+    for decl in doc.outputs:
+        value = result.fields.get(decl.name)
+        if value is None:
+            # Optional outputs may legitimately be absent; emit "N/A" so
+            # the line is present and parseable but distinguishable.
+            sys.stdout.write(f"{decl.name}: N/A\n")
+        else:
+            sys.stdout.write(f"{decl.name}: {value}\n")
+
+
 def _build_command_prompt(command_name: str, args: str) -> str:
     """Build the full enriched prompt for command mode."""
     enrichment = enrich_prompt(command_name, args)
@@ -1191,6 +1380,24 @@ def main():
         f" ({resolution.get('provider', '?')})"
     )
     progress("Running... (this may take several minutes)")
+
+    # GW-5491: contract-tier router. When the command file declares
+    # `tier="contract"` (meta + outputs), render via promptc and parse the
+    # response via promptc.parse_output. Falls through to raw-markdown for
+    # all other commands and when promptc isn't available.
+    contract_doc = _load_contract_doc(command_name)
+    if contract_doc is not None:
+        try:
+            prompt = _render_contract_prompt(contract_doc, args)
+        except (ValueError, RuntimeError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(2)
+        progress(f"contract-tier render: {len(contract_doc.outputs)} outputs declared")
+        output, _mins, _secs = run(
+            prompt, resolution, label=f"cmd:{command_name}"
+        )
+        _emit_contract_response(output, contract_doc)
+        return
 
     prompt = _build_command_prompt(command_name, args)
     output, _mins, _secs = run(prompt, resolution, label=f"cmd:{command_name}")

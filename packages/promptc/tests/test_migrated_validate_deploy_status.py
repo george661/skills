@@ -83,44 +83,57 @@ def test_production_file_emits_output_contract(production_doc):
         assert field in rendered, f"Rendered output does not contain output field '{field}'"
 
 
-def test_production_file_parse_output_extracts_all_fields(production_doc):
-    """Verify that parse_output can extract all declared output fields from a canned response."""
-    # NOTE: Using an inline canned response instead of packages/promptc/tests/fixtures/responses/validate-deploy-status-DEPLOYED.txt
-    # because the fixture preamble shape differs from the actual LLM response format. This test proves parse_output
-    # can extract declared fields from a clean response but does NOT prove it handles real LLM response variance
-    # (e.g., extra preamble text, markdown formatting, etc.). This is the narrowest feasible substitute today,
-    # as packages/dag-executor/workflows/validate-deploy-status.yaml is a bash pipeline that does NOT load
-    # commands/validate-deploy-status.md via promptc.render or parse_output.
-    # Canned DEPLOYED response fixture
-    canned_response = """
-## Phase 3: Output Result
+@pytest.mark.parametrize(
+    "variant,expected_status,gap_reason_required",
+    [
+        ("DEPLOYED", "DEPLOYED", False),
+        ("FAILED", "FAILED", False),
+        ("IN_PROGRESS", "IN_PROGRESS", False),
+        ("NEEDS_DEPLOY", "NEEDS_DEPLOY", True),
+    ],
+)
+def test_production_file_parse_output_extracts_fields_from_real_fixtures(
+    production_doc, variant, expected_status, gap_reason_required
+):
+    """parse_output extracts all declared fields from real captured Bedrock
+    responses for each of the 4 status variants.
 
-DEPLOY_STATUS: DEPLOYED
-REPO: skills
-PIPELINE: skills
-BUILD_ID: 12345
-BUILD_STATUS: succeeded
-ENV_URL: https://api.dev.generalwisdom.com
-DEPLOY_GAP_REASON: N/A
-"""
+    This replaces the previous inline canned-response substitute. The
+    fixtures here came from real LLM runs and exercise actual response
+    variance (preamble prose, markdown formatting, tables, summaries
+    after the field block). The wiring path that turns these fixtures
+    into clean parses end-to-end is covered by:
+      * hooks/test_dispatch_local.py (dispatch-local.py contract router)
+      * packages/dag-executor/tests/integration/test_validate_deploy_status_workflow.py
+        (DAG executor prompt node)
+    """
+    repo_root = Path(__file__).parent.parent.parent.parent
+    fixture_path = (
+        repo_root
+        / "packages/promptc/tests/fixtures/responses"
+        / f"validate-deploy-status-{variant}.txt"
+    )
+    response = fixture_path.read_text()
 
-    result = parse_output(canned_response, production_doc.outputs)
+    result = parse_output(response, production_doc.outputs)
+
+    # Clean parse — no errors against the contract
+    assert result.errors == [], (
+        f"{variant}: parse_output reported errors against real fixture: "
+        f"{result.errors}"
+    )
+
     parsed = result.fields
+    # Always-required fields must be present in every variant
+    for required_field in ("DEPLOY_STATUS", "REPO", "PIPELINE", "BUILD_ID", "BUILD_STATUS"):
+        assert required_field in parsed, (
+            f"{variant}: parse_output did not extract {required_field}"
+        )
+    assert parsed["DEPLOY_STATUS"] == expected_status
 
-    # All declared outputs should be present (even if conditionally emitted, parse_output should handle None)
-    assert "DEPLOY_STATUS" in parsed, "parse_output did not extract DEPLOY_STATUS"
-    assert "REPO" in parsed, "parse_output did not extract REPO"
-    assert "PIPELINE" in parsed, "parse_output did not extract PIPELINE"
-    assert "BUILD_ID" in parsed, "parse_output did not extract BUILD_ID"
-    assert "BUILD_STATUS" in parsed, "parse_output did not extract BUILD_STATUS"
-    assert "ENV_URL" in parsed, "parse_output did not extract ENV_URL"
-    # DEPLOY_GAP_REASON may be None if not present, but key should exist
-    assert "DEPLOY_GAP_REASON" in parsed, "parse_output did not extract DEPLOY_GAP_REASON"
-
-    # Verify extracted values
-    assert parsed["DEPLOY_STATUS"] == "DEPLOYED"
-    assert parsed["REPO"] == "skills"
-    assert parsed["PIPELINE"] == "skills"
-    assert parsed["BUILD_ID"] == "12345"
-    assert parsed["BUILD_STATUS"] == "succeeded"
-    assert parsed["ENV_URL"] == "https://api.dev.generalwisdom.com"
+    # DEPLOY_GAP_REASON is required_when DEPLOY_STATUS == "NEEDS_DEPLOY"
+    if gap_reason_required:
+        assert parsed.get("DEPLOY_GAP_REASON"), (
+            f"{variant}: DEPLOY_GAP_REASON missing or empty even though "
+            f"required_when fired"
+        )
