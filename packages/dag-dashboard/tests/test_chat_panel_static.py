@@ -335,3 +335,45 @@ def test_chat_input_enter_sends_shift_enter_newlines(client: TestClient):
     # Placeholder text must reflect the new bindings so users discover them.
     assert "Enter to send" in text
     assert "Shift+Enter" in text
+
+
+def test_thinking_indicator_unconditional_scroll(client: TestClient):
+    """GW-5914: thinking placeholder must always scroll into view.
+
+    The previous behaviour only scrolled when isNearBottom, which silently
+    hid the placeholder on turn-2-onwards conversations after the operator
+    had scrolled up to read a long agent reply. The fix uses
+    `scrollIntoView` unconditionally so subsequent turns show the same
+    "agent is thinking" affordance the first turn did.
+    """
+    text = client.get("/js/chat-panel.js").text
+    # The new code path uses scrollIntoView on the thinking element.
+    assert "el.scrollIntoView" in text, (
+        "thinking placeholder must call scrollIntoView so it is visible "
+        "regardless of scroll position"
+    )
+    # And the gated isNearBottom branch must be gone from
+    # _showThinkingIndicator (it's still fine elsewhere — just not gating
+    # the placeholder visibility).
+    show_idx = text.find("_showThinkingIndicator()")
+    assert show_idx != -1
+    # Find the next ~600 chars (the function body)
+    body = text[show_idx:show_idx + 1200]
+    assert "this.isNearBottom" not in body, (
+        "thinking-show body must not gate scroll on isNearBottom — operator "
+        "submission is intent-to-see-the-response, regardless of scroll pos"
+    )
+
+
+def test_thinking_indicator_visual_distinction_css(client: TestClient):
+    """GW-5914: thinking bubble needs a dashed border + bg pulse so it reads
+    as distinct from a finished agent message.
+    """
+    css = client.get("/css/styles.css").text
+    # Active CSS rules. We don't pin exact values so future palette tweaks
+    # don't break the test, but the structure must remain.
+    assert ".chat-message--thinking {" in css
+    assert "border-style: dashed" in css
+    # Background pulse keyframes for the outer bubble (separate from the
+    # existing dot pulse).
+    assert "@keyframes chat-thinking-bg-pulse" in css

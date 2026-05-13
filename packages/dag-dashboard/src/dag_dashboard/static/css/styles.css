@@ -3012,13 +3012,28 @@ select.form-control {
 }
 
 /* GW-5909: thinking placeholder shown while the orchestrator is composing
-   a reply. The dots pulse so the user knows the panel is alive. */
+   a reply. The dots pulse so the user knows the panel is alive.
+   GW-5914: dashed border + accent background so the placeholder reads as
+   distinct from a finished agent reply, especially on turn-2-onwards when
+   the user may have scrolled past the previous reply. */
+.chat-message--thinking {
+    border-style: dashed !important;
+    border-color: var(--primary) !important;
+    background: color-mix(in srgb, var(--primary) 6%, var(--bg-card)) !important;
+    animation: chat-thinking-bg-pulse 2.4s ease-in-out infinite;
+}
+
 .chat-message--thinking .chat-message-content {
     display: inline-flex;
     gap: 0.35rem;
     align-items: center;
     color: var(--text-secondary);
     font-size: 0.875rem;
+}
+
+@keyframes chat-thinking-bg-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 0%, transparent); }
+    50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 12%, transparent); }
 }
 
 .chat-thinking-dot {
