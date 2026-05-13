@@ -300,3 +300,38 @@ def test_app_js_does_not_close_eventsource_on_transient_error(client: TestClient
         "blocks the browser's auto-reconnect and causes long orchestrator "
         "turns to drop their replies (GW-5909)."
     )
+
+
+def test_chat_input_enter_sends_shift_enter_newlines(client: TestClient):
+    """GW-5913: chat input keybind contract.
+
+    - Bare Enter sends the message (matches Slack/Linear/ChatGPT)
+    - Shift+Enter inserts a newline (default textarea behaviour preserved)
+    - Cmd/Ctrl+Enter still sends (preserve muscle memory of the old binding)
+    - IME composition events do not trigger send (e.isComposing guard)
+
+    Regression-guards the previous broken behaviour where bare Enter just
+    inserted a newline and only Cmd/Ctrl+Enter sent.
+    """
+    text = client.get("/js/chat-panel.js").text
+
+    # The active keydown handler must early-return on Shift+Enter (newline)
+    # and on isComposing (IME). Submit fires on bare Enter.
+    assert "if (e.key !== 'Enter') return;" in text, \
+        "keydown handler must short-circuit non-Enter keys"
+    assert "e.isComposing" in text, \
+        "keydown handler must skip IME composition Enter presses"
+    assert "e.shiftKey" in text, \
+        "keydown handler must skip Shift+Enter (newline)"
+
+    # Old Cmd/Ctrl+Enter-only path is gone (no exclusive metaKey/ctrlKey gate).
+    # We now send on Enter regardless of modifier (except Shift). The simplest
+    # regression guard is asserting the old gate string is absent.
+    assert "(e.metaKey || e.ctrlKey) && e.key === 'Enter'" not in text, (
+        "Old Cmd/Ctrl+Enter exclusive gate must be removed — Enter alone "
+        "should send (Shift+Enter for newline)."
+    )
+
+    # Placeholder text must reflect the new bindings so users discover them.
+    assert "Enter to send" in text
+    assert "Shift+Enter" in text

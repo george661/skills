@@ -200,7 +200,7 @@ class ChatPanel {
            <textarea
              class="chat-input"
              id="chat-input-${uniqueId}"
-             placeholder="Type a message... (Cmd/Ctrl+Enter to send)"
+             placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
              rows="3"
            ></textarea>
            <button type="submit" class="chat-send-btn">Send</button>
@@ -317,11 +317,19 @@ class ChatPanel {
       this._handleSendMessage();
     });
 
+    // Keybinds (GW-5913):
+    //   Enter           → send (Slack/Linear/ChatGPT convention)
+    //   Shift+Enter     → newline (default textarea behaviour)
+    //   Cmd/Ctrl+Enter  → also send (preserve muscle memory of the old
+    //                     binding so existing operators don't have to relearn)
+    // Composition events (IME) are skipped: e.isComposing covers IME-active
+    // Enter presses that should commit a candidate, not submit the form.
     this.input.addEventListener('keydown', (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-        e.preventDefault();
-        this._handleSendMessage();
-      }
+      if (e.key !== 'Enter') return;
+      if (e.isComposing) return;
+      if (e.shiftKey) return;  // newline
+      e.preventDefault();
+      this._handleSendMessage();
     });
   }
 
