@@ -81,6 +81,15 @@ class ChatPanel {
     this._streamingAssistantEl = null;
     this._streamingAssistantBuffer = '';
     this._streamingAssistantContainer = null;
+
+    // GW-5909: thinking placeholder. Inserted when the operator submits a
+    // message; removed when the next assistant token / chat_message lands or
+    // when refreshHistory() finds an agent reply newer than the operator
+    // turn. Without this, multi-minute tool-using turns look like a hang.
+    this._thinkingEl = null;
+    // Tracks the most recent operator-message timestamp so refreshHistory()
+    // can decide whether the latest agent reply is "new" relative to that.
+    this._lastOperatorAt = 0;
   }
 
   /**
@@ -268,6 +277,13 @@ class ChatPanel {
       }
 
       const messages = await response.json();
+
+      // Track whether this load surfaced an agent message that landed after
+      // the most recent operator submit — used to clear the thinking
+      // placeholder when SSE missed the live event (GW-5909).
+      let sawNewAgentMessage = false;
+      const lastOperatorAt = this._lastOperatorAt || 0;
+
       for (const msg of messages) {
         if (msg.id) {
           if (!this.messages.has(msg.id)) {
@@ -277,6 +293,18 @@ class ChatPanel {
         } else {
           this.renderMessage(msg);
         }
+
+        const role = msg.role || msg.type;
+        if ((role === 'agent' || role === 'assistant') && msg.created_at) {
+          const ts = Date.parse(msg.created_at);
+          if (Number.isFinite(ts) && ts > lastOperatorAt) {
+            sawNewAgentMessage = true;
+          }
+        }
+      }
+
+      if (sawNewAgentMessage) {
+        this._hideThinkingIndicator();
       }
     } catch (error) {
       console.error('Failed to load chat history:', error);
@@ -323,6 +351,11 @@ class ChatPanel {
     try {
       await this.sendMessage(content);
       this.input.value = '';
+      // GW-5909: paint the thinking placeholder as soon as the POST comes
+      // back. The orchestrator can take 2-3 min on tool-heavy turns; without
+      // this the panel sits silent and looks broken.
+      this._lastOperatorAt = Date.now();
+      this._showThinkingIndicator();
     } catch (error) {
       console.error('Failed to send message:', error);
       if (error.status === 429) {
@@ -335,6 +368,51 @@ class ChatPanel {
       this.form.querySelector('.chat-send-btn').disabled = false;
       this.input.focus();
     }
+  }
+
+  _showThinkingIndicator() {
+    if (!this.messagesContainer) return;
+    if (this._thinkingEl) return;  // already visible
+    const empty = this.messagesContainer.querySelector('.chat-empty-state');
+    if (empty) empty.remove();
+    const el = document.createElement('div');
+    el.className = 'chat-message chat-message-agent chat-message--thinking';
+    el.innerHTML = `
+      <div class="chat-message-header">
+        <span class="chat-message-role">assistant</span>
+      </div>
+      <div class="chat-message-content">
+        <span class="chat-thinking-dot"></span>
+        <span class="chat-thinking-dot"></span>
+        <span class="chat-thinking-dot"></span>
+        <span class="chat-thinking-label">thinking…</span>
+      </div>
+    `;
+    this.messagesContainer.appendChild(el);
+    this._thinkingEl = el;
+    if (this.isNearBottom) {
+      this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+    }
+  }
+
+  _hideThinkingIndicator() {
+    if (this._thinkingEl && this._thinkingEl.parentNode) {
+      this._thinkingEl.parentNode.removeChild(this._thinkingEl);
+    }
+    this._thinkingEl = null;
+  }
+
+  /**
+   * GW-5909: public method for app.js to call when SSE reconnects, so any
+   * agent reply that landed during the disconnect window appears without
+   * the operator manually refreshing the page.
+   *
+   * Idempotent: dedupe via this.messages.has(msg.id) inside _loadHistory().
+   * Also clears the thinking placeholder if the refreshed history contains
+   * an agent message newer than the last operator submission.
+   */
+  async refreshHistory() {
+    await this._loadHistory();
   }
 
   _showRateLimitWarning() {
@@ -388,6 +466,8 @@ class ChatPanel {
       return;
     }
     if (type === 'chat_message_token') {
+      // First token of a turn implicitly resolves the thinking placeholder.
+      this._hideThinkingIndicator();
       this._appendStreamingToken(payload.content || '');
       return;
     }
@@ -397,6 +477,9 @@ class ChatPanel {
     // rendered content, drop the --streaming class) rather than rendering
     // a second bubble — otherwise users see the reply twice.
     if (type === 'chat_message' || payload.role === 'assistant') {
+      // Final assistant turn — clear the thinking placeholder before
+      // rendering so we never end up with both a placeholder and a reply.
+      this._hideThinkingIndicator();
       if (this._finalizeStreamingBubble(payload)) {
         if (payload.id) this.messages.set(payload.id, payload);
         return;
