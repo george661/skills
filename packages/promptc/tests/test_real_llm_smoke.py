@@ -25,7 +25,6 @@ from pathlib import Path
 
 import pytest
 
-
 REQUIRED_FIELDS = (
     "DEPLOY_STATUS",
     "REPO",
