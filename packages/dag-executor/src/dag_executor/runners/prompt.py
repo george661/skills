@@ -678,10 +678,32 @@ class PromptRunner(BaseRunner):
             # into output dict. Agent-mode output typically wraps the JSON in
             # prose + markdown fences (e.g. ```json ... ```); try those paths
             # in order before giving up.
+            #
+            # GW-5915: when output_format=json was declared but the model
+            # returned non-JSON (or an empty-output sentinel like "(no output)"
+            # from dispatch-local), fail the node here instead of silently
+            # writing the raw string to a dict-typed channel. Letting the bad
+            # value through produces a confusing TraversalError several nodes
+            # later (e.g. "Cannot traverse path $creation_result.bug_key:
+            # expected dict at 'bug_key', got str") and the operator has to
+            # trace upstream to find the real source. Failing here surfaces
+            # the actual cause + a 200-char preview of what the model emitted.
             if node.output_format == OutputFormat.JSON:
                 parsed_json = _extract_json_object(full_output)
                 if isinstance(parsed_json, dict):
                     output_dict.update(parsed_json)
+                else:
+                    preview = (full_output or "").strip()
+                    if len(preview) > 200:
+                        preview = preview[:200] + "...(truncated)"
+                    return NodeResult(
+                        status=NodeStatus.FAILED,
+                        error=(
+                            "output_format=json but model response did not "
+                            "contain a parseable JSON object. "
+                            f"Response preview: {preview!r}"
+                        ),
+                    )
 
             # Always set response last to guarantee backward compat
             # (raw text wins if parsed JSON contains a "response" key)
