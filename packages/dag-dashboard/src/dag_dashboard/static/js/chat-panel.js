@@ -398,9 +398,12 @@ class ChatPanel {
     `;
     this.messagesContainer.appendChild(el);
     this._thinkingEl = el;
-    if (this.isNearBottom) {
-      this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
-    }
+    // GW-5914: always scroll the placeholder into view. The operator
+    // submitted a message a moment ago; they expect to see the response
+    // affordance regardless of where they were scrolled. Without this,
+    // turn-2-onwards looks like a hang because the bubble appends below
+    // the fold and the user can't tell the agent is working.
+    el.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }
 
   _hideThinkingIndicator() {
