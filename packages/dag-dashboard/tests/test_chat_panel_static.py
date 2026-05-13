@@ -232,3 +232,71 @@ def test_chat_panel_filters_progress_cards_in_conversation_mode(client: TestClie
     assert "conversation" in text.lower()
     assert "progress_card" in text, \
         "renderMessage must mention progress_card type to filter it"
+
+
+def test_chat_panel_exposes_refresh_history(client: TestClient):
+    """GW-5909: app.js calls chatPanel.refreshHistory() on SSE reconnect.
+
+    The orchestrator can take 2-3 minutes on tool-heavy turns; SSE drops
+    during that window were swallowing agent replies because the panel
+    only loaded history once at mount. The fix exposes refreshHistory()
+    as a public method so app.js can re-pull when the connection comes
+    back, and history's existing dedupe (this.messages.has(msg.id))
+    keeps re-renders idempotent.
+    """
+    text = client.get("/js/chat-panel.js").text
+    assert "refreshHistory" in text, \
+        "ChatPanel must expose refreshHistory() for SSE-reconnect resync"
+    # And app.js must call it on SSE onopen reconnects
+    app_text = client.get("/js/app.js").text
+    assert "chatPanel.refreshHistory" in app_text, \
+        "app.js must invoke chatPanel.refreshHistory() when SSE reconnects"
+    assert "eventSource.onopen" in app_text, \
+        "app.js must hook EventSource onopen to drive the resync"
+
+
+def test_chat_panel_thinking_indicator(client: TestClient):
+    """GW-5909: thinking placeholder shows immediately after operator submit
+    and is cleared by the next assistant token / chat_message / history
+    refresh that surfaces a newer agent reply.
+    """
+    text = client.get("/js/chat-panel.js").text
+    assert "_showThinkingIndicator" in text
+    assert "_hideThinkingIndicator" in text
+    assert "chat-message--thinking" in text
+    # Cleared on assistant turn arrivals AND on history-refresh that finds
+    # a newer agent reply.
+    assert "chat-thinking-dot" in text
+
+
+def test_thinking_indicator_css_present(client: TestClient):
+    """GW-5909: the thinking indicator needs CSS for the pulse animation."""
+    css = client.get("/css/styles.css").text
+    assert ".chat-message--thinking" in css
+    assert ".chat-thinking-dot" in css
+    assert "@keyframes chat-thinking-pulse" in css
+
+
+def test_app_js_does_not_close_eventsource_on_transient_error(client: TestClient):
+    """GW-5909: SSE reconnect requires NOT calling eventSource.close() in onerror.
+
+    The browser's EventSource auto-reconnects with exponential backoff as
+    long as we leave it alone. Closing on onerror was the reason long
+    orchestrator turns silently dropped agent replies. The terminal sweep
+    closes it explicitly when the workflow reaches a terminal state, so we
+    only need to avoid the eager-close in the error handler.
+    """
+    text = client.get("/js/app.js").text
+    # Find the onerror block. The intent is to verify the regression-
+    # introducing pattern is gone: a bare `eventSource.close()` inside the
+    # error handler. We search for the comment that documents the fix and
+    # confirm onerror does not contain a close() invocation.
+    onerror_idx = text.find("eventSource.onerror")
+    assert onerror_idx != -1, "eventSource.onerror handler must exist"
+    # Look at the next ~400 chars after onerror — that's the handler body.
+    body = text[onerror_idx:onerror_idx + 600]
+    assert "eventSource.close()" not in body, (
+        "eventSource.onerror must NOT call eventSource.close() — that "
+        "blocks the browser's auto-reconnect and causes long orchestrator "
+        "turns to drop their replies (GW-5909)."
+    )

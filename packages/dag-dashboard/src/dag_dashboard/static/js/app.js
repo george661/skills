@@ -1208,6 +1208,24 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
     // Subscribe to per-run SSE stream for live events (node_progress, node_update, etc.)
     const eventSource = new EventSource(`/api/workflows/${runId}/events`);
 
+    // GW-5909: when SSE reconnects after a transient drop (long orchestrator
+    // turn, network hiccup, browser tab background), pull the chat history
+    // so any agent reply that landed during the disconnect renders without
+    // a manual page refresh. Skip the very first onopen (we already loaded
+    // history at panel mount).
+    let _sseFirstOpen = true;
+    eventSource.onopen = () => {
+        if (_sseFirstOpen) {
+            _sseFirstOpen = false;
+            return;
+        }
+        if (chatPanel && typeof chatPanel.refreshHistory === 'function') {
+            chatPanel.refreshHistory().catch((e) => {
+                console.warn('chat panel history refresh failed', e);
+            });
+        }
+    };
+
     eventSource.onmessage = (event) => {
         try {
             const evt = JSON.parse(event.data);
@@ -1318,8 +1336,13 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
     };
 
     eventSource.onerror = (error) => {
-        console.error('SSE connection error:', error);
-        eventSource.close();
+        // GW-5909: do NOT close on transient errors. The browser's
+        // EventSource auto-reconnects with exponential backoff as long as
+        // we leave it alone; closing here was the reason long orchestrator
+        // turns dropped agent replies — once SSE was killed nothing would
+        // reach the chat panel again. The terminal sweep + run-detail
+        // unmount close the connection explicitly when we're really done.
+        console.warn('SSE connection error (will auto-reconnect):', error);
     };
 
     // Expose retry history store for node detail panel

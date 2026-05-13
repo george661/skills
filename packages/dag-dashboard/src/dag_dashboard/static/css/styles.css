@@ -3011,6 +3011,43 @@ select.form-control {
     border-color: var(--primary-dim);
 }
 
+/* GW-5909: thinking placeholder shown while the orchestrator is composing
+   a reply. The dots pulse so the user knows the panel is alive. */
+.chat-message--thinking .chat-message-content {
+    display: inline-flex;
+    gap: 0.35rem;
+    align-items: center;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.chat-thinking-dot {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: 50%;
+    background: var(--text-secondary);
+    opacity: 0.4;
+    animation: chat-thinking-pulse 1.2s ease-in-out infinite;
+}
+
+.chat-thinking-dot:nth-child(2) {
+    animation-delay: 0.18s;
+}
+
+.chat-thinking-dot:nth-child(3) {
+    animation-delay: 0.36s;
+}
+
+.chat-thinking-label {
+    margin-left: 0.4rem;
+    font-style: italic;
+}
+
+@keyframes chat-thinking-pulse {
+    0%, 100% { opacity: 0.25; transform: scale(0.85); }
+    50%      { opacity: 1;    transform: scale(1); }
+}
+
 .chat-message-header {
     display: flex;
     justify-content: space-between;
