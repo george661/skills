@@ -7,8 +7,8 @@
 {% output name="PIPELINE" type="string" description="CI pipeline name" /%}
 {% output name="BUILD_ID" type="string" description="CI build identifier" /%}
 {% output name="BUILD_STATUS" type="string" description="succeeded | failed | started | pending" /%}
-{% output name="ENV_URL" type="string" description="Environment base URL from repo CLAUDE.md or env-* labels (optional)" /%}
-{% output name="DEPLOY_GAP_REASON" type="string" description="Brief description of deployment gap (only if DEPLOY_STATUS is NEEDS_DEPLOY, optional)" /%}
+{% output name="ENV_URL" type="string" description="Environment base URL from repo CLAUDE.md or env-* labels (optional)" required_when="false" /%}
+{% output name="DEPLOY_GAP_REASON" type="string" description="Brief description of deployment gap (only if DEPLOY_STATUS is NEEDS_DEPLOY)" required_when="DEPLOY_STATUS == \"NEEDS_DEPLOY\"" /%}
 
 # Check Deployment Status: {% $inputs.issue %}
 
