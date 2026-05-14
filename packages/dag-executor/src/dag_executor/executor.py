@@ -452,8 +452,14 @@ class WorkflowExecutor:
                     metadata={"error": f"Workspace seeding failed: {e}"},
                     timestamp=datetime.now(timezone.utc)
                 ))
-            ctx.status = WorkflowStatus.FAILED
-            return ctx
+            # Return early with failed status
+            return WorkflowResult(
+                status=WorkflowStatus.FAILED,
+                node_results={},
+                outputs={},
+                run_id=run_id,
+                node_statuses={}
+            )
 
         # Ensure workspace channel exists in the store
         from dag_executor.channels import LastValueChannel

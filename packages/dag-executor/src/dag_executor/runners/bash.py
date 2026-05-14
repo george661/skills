@@ -88,9 +88,10 @@ class BashRunner(BaseRunner):
                 )
         else:
             # Handle inline script (existing behavior)
-            script = ctx.resolved_inputs.get("script", ctx.node_def.script)
-            if script is None:
+            script_value = ctx.resolved_inputs.get("script", ctx.node_def.script)
+            if script_value is None:
                 raise ValueError("script field is required for type=bash")
+            script = str(script_value)
 
         # Build environment variables that the script can reference directly.
         # Three sources are layered in, later sources win on collision:
