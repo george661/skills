@@ -80,19 +80,21 @@ def _resolve_source_path(workflow_yaml_path: Path, ref: str) -> Path:
     if resolved is None:
         raise SeedingError(f"referenced file not found: {ref}")
 
-    # Verify resolved path is under one of the safe roots or the workflow's directory tree
+    # Verify resolved path is under one of the safe roots or the workflow's repo root.
     safe_roots = _get_safe_roots()
 
-    # Also allow paths under the workflow's own directory tree (handles test fixtures, etc.)
+    # Allow paths anywhere under the workflow's own repo root (production case).
     from dag_executor.path_resolution import _find_repo_root
     repo_root = _find_repo_root(workflow_yaml_path)
     if repo_root:
         safe_roots.append(repo_root)
-
-    # As a fallback, allow paths under the workflow's parent directory tree
-    # (for test fixtures that don't have a .git directory)
-    if workflow_yaml_path.parent not in safe_roots:
-        safe_roots.append(workflow_yaml_path.parent.parent)  # Allow 1 level up from workflow dir
+    else:
+        # Test-fixture fallback: when there's no repo root (no .git ancestor),
+        # constrain to the workflow YAML's own directory only. This is strict
+        # by design — fixtures should reference files co-located with them.
+        # Production code paths always have a repo root, so this branch never
+        # widens the production boundary.
+        safe_roots.append(workflow_yaml_path.parent)
 
     is_safe = False
     for root in safe_roots:
@@ -141,10 +143,12 @@ def seed_workspace(workflow_def: WorkflowDef, workspace_path: Path) -> List[Mani
     manifest: List[ManifestEntry] = []
 
     # Check if workflow was loaded from a file
-    has_source = hasattr(workflow_def, '_source_path') and workflow_def._source_path is not None
+    workflow_source = getattr(workflow_def, '_source_path', None)
+    has_source = workflow_source is not None
 
     if has_source:
-        workflow_yaml_path = Path(workflow_def._source_path)
+        assert workflow_source is not None  # narrow for mypy
+        workflow_yaml_path = Path(workflow_source)
 
         # Copy workflow.yaml
         workflow_dest = workflow_dir / "workflow.yaml"
@@ -162,12 +166,13 @@ def seed_workspace(workflow_def: WorkflowDef, workspace_path: Path) -> List[Mani
     if has_source:
         for node in workflow_def.nodes:
             # Handle prompt_file
-            if getattr(node, 'prompt_file', None) is not None:
+            prompt_file_ref = node.prompt_file
+            if prompt_file_ref is not None:
                 try:
-                    source_path = _resolve_source_path(workflow_yaml_path, node.prompt_file)
+                    source_path = _resolve_source_path(workflow_yaml_path, prompt_file_ref)
                     if not source_path.exists():
                         raise SeedingError(
-                            f"referenced file not found: {node.prompt_file} (node: {node.id})"
+                            f"referenced file not found: {prompt_file_ref} (node: {node.id})"
                         )
 
                     prompts_dir.mkdir(exist_ok=True)
@@ -182,15 +187,16 @@ def seed_workspace(workflow_def: WorkflowDef, workspace_path: Path) -> List[Mani
                 except SeedingError:
                     raise
                 except Exception as e:
-                    raise SeedingError(f"failed to seed prompt_file: {node.prompt_file}") from e
+                    raise SeedingError(f"failed to seed prompt_file: {prompt_file_ref}") from e
 
             # Handle script_path
-            if getattr(node, 'script_path', None) is not None:
+            script_path_ref = node.script_path
+            if script_path_ref is not None:
                 try:
-                    source_path = _resolve_source_path(workflow_yaml_path, node.script_path)
+                    source_path = _resolve_source_path(workflow_yaml_path, script_path_ref)
                     if not source_path.exists():
                         raise SeedingError(
-                            f"referenced file not found: {node.script_path} (node: {node.id})"
+                            f"referenced file not found: {script_path_ref} (node: {node.id})"
                         )
 
                     scripts_dir.mkdir(exist_ok=True)
@@ -205,10 +211,18 @@ def seed_workspace(workflow_def: WorkflowDef, workspace_path: Path) -> List[Mani
                 except SeedingError:
                     raise
                 except Exception as e:
-                    raise SeedingError(f"failed to seed script_path: {node.script_path}") from e
-    
+                    raise SeedingError(f"failed to seed script_path: {script_path_ref}") from e
+
+            # NOTE: sub-workflow seeding (recursing into .workflow/<sub-name>/
+            # for type=command nodes) is intentionally deferred to a follow-up
+            # ticket. Phase 1 covers schema + per-parent-workflow seeding; the
+            # sub-workflow recursion needs careful design around namespace
+            # collisions and the manifest path scheme, and isn't required for
+            # the boundary enforcement landing in Phase 4 (GW-5936). See the
+            # follow-up ticket linked on the parent epic GW-5928.
+
     # Write manifest
     manifest_path = workflow_dir / ".manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
-    
+
     return manifest
