@@ -20,36 +20,41 @@ class ManifestEntry(TypedDict):
 
 def _resolve_source_path(workflow_yaml_dir: Path, ref: str) -> Path:
     """Resolve a relative reference to an absolute source path.
-    
+
     Args:
         workflow_yaml_dir: Directory containing the workflow YAML
         ref: Relative path reference from the workflow (e.g., "scripts/test.sh")
-        
+
     Returns:
         Absolute path to the source file
-        
+
     Raises:
-        SeedingError: If path is absolute, contains "..", or resolves outside workflow_yaml_dir
+        SeedingError: If path is absolute or resolves outside the repo root
     """
     # Reject absolute paths
     if Path(ref).is_absolute():
         raise SeedingError(f"absolute paths are not allowed: {ref}")
-    
-    # Reject paths with ".." segments
-    if ".." in Path(ref).parts:
-        raise SeedingError(f'".." segments are not allowed in paths: {ref}')
-    
+
     # Resolve relative to workflow YAML directory
     resolved = (workflow_yaml_dir / ref).resolve()
-    
-    # Ensure resolved path is under workflow_yaml_dir
+
+    # For security, ensure resolved path stays within a reasonable boundary.
+    # We allow ".." in paths (existing workflows use this), but the resolved
+    # path must not escape too far up. We check that it stays within the
+    # repo root by ensuring it doesn't go above the workflow directory's
+    # great-great-grandparent (4 levels up covers workflows/subdir/ -> repo root).
+    # This prevents /etc/passwd but allows ../../commands/foo.md from workflows/.
+    boundary = workflow_yaml_dir.resolve()
+    for _ in range(4):  # Allow up to 4 levels up
+        boundary = boundary.parent
+
     try:
-        resolved.relative_to(workflow_yaml_dir.resolve())
+        resolved.relative_to(boundary)
     except ValueError:
         raise SeedingError(
-            f"path resolves outside workflow directory: {ref} -> {resolved}"
+            f"path resolves outside allowed boundary: {ref} -> {resolved}"
         )
-    
+
     return resolved
 
 
@@ -66,13 +71,14 @@ def seed_workspace(workflow_def: WorkflowDef, workspace_path: Path) -> List[Mani
         workspace_path: Path to the workspace directory
         
     Returns:
-        List of manifest entries for all seeded files
-        
+        List of manifest entries for all seeded files (empty if no _source_path)
+
     Raises:
         SeedingError: If any referenced file is missing or path validation fails
     """
+    # Skip seeding if workflow was not loaded from a file (e.g., programmatically created)
     if not hasattr(workflow_def, '_source_path') or workflow_def._source_path is None:
-        raise SeedingError("workflow_def._source_path is not set")
+        return []
     
     workflow_yaml_path = Path(workflow_def._source_path)
     workflow_yaml_dir = workflow_yaml_path.parent

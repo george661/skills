@@ -444,12 +444,14 @@ class WorkflowExecutor:
         except SeedingError as e:
             # Emit workflow failed event and abort before node execution
             logger.error(f"Workspace seeding failed: {e}")
-            self._emit_event(ctx, EventType.WORKFLOW_FAILED, {
-                "run_id": run_id,
-                "status": WorkflowStatus.FAILED,
-                "error": f"Workspace seeding failed: {e}",
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            })
+            if event_emitter:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.WORKFLOW_FAILED,
+                    workflow_id=workflow_def.name,
+                    status=WorkflowStatus.FAILED,
+                    metadata={"error": f"Workspace seeding failed: {e}"},
+                    timestamp=datetime.now(timezone.utc)
+                ))
             ctx.status = WorkflowStatus.FAILED
             return ctx
 

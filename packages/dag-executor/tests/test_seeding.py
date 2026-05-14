@@ -180,44 +180,59 @@ class TestSeedWorkspace:
         with pytest.raises(SeedingError, match="absolute paths are not allowed"):
             seed_workspace(workflow, workspace)
 
-    def test_seed_workspace_rejects_dotdot_path(self, tmp_path):
-        """Paths with .. segments should be rejected."""
-        workflow_yaml = tmp_path / "test.yaml"
-        workflow_yaml.write_text("name: test\nnodes:\n  - id: n1\n    type: bash\n    script_path: ../../etc/passwd")
+    def test_seed_workspace_allows_dotdot_within_boundary(self, tmp_path):
+        """Paths with .. that stay within boundary should be allowed."""
+        # Create repo structure: repo/workflows/test.yaml and repo/commands/test.sh
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        workflows_dir = repo / "workflows"
+        workflows_dir.mkdir()
+        commands_dir = repo / "commands"
+        commands_dir.mkdir()
+        script_file = commands_dir / "test.sh"
+        script_file.write_text("echo from commands")
+        
+        workflow_yaml = workflows_dir / "test.yaml"
+        workflow_yaml.write_text("name: test\nnodes:\n  - id: n1\n    type: bash\n    script_path: ../commands/test.sh")
         
         workflow = WorkflowDef.model_validate(_minimal_workflow_dict([
-            {"id": "n1", "name": "N1", "type": "bash", "script_path": "../../etc/passwd"}
+            {"id": "n1", "name": "N1", "type": "bash", "script_path": "../commands/test.sh"}
         ]))
         workflow._source_path = workflow_yaml
         
         workspace = tmp_path / "workspace"
         workspace.mkdir()
+        seed_workspace(workflow, workspace)
         
-        with pytest.raises(SeedingError, match='".." segments are not allowed'):
-            seed_workspace(workflow, workspace)
+        seeded = workspace / ".workflow" / "scripts" / "test.sh"
+        assert seeded.exists()
+        assert seeded.read_text() == "echo from commands"
 
-    def test_seed_workspace_rejects_path_outside_yaml_dir(self, tmp_path):
-        """Paths resolving outside workflow directory should be rejected (caught by .. check)."""
-        workflow_dir = tmp_path / "workflows"
-        workflow_dir.mkdir()
-        sibling_dir = tmp_path / "sibling"
-        sibling_dir.mkdir()
-        bad_file = sibling_dir / "outside.sh"
-        bad_file.write_text("echo bad")
+    def test_seed_workspace_rejects_path_too_far_outside(self, tmp_path):
+        """Paths that go too far outside (beyond boundary) should be rejected."""
+        # Create a very deep structure to test the 4-level boundary
+        # tmp_path/a/b/c/d/e/workflows/test.yaml trying to reach ../../../../../outside/bad.sh
+        deep = tmp_path
+        for _ in range(6):
+            deep = deep / "level"
+            deep.mkdir()
         
-        workflow_yaml = workflow_dir / "test.yaml"
-        workflow_yaml.write_text("name: test\nnodes:\n  - id: n1\n    type: bash\n    script_path: ../sibling/outside.sh")
+        workflows_dir = deep / "workflows"
+        workflows_dir.mkdir()
+        
+        workflow_yaml = workflows_dir / "test.yaml"
+        # This tries to go 6 levels up (beyond the 4-level boundary)
+        workflow_yaml.write_text("name: test\nnodes:\n  - id: n1\n    type: bash\n    script_path: ../../../../../../../etc/passwd")
         
         workflow = WorkflowDef.model_validate(_minimal_workflow_dict([
-            {"id": "n1", "name": "N1", "type": "bash", "script_path": "../sibling/outside.sh"}
+            {"id": "n1", "name": "N1", "type": "bash", "script_path": "../../../../../../../etc/passwd"}
         ]))
         workflow._source_path = workflow_yaml
         
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         
-        # The ".." check catches this before the outside-directory check
-        with pytest.raises(SeedingError, match='".." segments are not allowed'):
+        with pytest.raises(SeedingError, match="outside allowed boundary"):
             seed_workspace(workflow, workspace)
 
     def test_seed_workspace_idempotent(self, tmp_path):
