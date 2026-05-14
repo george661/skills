@@ -1,0 +1,6 @@
+name: Missing Prompt File
+nodes:
+  - id: broken
+    type: prompt
+    prompt_file: prompts/nonexistent.md
+    model: haiku

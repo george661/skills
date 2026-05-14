@@ -2,6 +2,7 @@
 import asyncio
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, List
 
 import json
@@ -56,9 +57,41 @@ class BashRunner(BaseRunner):
         Returns:
             NodeResult with execution status and output
         """
-        script = ctx.resolved_inputs.get("script", ctx.node_def.script)
-        if script is None:
-            raise ValueError("script field is required for type=bash")
+        # Handle script_path by reading from seeded .workflow/scripts/ copy
+        if ctx.node_def.script_path:
+            # Get workspace path from channel_store
+            channel_store = getattr(ctx, "channel_store", None)
+            if channel_store is None:
+                return NodeResult(
+                    status=NodeStatus.FAILED,
+                    error="script_path requires workspace channel but channel_store is not available"
+                )
+            try:
+                workspace_value, _version = channel_store.read("workspace")
+                workspace_path = Path(workspace_value)
+            except KeyError:
+                return NodeResult(
+                    status=NodeStatus.FAILED,
+                    error="script_path requires workspace channel but workspace channel is not set"
+                )
+
+            # Read from seeded copy in .workflow/scripts/
+            script_basename = Path(ctx.node_def.script_path).name
+            seeded_script_path = workspace_path / ".workflow" / "scripts" / script_basename
+
+            try:
+                script = seeded_script_path.read_text()
+            except FileNotFoundError:
+                return NodeResult(
+                    status=NodeStatus.FAILED,
+                    error=f"seeded script not found at {seeded_script_path}"
+                )
+        else:
+            # Handle inline script (existing behavior)
+            script_value = ctx.resolved_inputs.get("script", ctx.node_def.script)
+            if script_value is None:
+                raise ValueError("script field is required for type=bash")
+            script = str(script_value)
 
         # Build environment variables that the script can reference directly.
         # Three sources are layered in, later sources win on collision:

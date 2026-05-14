@@ -1,0 +1,6 @@
+name: Prompt Test
+nodes:
+  - id: triage
+    type: prompt
+    prompt_file: prompts/triage.md
+    model: haiku

@@ -300,8 +300,16 @@ class PromptNodeConfig(BaseModel):
 class BashNodeConfig(BaseModel):
     """Configuration for bash script nodes."""
     model_config = {"extra": "forbid"}
-    
-    script: str = Field(..., description="Bash script to execute")
+
+    script: Optional[str] = Field(default=None, description="Bash script to execute")
+    script_path: Optional[str] = Field(default=None, description="Path to bash script file")
+
+    def model_post_init(self, __context: Any) -> None:
+        """Validate mutual exclusivity of script and script_path."""
+        if self.script is not None and self.script_path is not None:
+            raise ValueError("script and script_path are mutually exclusive")
+        if self.script is None and self.script_path is None:
+            raise ValueError("Either script or script_path must be provided")
 
 
 class GateNodeConfig(BaseModel):
@@ -418,6 +426,7 @@ class NodeDef(BaseModel):
 
     # Bash node
     script: Optional[str] = Field(default=None, description="Bash script (for type=bash)")
+    script_path: Optional[str] = Field(default=None, description="Bash script path (for type=bash)")
     
     # Gate node
     condition: Optional[str] = Field(default=None, description="Gate condition (for type=gate) or interrupt condition (for type=interrupt)")
@@ -445,6 +454,10 @@ class NodeDef(BaseModel):
         if self.type != "prompt" and self.prompt_inputs is not None:
             raise ValueError("prompt_inputs field is only allowed on type=prompt nodes")
 
+        # script_path field is only valid on bash nodes
+        if self.type != "bash" and self.script_path is not None:
+            raise ValueError("script_path field is only allowed on type=bash nodes")
+
         if self.type == "skill":
             if self.skill is None:
                 raise ValueError("skill field is required for type=skill")
@@ -458,8 +471,10 @@ class NodeDef(BaseModel):
                 raise ValueError("prompt and prompt_file are mutually exclusive for type=prompt")
             # model is optional — can be set at workflow level via default_model
         elif self.type == "bash":
-            if self.script is None:
-                raise ValueError("script field is required for type=bash")
+            if self.script is not None and self.script_path is not None:
+                raise ValueError("script and script_path are mutually exclusive for type=bash")
+            if self.script is None and self.script_path is None:
+                raise ValueError("Either script or script_path is required for type=bash")
         elif self.type == "gate":
             if self.condition is None:
                 raise ValueError("condition field is required for type=gate")

@@ -1,0 +1,5 @@
+name: Bash Script Test
+nodes:
+  - id: lint
+    type: bash
+    script_path: scripts/lint.sh

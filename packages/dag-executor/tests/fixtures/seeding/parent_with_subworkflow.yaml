@@ -1,0 +1,5 @@
+name: Parent with Sub-workflow
+nodes:
+  - id: run_sub
+    type: command
+    command: sub_workflow.yaml

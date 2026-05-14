@@ -29,6 +29,7 @@ from dag_executor.schema import (
     NodeDef, NodeResult, NodeStatus, OnFailure, TriggerRule,
     WorkflowDef, WorkflowStatus
 )
+from dag_executor.seeding import seed_workspace, SeedingError
 from dag_executor.variables import resolve_variables
 
 if TYPE_CHECKING:
@@ -436,6 +437,29 @@ class WorkflowExecutor:
         workspace_root = self._resolve_workspace_root(workspace_override)
         workspace_path = workspace_root / run_id
         workspace_path.mkdir(parents=True, exist_ok=True)
+
+        # Seed the .workflow/ directory before any node runs
+        try:
+            seed_workspace(workflow_def, workspace_path)
+        except SeedingError as e:
+            # Emit workflow failed event and abort before node execution
+            logger.error(f"Workspace seeding failed: {e}")
+            if event_emitter:
+                event_emitter.emit(WorkflowEvent(
+                    event_type=EventType.WORKFLOW_FAILED,
+                    workflow_id=workflow_def.name,
+                    status=WorkflowStatus.FAILED,
+                    metadata={"error": f"Workspace seeding failed: {e}"},
+                    timestamp=datetime.now(timezone.utc)
+                ))
+            # Return early with failed status
+            return WorkflowResult(
+                status=WorkflowStatus.FAILED,
+                node_results={},
+                outputs={},
+                run_id=run_id,
+                node_statuses={}
+            )
 
         # Ensure workspace channel exists in the store
         from dag_executor.channels import LastValueChannel
