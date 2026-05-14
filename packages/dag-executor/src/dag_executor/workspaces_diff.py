@@ -104,7 +104,8 @@ def iter_changes(workspace: Path) -> Iterable[Change]:
             continue
         
         # Generate diff
-        diff = "\n".join(
+        # unified_diff lines are already newline-terminated, so use "".join() not "\n".join()
+        diff = "".join(
             difflib.unified_diff(
                 source_content.splitlines(keepends=True),
                 workspace_content.splitlines(keepends=True),
@@ -265,7 +266,8 @@ def apply_change(
                         )
                         commit_sha = sha_result.stdout.strip()
                     else:
-                        error = f"Git commit failed: {result.stderr}"
+                        # Git commit failed - capture both stdout and stderr
+                        error = f"Git commit failed: {result.stdout or result.stderr}"
                 except (subprocess.SubprocessError, subprocess.TimeoutExpired) as e:
                     error = f"Git commit failed: {e}"
         except (subprocess.SubprocessError, subprocess.TimeoutExpired) as e:

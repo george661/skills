@@ -176,6 +176,24 @@ class TestIterChanges:
         assert len(changes) == 0
         assert "does not exist" in caplog.text.lower() or "missing" in caplog.text.lower()
 
+    def test_iter_changes_diff_format(self, tmp_path):
+        """iter_changes produces well-formed unified diff (starts with ---, contains @@)."""
+        workspace = _make_workspace(
+            tmp_path,
+            {".workflow/prompts/test.md": ("line 1\nline 2\n", "line 1\nmodified\n")},
+        )
+
+        changes = list(iter_changes(workspace))
+
+        assert len(changes) == 1
+        diff = changes[0].diff
+        # Unified diff must start with --- (fromfile line)
+        assert diff.startswith("---"), f"Diff should start with ---, got: {diff[:50]}"
+        # Must contain @@ hunk header
+        assert "@@" in diff, f"Diff should contain @@ hunk header, got: {diff}"
+        # Should not have double newlines (regression test for "\n".join bug)
+        assert "\n\n\n" not in diff, "Diff contains triple newlines (malformed)"
+
 
 class TestApplyChange:
     """Tests for apply_change function."""
@@ -437,8 +455,18 @@ class TestIterChangesEdgeCases:
         }]))
         
         changes = list(iter_changes(workspace))
-        
+
         # Should skip since workspace file doesn't exist
+        assert len(changes) == 0
+
+    def test_iter_changes_no_workflow_dir(self, tmp_path):
+        """iter_changes handles workspace without .workflow/ directory."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        # No .workflow/ directory at all
+        changes = list(iter_changes(workspace))
+
         assert len(changes) == 0
 
 
@@ -493,17 +521,7 @@ class TestApplyChangeEdgeCases:
         
         assert result.applied is False
         assert result.error is not None
-    
-    def test_iter_changes_no_workflow_dir(self, tmp_path):
-        """iter_changes handles workspace without .workflow/ directory."""
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-        
-        # No .workflow/ directory at all
-        changes = list(iter_changes(workspace))
-        
-        assert len(changes) == 0
-    
+
 class TestApplyChangeGitEdgeCases:
     """Git-specific edge cases for apply_change."""
     
@@ -537,8 +555,10 @@ class TestApplyChangeGitEdgeCases:
         )
         
         result = apply_change(change, workspace, commit=True)
-        
-        # File copied but commit may fail (nothing to commit)
+
+        # File copied but commit should fail (nothing to commit)
         assert result.applied is True
-        # Either success with existing SHA or error about nothing to commit
-        assert result.commit_sha or result.error
+        # Specific check: no commit SHA and error message contains "nothing to commit"
+        assert result.commit_sha is None
+        assert result.error is not None
+        assert "nothing to commit" in result.error.lower()
