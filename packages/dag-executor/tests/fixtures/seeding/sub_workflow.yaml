@@ -1,0 +1,5 @@
+name: Sub-workflow
+nodes:
+  - id: task
+    type: bash
+    script: echo "sub task"

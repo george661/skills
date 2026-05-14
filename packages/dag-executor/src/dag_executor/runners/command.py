@@ -1,11 +1,12 @@
 """Command runner for recursive workflow execution nodes."""
 import asyncio
 import concurrent.futures
-import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Coroutine, Dict, List, Optional, TypeVar
+from typing import Any, Coroutine, Dict, Optional, TypeVar
+
+from dag_executor.path_resolution import _resolve_workflow_relative
 
 _T = TypeVar("_T")
 
@@ -13,51 +14,16 @@ _T = TypeVar("_T")
 def _resolve_sub_workflow(reference: str, parent_source: Optional[Path]) -> Optional[Path]:
     """Resolve a `command:` field to a concrete YAML path.
 
-    A `command:` value is either:
-      - an absolute or relative filesystem path ending in .yaml/.yml, or
-      - a bare workflow name (e.g. "validate-epic-audit-children") expected to
-        live alongside the parent workflow or in a known install location.
+    Delegates to _resolve_workflow_relative with .yaml/.yml suffixes.
 
-    Search order:
-      1. The literal string as a path (covers both ".yaml-ful" and absolute refs)
-      2. `<parent-dir>/<name>.yaml` and `.yml` — the common co-located case
-      3. Each entry in `DAG_DASHBOARD_WORKFLOWS_DIR` (colon-separated)
-      4. `~/.claude/workflows/<name>.yaml`
+    Args:
+        reference: Command reference string (workflow name or path)
+        parent_source: Path to parent workflow file
 
-    Returns the first existing file, or None if nothing matched.
+    Returns:
+        Path to workflow file, or None if not found
     """
-    # 1. Literal path (handles e.g. "foo/bar.yaml" or "/abs/path.yaml").
-    # Require a regular file — a matching directory name at CWD (e.g. a
-    # stale `.dag-checkpoints/` leak) should not pre-empt the search.
-    direct = Path(reference)
-    if direct.is_file():
-        return direct
-
-    # Bare-name candidates — try both extensions
-    candidate_names: List[str] = []
-    if reference.endswith(".yaml") or reference.endswith(".yml"):
-        candidate_names.append(reference)
-    else:
-        candidate_names.extend([reference + ".yaml", reference + ".yml"])
-
-    search_dirs: List[Path] = []
-    # 2. Parent workflow's directory
-    if parent_source is not None:
-        search_dirs.append(parent_source.parent)
-    # 3. DAG_DASHBOARD_WORKFLOWS_DIR (colon-separated list)
-    env_dirs = os.environ.get("DAG_DASHBOARD_WORKFLOWS_DIR", "")
-    if env_dirs:
-        search_dirs.extend(Path(d) for d in env_dirs.split(os.pathsep) if d)
-    # 4. ~/.claude/workflows
-    search_dirs.append(Path.home() / ".claude" / "workflows")
-
-    for base in search_dirs:
-        for name in candidate_names:
-            candidate = base / name
-            if candidate.is_file():
-                return candidate
-
-    return None
+    return _resolve_workflow_relative(reference, parent_source, suffixes=[".yaml", ".yml"])
 
 
 def _run_coroutine_sync(coro: "Coroutine[Any, Any, _T]") -> _T:

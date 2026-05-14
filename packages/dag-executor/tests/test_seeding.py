@@ -232,7 +232,7 @@ class TestSeedWorkspace:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         
-        with pytest.raises(SeedingError, match="outside allowed boundary"):
+        with pytest.raises(SeedingError, match="outside allowed safe roots"):
             seed_workspace(workflow, workspace)
 
     def test_seed_workspace_idempotent(self, tmp_path):
