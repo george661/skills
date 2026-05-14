@@ -718,8 +718,18 @@ def test_output_format_json_spreads_parsed_fields():
         assert result.output["response"] == json_output
 
 
-def test_output_format_json_invalid_json_fallback():
-    """Test that invalid JSON with output_format=JSON falls back to text-only."""
+def test_output_format_json_invalid_json_fails_node():
+    """GW-5915: invalid JSON with output_format=JSON now fails the node.
+
+    Previously the runner silently fell back to writing {response: bad_text}
+    into a dict-typed channel; downstream nodes that referenced
+    `${channel.field}` then crashed several nodes later with a confusing
+    "Cannot traverse path: expected dict, got str" error. We now fail at
+    the source so the operator sees what actually went wrong.
+
+    The error message must include a preview of what the model emitted
+    (e.g. an empty-output sentinel from dispatch-local).
+    """
     node = NodeDef(
         id="prompt1",
         name="JSON Prompt",
@@ -730,7 +740,6 @@ def test_output_format_json_invalid_json_fallback():
     )
     ctx = RunnerContext(node_def=node)
 
-    # Invalid JSON output
     invalid_json = "This is not valid JSON\n"
     mock_process = MagicMock()
     mock_process.stdout = io.StringIO(invalid_json)
@@ -743,9 +752,80 @@ def test_output_format_json_invalid_json_fallback():
         runner = PromptRunner()
         result = runner.run(ctx)
 
-        assert result.status == NodeStatus.COMPLETED
-        # Should fall back to text-only behavior
-        assert result.output == {"response": invalid_json}
+        assert result.status == NodeStatus.FAILED
+        assert result.error is not None
+        assert "output_format=json" in result.error
+        # Preview includes (roughly) the offending text so the operator
+        # can identify the upstream cause without a forensic trace.
+        assert "This is not valid JSON" in result.error
+
+
+def test_output_format_json_empty_output_sentinel_fails():
+    """GW-5915: dispatch-local's empty-output sentinel triggers the new
+    fail-fast path, not the silent string-into-dict-channel write.
+
+    This is the exact symptom from bug-workflow run 655718ba —
+    create_bug_issue (output_format=json) returned "(no output)\\n" and the
+    failing_test_gate two nodes later escalated with a TraversalError on
+    `${creation_result.bug_key}`.
+    """
+    node = NodeDef(
+        id="prompt1",
+        name="Create something",
+        type="prompt",
+        prompt="Create the thing and return JSON",
+        model=ModelTier.SONNET,
+        output_format=OutputFormat.JSON,
+    )
+    ctx = RunnerContext(node_def=node)
+
+    sentinel = "(no output)\n"
+    mock_process = MagicMock()
+    mock_process.stdout = io.StringIO(sentinel)
+    mock_process.stderr = MagicMock()
+    mock_process.stderr.read.return_value = ""
+    mock_process.stdin = MagicMock()
+    mock_process.wait.return_value = 0
+
+    with patch("subprocess.Popen", return_value=mock_process):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+        assert result.status == NodeStatus.FAILED
+        assert "(no output)" in (result.error or "")
+
+
+def test_output_format_json_long_response_preview_truncated():
+    """GW-5915: response preview in the error message caps at 200 chars
+    so a multi-KB model dump doesn't blow up event payloads.
+    """
+    node = NodeDef(
+        id="prompt1",
+        name="Long",
+        type="prompt",
+        prompt="Generate a lot of bad output",
+        model=ModelTier.SONNET,
+        output_format=OutputFormat.JSON,
+    )
+    ctx = RunnerContext(node_def=node)
+
+    long_text = "x" * 5000  # well over the 200-char preview cap
+    mock_process = MagicMock()
+    mock_process.stdout = io.StringIO(long_text)
+    mock_process.stderr = MagicMock()
+    mock_process.stderr.read.return_value = ""
+    mock_process.stdin = MagicMock()
+    mock_process.wait.return_value = 0
+
+    with patch("subprocess.Popen", return_value=mock_process):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+        assert result.status == NodeStatus.FAILED
+        assert result.error is not None
+        # Preview is capped + truncated marker present
+        assert "...(truncated)" in result.error
+        assert len(result.error) < 600  # well under 5000 chars of garbage
 
 
 def test_output_format_json_collision_response_preserved():
