@@ -66,7 +66,7 @@ def test_tail_broadcasts_new_lines(workspace_dir: Path, sentinel_file: Path):
 
     try:
         # Give tail time to start and seek to end
-        time.sleep(0.1)
+        time.sleep(0.2)
 
         # Write a denied event
         event = {
@@ -78,8 +78,8 @@ def test_tail_broadcasts_new_lines(workspace_dir: Path, sentinel_file: Path):
         with open(sentinel_file, "a") as f:
             f.write(json.dumps(event) + "\n")
 
-        # Wait for tail to pick it up
-        time.sleep(0.5)
+        # Wait for tail to pick it up (longer in CI)
+        time.sleep(1.0)
 
         # Should have broadcast one message
         assert len(broadcaster.events) == 1
