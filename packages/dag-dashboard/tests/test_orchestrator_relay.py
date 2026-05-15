@@ -586,9 +586,11 @@ def test_allowed_tools_readonly_by_default(mock_popen, tmp_path: Path):
 def test_allowed_tools_extended_when_allow_edits_true(mock_popen, tmp_path: Path):
     """``allow_edits=True`` adds Write + Edit and swaps the prompt footer.
 
-    The edits footer must carry the scope rules (path-like channel, no
-    dashboard self-edit) and the no-git-commit rule; otherwise granting
-    tools without the instructions loses the safety framing.
+    The edits footer informs the orchestrator that the filesystem is
+    restricted to its workspace by a hook (the actual enforcement layer —
+    see GW-5936). Prose-layer self-edit and git-commit prohibitions were
+    dropped because they are now enforced by the PreToolUse hook + the
+    seeded workspace settings.json.
     """
     db_path = tmp_path / "test.db"
     init_db(db_path)
@@ -628,10 +630,9 @@ def test_allowed_tools_extended_when_allow_edits_true(mock_popen, tmp_path: Path
     assert "You may propose and apply fixes" in prompt
     # Path-like channel scoping rule.
     assert "`workspace`" in prompt or "workspace" in prompt.lower()
-    # Self-edit prohibition on the dashboard source.
-    assert "packages/dag-dashboard/src/" in prompt
-    # Git commit prohibition.
-    assert "git commit" in prompt
+    # Hook-enforced sandbox notice replaces the old prose self-edit and
+    # git-commit prohibitions (those are now enforced by pretool_guard).
+    assert "restricted to this workspace" in prompt
 
     loop.close()
 
@@ -1048,3 +1049,183 @@ def test_orchestrator_manager_passes_workflows_dirs_to_relay(tmp_path: Path):
         workflows_dirs=[Path("/tmp/my-workflows-dir")],
     )
     assert mgr.workflows_dirs == [Path("/tmp/my-workflows-dir")]
+
+
+@patch('subprocess.Popen')
+def test_workspace_env_var_set_when_workspace_exists(mock_popen, tmp_path: Path):
+    """Test that DAG_ORCHESTRATOR_WORKSPACE is set in subprocess env when workspace exists."""
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+
+    # Create workspace
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    # Insert test run with workspace channel
+    from dag_dashboard.queries import insert_run, get_connection
+    insert_run(
+        db_path=db_path,
+        run_id="run-123",
+        workflow_name="test-workflow",
+        status="running",
+        started_at="2026-05-03T12:00:00Z",
+    )
+
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO channel_states (run_id, channel_key, channel_type, value_json, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ("run-123", "workspace", "default", json.dumps(str(workspace)), "2026-05-03T12:01:00Z")
+    )
+    conn.commit()
+    conn.close()
+
+    # Setup mock process
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO('')
+    mock_process.stderr = io.BytesIO(b"")
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    broadcaster = Mock()
+
+    relay = OrchestratorRelay(
+        conversation_id="conv-123",
+        run_id="run-123",
+        db_path=db_path,
+        broadcaster=broadcaster,
+        model="claude-opus-4-7",
+        event_loop=loop,
+        dashboard_port=8080,
+        allow_edits=True,
+    )
+
+    relay.start()
+    relay.stop()
+
+    # Check that Popen was called with env containing DAG_ORCHESTRATOR_WORKSPACE
+    assert mock_popen.called
+    call_kwargs = mock_popen.call_args[1]
+    assert 'env' in call_kwargs
+    assert 'DAG_ORCHESTRATOR_WORKSPACE' in call_kwargs['env']
+    assert call_kwargs['env']['DAG_ORCHESTRATOR_WORKSPACE'] == str(workspace)
+
+    loop.close()
+
+
+@patch('subprocess.Popen')
+def test_workspace_env_var_omitted_when_no_workspace(mock_popen, tmp_path: Path):
+    """Test that DAG_ORCHESTRATOR_WORKSPACE is not set when there's no workspace."""
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+
+    # Insert test run without workspace
+    from dag_dashboard.queries import insert_run
+    insert_run(
+        db_path=db_path,
+        run_id="run-123",
+        workflow_name="test-workflow",
+        status="running",
+        started_at="2026-05-03T12:00:00Z",
+    )
+
+    # Setup mock process
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO('')
+    mock_process.stderr = io.BytesIO(b"")
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    broadcaster = Mock()
+
+    relay = OrchestratorRelay(
+        conversation_id="conv-123",
+        run_id="run-123",
+        db_path=db_path,
+        broadcaster=broadcaster,
+        model="claude-opus-4-7",
+        event_loop=loop,
+        dashboard_port=8080,
+    )
+
+    relay.start()
+    relay.stop()
+
+    # Check that Popen was called without env (None means inherit parent env)
+    assert mock_popen.called
+    call_kwargs = mock_popen.call_args[1]
+    # env should be None when no workspace
+    assert call_kwargs.get('env') is None
+
+    loop.close()
+
+
+@patch('subprocess.Popen')
+def test_settings_json_seeded_when_workspace_exists(mock_popen, tmp_path: Path):
+    """Test that settings.json is created when workspace exists."""
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+
+    # Create workspace
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    # Insert test run with workspace channel
+    from dag_dashboard.queries import insert_run, get_connection
+    insert_run(
+        db_path=db_path,
+        run_id="run-123",
+        workflow_name="test-workflow",
+        status="running",
+        started_at="2026-05-03T12:00:00Z",
+    )
+
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO channel_states (run_id, channel_key, channel_type, value_json, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ("run-123", "workspace", "default", json.dumps(str(workspace)), "2026-05-03T12:01:00Z")
+    )
+    conn.commit()
+    conn.close()
+
+    # Setup mock process
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO('')
+    mock_process.stderr = io.BytesIO(b"")
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    broadcaster = Mock()
+
+    relay = OrchestratorRelay(
+        conversation_id="conv-123",
+        run_id="run-123",
+        db_path=db_path,
+        broadcaster=broadcaster,
+        model="claude-opus-4-7",
+        event_loop=loop,
+        dashboard_port=8080,
+        allow_edits=True,
+    )
+
+    relay.start()
+    relay.stop()
+
+    # Check that settings.json was created
+    settings_path = workspace / ".claude" / "settings.json"
+    assert settings_path.exists()
+
+    # Verify it has expected content
+    with open(settings_path) as f:
+        settings = json.load(f)
+    assert "permissions" in settings
+    assert "hooks" in settings
+
+    loop.close()
