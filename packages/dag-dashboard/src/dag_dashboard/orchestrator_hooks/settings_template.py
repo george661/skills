@@ -15,7 +15,7 @@ def seed_settings_json(workspace: Path) -> Path:
 
     The settings.json includes:
     - Allow list: workspace-relative file operations and safe bash commands
-    - Deny list: absolute paths, home paths, egress commands (defense in depth)
+    - Deny list: bash egress commands and WebFetch (defense in depth)
     - PreToolUse hook: python -m dag_dashboard.orchestrator_hooks.pretool_guard
 
     The PreToolUse hook is the authoritative enforcement layer — it
