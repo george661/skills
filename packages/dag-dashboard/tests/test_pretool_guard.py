@@ -96,7 +96,7 @@ def test_deny_home_path(workspace_dir: Path, tmp_path: Path):
     # Create a fake home for testing
     fake_home = tmp_path / "fake_home"
     fake_home.mkdir()
-    
+
     # Test with unexpanded tilde path
     result = check_permission(
         tool_name="Read",
@@ -205,11 +205,11 @@ def test_sentinel_file_append(workspace_dir: Path, sentinel_file: Path):
         tool_input=tool_input,
         reason="outside workspace",
     )
-    
+
     # Read and verify
     lines = sentinel_file.read_text().strip().split("\n")
     assert len(lines) == 1
-    
+
     event = json.loads(lines[0])
     assert event["tool_name"] == "Read"
     assert event["tool_input"] == tool_input

@@ -65,6 +65,9 @@ def test_tail_broadcasts_new_lines(workspace_dir: Path, sentinel_file: Path):
     tail.start()
 
     try:
+        # Give tail time to start and seek to end
+        time.sleep(0.1)
+
         # Write a denied event
         event = {
             "tool_name": "Read",
@@ -74,13 +77,13 @@ def test_tail_broadcasts_new_lines(workspace_dir: Path, sentinel_file: Path):
         }
         with open(sentinel_file, "a") as f:
             f.write(json.dumps(event) + "\n")
-        
+
         # Wait for tail to pick it up
         time.sleep(0.5)
-        
+
         # Should have broadcast one message
         assert len(broadcaster.events) == 1
-        
+
         msg = broadcaster.events[0]
         assert msg["type"] == "chat_message"
         assert msg["role"] == "system"
@@ -136,10 +139,10 @@ def test_tail_skips_old_lines(workspace_dir: Path, sentinel_file: Path):
     try:
         # Wait a bit
         time.sleep(0.3)
-        
+
         # Should NOT have broadcast the old event
         assert len(broadcaster.events) == 0
-        
+
         # Now write a new event
         new_event = {
             "tool_name": "Edit",
@@ -149,9 +152,9 @@ def test_tail_skips_old_lines(workspace_dir: Path, sentinel_file: Path):
         }
         with open(sentinel_file, "a") as f:
             f.write(json.dumps(new_event) + "\n")
-        
+
         time.sleep(0.5)
-        
+
         # Should have broadcast only the new event
         assert len(broadcaster.events) == 1
         assert "new denial" in broadcaster.events[0]["content"]
@@ -212,7 +215,7 @@ def test_tail_waits_for_missing_file(workspace_dir: Path):
             f.write(json.dumps(event) + "\n")
 
         time.sleep(0.5)
-        
+
         # Should have picked it up
         assert len(broadcaster.events) == 1
     finally:
