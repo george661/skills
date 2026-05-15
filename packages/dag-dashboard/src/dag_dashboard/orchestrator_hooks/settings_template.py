@@ -18,9 +18,16 @@ def seed_settings_json(workspace: Path) -> Path:
     - Deny list: absolute paths, home paths, egress commands (defense in depth)
     - PreToolUse hook: python -m dag_dashboard.orchestrator_hooks.pretool_guard
 
-    Note: The deny rules here are defense-in-depth only. The PreToolUse hook
-    is the primary enforcement mechanism, as it can resolve paths and check
-    bash command semantics.
+    The PreToolUse hook is the authoritative enforcement layer — it
+    resolves paths and inspects bash command semantics. The deny rules
+    here are belt-and-suspenders for cases the hook can't reach (egress
+    bash patterns are explicit so they show up in `claude --debug`
+    output without invoking the hook).
+
+    Path-based deny rules are intentionally NOT included: Claude Code's
+    permission rules treat `Read(/path)` as project-root-relative (where
+    project root resolves to the workspace), which would block legitimate
+    workspace reads. Filesystem-absolute denial requires the hook.
 
     Args:
         workspace: The workspace directory path
@@ -35,7 +42,12 @@ def seed_settings_json(workspace: Path) -> Path:
     sentinel_file = claude_dir / "denied-events.jsonl"
     sentinel_file.touch(exist_ok=True)
 
-    # Build settings
+    # Build settings.
+    #
+    # `hooks.PreToolUse` schema is a list of matcher blocks, each with an
+    # inner `hooks` array of `{type, command}` entries — see
+    # https://code.claude.com/docs/en/hooks. A flat `{matcher, command}`
+    # object is silently ignored by Claude Code.
     settings: Dict[str, Any] = {
         "permissions": {
             "allow": [
@@ -50,9 +62,6 @@ def seed_settings_json(workspace: Path) -> Path:
                 "Bash(cat:*)",
             ],
             "deny": [
-                "Read(/**)",
-                "Read(~/**)",
-                "Write(/**)",
                 "WebFetch",
                 "Bash(curl:*)",
                 "Bash(wget:*)",
@@ -62,10 +71,20 @@ def seed_settings_json(workspace: Path) -> Path:
             ],
         },
         "hooks": {
-            "PreToolUse": {
-                "matcher": "*",
-                "command": f"{sys.executable} -m dag_dashboard.orchestrator_hooks.pretool_guard",
-            }
+            "PreToolUse": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": (
+                                f"{sys.executable} -m "
+                                "dag_dashboard.orchestrator_hooks.pretool_guard"
+                            ),
+                        }
+                    ],
+                }
+            ],
         },
     }
 

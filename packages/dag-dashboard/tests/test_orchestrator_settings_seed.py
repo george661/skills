@@ -49,23 +49,45 @@ def test_settings_json_content(workspace_dir: Path):
     assert "Bash(git status:*)" in allow_list
     assert "Bash(rg:*)" in allow_list
 
-    # Check deny list
+    # Check deny list — bash egress only; path denies live in the hook
+    # because Claude Code's `Read(/path)` resolves project-root-relative
+    # (where project root = workspace) and would block legitimate reads.
     assert "deny" in settings["permissions"]
     deny_list = settings["permissions"]["deny"]
-    assert "Read(/**)" in deny_list
-    assert "Read(~/**)" in deny_list
-    assert "Write(/**)" in deny_list
     assert "WebFetch" in deny_list
     assert "Bash(curl:*)" in deny_list
     assert "Bash(wget:*)" in deny_list
+    assert "Bash(ssh:*)" in deny_list
 
-    # Check hooks
+
+def test_hook_config_matches_claude_code_schema(workspace_dir: Path):
+    """settings.json hooks.PreToolUse must match Claude Code's expected shape.
+
+    Claude Code expects a list of matcher blocks, each with an inner
+    `hooks` array of `{type, command}` objects. A flat `{matcher, command}`
+    object is silently ignored, leaving the orchestrator unsandboxed.
+    """
+    settings_path = seed_settings_json(workspace_dir)
+
+    with open(settings_path) as f:
+        settings = json.load(f)
+
     assert "hooks" in settings
-    assert "PreToolUse" in settings["hooks"]
-    hook_config = settings["hooks"]["PreToolUse"]
-    assert hook_config["matcher"] == "*"
-    assert sys.executable in hook_config["command"]
-    assert "dag_dashboard.orchestrator_hooks.pretool_guard" in hook_config["command"]
+    pretool_use = settings["hooks"].get("PreToolUse")
+    # Must be a list of matcher blocks
+    assert isinstance(pretool_use, list), (
+        f"hooks.PreToolUse must be a list, got {type(pretool_use).__name__}"
+    )
+    assert len(pretool_use) == 1
+    block = pretool_use[0]
+    assert block["matcher"] == "*"
+    # Each matcher block has an inner `hooks` array of {type, command}
+    assert isinstance(block["hooks"], list)
+    assert len(block["hooks"]) == 1
+    hook = block["hooks"][0]
+    assert hook["type"] == "command"
+    assert sys.executable in hook["command"]
+    assert "dag_dashboard.orchestrator_hooks.pretool_guard" in hook["command"]
 
 
 def test_seed_is_idempotent(workspace_dir: Path):
