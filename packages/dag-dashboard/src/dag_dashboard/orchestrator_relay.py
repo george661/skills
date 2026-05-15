@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -67,6 +68,8 @@ Investigation scope rules (HARD — violations waste minutes of operator time):
 SYSTEM_PROMPT_EDITS_FOOTER = """
 Tool allowlist: Bash, Read, Write, Edit, Grep, Glob. You may propose and apply fixes when the operator explicitly asks.
 
+Your filesystem is restricted to this workspace by a hook. Edits outside it will be rejected with a reason; treat the rejection as direction from the operator.
+
 Investigation scope rules (HARD — violations waste minutes of operator time):
 1. NEVER run `find /`, `find ~`, `find $HOME`, or any other unbounded
    filesystem walk. These are the #1 source of multi-minute hangs. If you
@@ -75,19 +78,98 @@ Investigation scope rules (HARD — violations waste minutes of operator time):
 2. Default to answering from the events + channel state already in this
    prompt. Reach for shell only when the operator asks for evidence the
    prompt doesn't contain.
-
-Edit scope rules (follow these — there is no filesystem sandbox):
-1. Look at "Known paths" above. The workspace path is your edit scope when
-   it contains a checked-out tree. If the workspace is empty (workflow has
-   no `config.git`), edits should target the workflows dir or
-   `$PROJECT_ROOT/skills` — never wider.
-2. NEVER edit files under `packages/dag-dashboard/src/` — that is the
-   dashboard's own source; modifying it corrupts the running process you
-   are talking to.
 3. Do NOT run `git commit`, `git push`, `git reset`, `git checkout <branch>`,
    or any other command that mutates git refs. The operator commits. After
    edits, summarize what you changed and why so the operator can review.
 """
+
+
+class DeniedEventsTail(threading.Thread):
+    """Thread that tails .claude/denied-events.jsonl and broadcasts deny events to chat.
+
+    Polls for file existence on a 250ms cadence and picks up new lines (skips old ones
+    from before spawn). Each deny event is broadcast as a chat_message with
+    kind=permission_denied, role=system.
+    """
+
+    def __init__(
+        self,
+        sentinel_file: Path,
+        conversation_id: str,
+        run_id: str,
+        broadcaster: Any,
+        event_loop: asyncio.AbstractEventLoop,
+        stop_event: threading.Event,
+    ):
+        super().__init__(daemon=True)
+        self.sentinel_file = sentinel_file
+        self.conversation_id = conversation_id
+        self.run_id = run_id
+        self.broadcaster = broadcaster
+        self.event_loop = event_loop
+        self.stop_event = stop_event
+
+    def run(self) -> None:
+        """Tail loop - waits for file, seeks to end, reads new lines."""
+        file_handle = None
+        last_inode = None
+
+        try:
+            while not self.stop_event.is_set():
+                # Poll for file existence
+                if not self.sentinel_file.is_file():
+                    time.sleep(0.25)
+                    continue
+
+                # Check if file was rotated (inode changed)
+                try:
+                    current_inode = self.sentinel_file.stat().st_ino
+                except OSError:
+                    # File disappeared between is_file() and stat()
+                    time.sleep(0.25)
+                    continue
+
+                # Open or reopen if rotated
+                if file_handle is None or last_inode != current_inode:
+                    if file_handle:
+                        file_handle.close()
+                    file_handle = open(self.sentinel_file, "r")
+                    # Seek to end to skip old events
+                    file_handle.seek(0, 2)
+                    last_inode = current_inode
+
+                # Read new lines
+                line = file_handle.readline()
+                if line:
+                    try:
+                        event = json.loads(line.strip())
+                        self._broadcast_deny_event(event)
+                    except json.JSONDecodeError:
+                        # Malformed line - skip
+                        logger.warning(f"Malformed deny event line: {line[:100]}")
+                else:
+                    # No new data - sleep briefly
+                    time.sleep(0.25)
+
+        finally:
+            if file_handle:
+                file_handle.close()
+
+    def _broadcast_deny_event(self, event: Dict[str, Any]) -> None:
+        """Broadcast a deny event as a system chat message."""
+        chat_message = {
+            "type": "chat_message",
+            "role": "system",
+            "kind": "permission_denied",
+            "content": f"Tool was rejected: {event['reason']}",
+            "conversation_id": self.conversation_id,
+            "tool_name": event.get("tool_name"),
+            "created_at": event.get("timestamp"),
+        }
+        asyncio.run_coroutine_threadsafe(
+            self.broadcaster.publish(self.run_id, chat_message),
+            self.event_loop,
+        )
 
 
 class OrchestratorRelay:
@@ -144,6 +226,7 @@ class OrchestratorRelay:
         self.stdin_thread: Optional[threading.Thread] = None
         self.stdout_thread: Optional[threading.Thread] = None
         self.stderr_thread: Optional[threading.Thread] = None
+        self.denied_events_tail: Optional[DeniedEventsTail] = None
         self.stop_event = threading.Event()
         self.last_active = time.time()
 
@@ -372,6 +455,18 @@ class OrchestratorRelay:
         # Query workspace channel to set cwd if available
         workspace_cwd = self._get_workspace_cwd()
 
+        # Seed settings.json and set env var if workspace exists
+        env = None
+        if workspace_cwd:
+            from .orchestrator_hooks.settings_template import seed_settings_json
+            settings_path = seed_settings_json(Path(workspace_cwd))
+            logger.info(f"Seeded settings.json at {settings_path}")
+
+            # Set workspace env var for the hook
+            env = {**os.environ, "DAG_ORCHESTRATOR_WORKSPACE": workspace_cwd}
+        else:
+            logger.warning("Orchestrator running without sandbox boundary (no workspace)")
+
         # Spawn subprocess
         self.process = subprocess.Popen(
             cmd,
@@ -381,6 +476,7 @@ class OrchestratorRelay:
             text=False,
             bufsize=0,
             cwd=workspace_cwd if workspace_cwd else None,
+            env=env,
         )
         
         # Start threads. The stderr drain is critical: claude runs with
@@ -395,6 +491,20 @@ class OrchestratorRelay:
         self.stdin_thread.start()
         self.stdout_thread.start()
         self.stderr_thread.start()
+
+        # Start denied events tail if workspace exists
+        if workspace_cwd:
+            sentinel_file = Path(workspace_cwd) / ".claude" / "denied-events.jsonl"
+            self.denied_events_tail = DeniedEventsTail(
+                sentinel_file=sentinel_file,
+                conversation_id=self.conversation_id,
+                run_id=self.run_id,
+                broadcaster=self.broadcaster,
+                event_loop=self.event_loop,
+                stop_event=self.stop_event,
+            )
+            self.denied_events_tail.start()
+            logger.info(f"Started denied events tail for {sentinel_file}")
 
         logger.info(f"Orchestrator {self.conversation_id} started with PID {self.process.pid}")
     
@@ -625,6 +735,8 @@ class OrchestratorRelay:
             self.stdout_thread.join(timeout=2)
         if self.stderr_thread and self.stderr_thread.is_alive():
             self.stderr_thread.join(timeout=2)
+        if self.denied_events_tail and self.denied_events_tail.is_alive():
+            self.denied_events_tail.join(timeout=2)
 
         self.process = None
         logger.info(f"Orchestrator {self.conversation_id} stopped")
