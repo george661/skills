@@ -100,9 +100,16 @@ async function seedAndTriggerRun(page: Page, workflowsDir: string): Promise<Seed
     await pollRunStatus(page, runId);
 
     // Read the workspace channel to discover the workspace path.
+    // /api/workflows/{run_id}/channels returns objects keyed `channel_key` (not `key`)
+    // with `value` already JSON-deserialized (string or {"value": ...} dict).
     const channels = await fetchJson(page, `/api/workflows/${runId}/channels`);
-    const wsChannel = (channels?.channels ?? []).find((c: any) => c.key === 'workspace');
-    expect(wsChannel, 'workspace channel must exist after run').toBeTruthy();
+    const wsChannel = (channels?.channels ?? []).find(
+        (c: any) => c.channel_key === 'workspace',
+    );
+    expect(
+        wsChannel,
+        `workspace channel must exist after run; got=${JSON.stringify(channels)}`,
+    ).toBeTruthy();
     const rawVal = wsChannel.value;
     const workspacePath = typeof rawVal === 'string' ? rawVal : rawVal?.value;
     expect(workspacePath, 'workspace path must be a string').toBeTruthy();
