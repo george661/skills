@@ -177,7 +177,11 @@ test.describe('Pending workspace changes (GW-5937)', () => {
             // Wait for the first 3s pollInterval refresh to populate the section.
             await expect(section).not.toHaveAttribute('hidden', '', { timeout: 15_000 });
             await expect(section.locator('.pending-changes-row')).toHaveCount(1);
-            await expect(section.locator('.pending-changes-diff .diff-add')).toContainText('# pending edit');
+            // Multiple .diff-add spans render (one per added line); assert that
+            // the rendered diff contains the new content somewhere.
+            await expect(
+                section.locator('.pending-changes-diff'),
+            ).toContainText('+# pending edit');
         } finally {
             await cleanupSeed(seed.workflowYamlPath);
         }
