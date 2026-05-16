@@ -16,7 +16,7 @@ def get_pending_changes(
     Args:
         workspace_path: Absolute path to workspace directory
         workflows_dir: Optional workflows directory for suggest_target
-    
+
     Returns:
         List of PendingChange objects
     """
