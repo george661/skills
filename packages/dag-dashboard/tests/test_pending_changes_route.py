@@ -470,3 +470,61 @@ def test_apply_rejects_path_traversal_workspace_path(client) -> None:
     assert r.status_code == 404
     # Verify sentinel was not touched
     assert parent_sentinel.read_text() == "should not be modified"
+
+
+def test_apply_discard_returns_structured_error_when_unlink_fails(
+    client, monkeypatch
+) -> None:
+    """Regression test for C1 (UnboundLocalError): when unlink raises, the
+    handler must return a structured ApplyChangeResponse with applied=False,
+    not crash with UnboundLocalError on source_path_str.
+    """
+    c, db_path, tmp = client
+
+    workspace = tmp / "workspace"
+    workspace.mkdir()
+    workflow_dir = workspace / ".workflow"
+    workflow_dir.mkdir()
+
+    source_file = tmp / "source.txt"
+    source_file.write_text("original\n")
+
+    manifest = [{"workspace_path": ".workflow/test.txt", "source_path": str(source_file), "kind": "workflow_yaml"}]
+    (workflow_dir / ".manifest.json").write_text(json.dumps(manifest))
+    workspace_file = workflow_dir / "test.txt"
+    workspace_file.write_text("modified\n")
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        "INSERT INTO workflow_runs (id, workflow_name, status, started_at) VALUES (?,?,?,?)",
+        ("run-12", "wf", "running", "2026-05-16T00:00:00Z"),
+    )
+    conn.execute(
+        "INSERT INTO channel_states (run_id, channel_key, channel_type, value_json, updated_at) VALUES (?,?,?,?,?)",
+        ("run-12", "workspace", "value", json.dumps(str(workspace)), "2026-05-16T00:00:01Z"),
+    )
+    conn.commit()
+    conn.close()
+
+    # Force unlink to raise to drive the except branch.
+    original_unlink = Path.unlink
+
+    def boom(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if self == workspace_file:
+            raise PermissionError("simulated unlink failure")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", boom)
+
+    r = c.post(
+        "/api/runs/run-12/pending-changes/apply",
+        json={"workspace_path": ".workflow/test.txt", "action": "discard"}
+    )
+    # Must return 200 with structured failure body, NOT 500 from
+    # UnboundLocalError on source_path_str.
+    assert r.status_code == 200, f"got {r.status_code}: {r.text}"
+    body = r.json()
+    assert body["applied"] is False
+    assert body["source_path"] == str(source_file)
+    assert "simulated unlink failure" in body["error"]

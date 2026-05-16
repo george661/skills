@@ -1248,10 +1248,15 @@ async def apply_pending_change(
     if body.action == "discard":
         # Delete the workspace file
         workspace_file = workspace_path / matching_change.workspace_path
+        # Compute source_path_str up front so it's bound on both success and failure branches
+        source_path_str = (
+            str(matching_change.source_path)
+            if matching_change.source_path
+            else matching_change.workspace_path
+        )
         try:
             if workspace_file.exists():
                 workspace_file.unlink()
-            source_path_str = str(matching_change.source_path) if matching_change.source_path else matching_change.workspace_path
             return models.ApplyChangeResponse(
                 applied=True,
                 source_path=source_path_str
