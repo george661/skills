@@ -745,6 +745,8 @@ async function renderRunDetail(runId) {
                     <div id="workflow-feed" class="workflow-feed"></div>
                 </div>
             </div>
+            <!-- Pending workspace changes section -->
+            <section id="pending-workspace-changes" class="pending-workspace-changes" hidden></section>
             <!-- State slideover (eager mount — channel/timeline/artifact
                  containers exist in DOM from page load, hidden via CSS) -->
             <div id="state-slideover-mount"></div>
@@ -1033,6 +1035,14 @@ async function renderRunDetail(runId) {
             slideoverToggleBtn.addEventListener('click', () => {
                 window.StateSlideover.toggle();
             });
+        }
+
+        // Mount pending workspace changes section
+        if (window.PendingChanges) {
+            const pendingChangesContainer = document.getElementById('pending-workspace-changes');
+            if (pendingChangesContainer) {
+                window.PendingChanges.mount(pendingChangesContainer, runId);
+            }
         }
 
         // Connect to SSE for live updates
@@ -1417,6 +1427,12 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
                 }
             }
 
+            // Refresh pending workspace changes
+            const pendingChangesContainer = document.getElementById('pending-workspace-changes');
+            if (pendingChangesContainer && window.PendingChanges) {
+                window.PendingChanges.refresh(pendingChangesContainer);
+            }
+
         } catch (error) {
             console.error('Error polling for updates:', error);
         }
@@ -1493,6 +1509,12 @@ function setupLiveUpdates(runId, dagRenderer, nodes, channelPanel, chatPanel, re
             // Destroy state slide-over (releases its DOM + Esc listener).
             if (window.StateSlideover && typeof window.StateSlideover.destroy === 'function') {
                 window.StateSlideover.destroy();
+            }
+
+            // Unmount pending workspace changes
+            const pendingChangesContainer = document.getElementById('pending-workspace-changes');
+            if (pendingChangesContainer && window.PendingChanges) {
+                window.PendingChanges.unmount(pendingChangesContainer);
             }
 
             // Clear NodeScrollBus subscribers so the DAG-click handler + the

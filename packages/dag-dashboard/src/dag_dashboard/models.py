@@ -363,3 +363,40 @@ class ValidateResponse(BaseModel):
 
     errors: List[ValidationIssueOut] = Field(default_factory=list, description="Validation errors")
     warnings: List[ValidationIssueOut] = Field(default_factory=list, description="Validation warnings")
+
+
+class PendingChange(BaseModel):
+    """Response model for a single pending workspace change."""
+    model_config = {"extra": "forbid"}
+
+    workspace_path: str
+    source_path: Optional[str]
+    kind: str  # Literal["modified", "new"]
+    diff: str
+    manifest_kind: Optional[str]
+    suggested_target_path: Optional[str] = None
+
+
+class PendingChangesResponse(BaseModel):
+    """Response model for GET /api/runs/{run_id}/pending-changes."""
+    model_config = {"extra": "forbid"}
+
+    changes: List[PendingChange]
+
+
+class ApplyChangeRequest(BaseModel):
+    """Request body for POST /api/runs/{run_id}/pending-changes/apply."""
+    model_config = {"extra": "forbid"}
+
+    workspace_path: str
+    action: str  # Literal["apply", "discard"]
+    target_path: Optional[str] = None
+
+
+class ApplyChangeResponse(BaseModel):
+    """Response model for POST /api/runs/{run_id}/pending-changes/apply."""
+    model_config = {"extra": "forbid"}
+
+    applied: bool
+    source_path: str
+    error: Optional[str] = None

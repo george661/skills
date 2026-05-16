@@ -1687,3 +1687,35 @@ def delete_orchestrator_session(db_path: Path, conversation_id: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def get_workspace_path_for_run(db_path: Path, run_id: str) -> Optional[str]:
+    """Return the workspace directory for a run, or None if no workspace channel.
+
+    Mirrors the read pattern in orchestrator_relay.py:368-394.
+    channel_states has PRIMARY KEY (run_id, channel_key), so LIMIT 1 is sufficient.
+    The value lives in value_json (JSON-encoded). It is either a JSON string
+    or a JSON object {"value": <str>}.
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT value_json FROM channel_states "
+            "WHERE run_id = ? AND channel_key = 'workspace' LIMIT 1",
+            (run_id,),
+        )
+        row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    if not row or not row[0]:
+        return None
+
+    value = json.loads(row[0])
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        v = value.get("value")
+        return v if isinstance(v, str) else None
+    return None

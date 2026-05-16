@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from dag_executor.gates import build_approval_resolved_event
 from dag_executor.checkpoint import CheckpointStore
 
+from . import models, queries
 from .models import SortBy, RunStatus, StatusSummary, GateDecisionRequest, InterruptResumeRequest, NodeStateDiff, RerunRequest
 from .queries import (
     get_run, list_runs, list_runs_grouped, get_node, list_nodes, get_status_counts,
@@ -1155,3 +1156,151 @@ async def get_skills(request: Request) -> list[dict[str, Any]]:
 
     skills_dirs = getattr(request.app.state, "skills_dirs", [])
     return list_skills(skills_dirs)
+
+
+@router.get("/runs/{run_id}/pending-changes")
+async def get_pending_changes(request: Request, run_id: str) -> Dict[str, Any]:
+    """Get pending workspace changes for a workflow run.
+
+    Returns empty list when:
+    - Run not found (404)
+    - No workspace channel exists
+    - Workspace directory doesn't exist on disk
+    - Manifest missing or empty
+    """
+    from .pending_changes import get_pending_changes as get_changes_helper
+
+    db_path = get_db_path(request)
+
+    # Check if run exists
+    run = get_run(db_path, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    # Get workspace path from channel_states
+    workspace_path_str = queries.get_workspace_path_for_run(db_path, run_id)
+    if not workspace_path_str:
+        return {"changes": []}
+
+    workspace_path = Path(workspace_path_str)
+    if not workspace_path.exists():
+        return {"changes": []}
+
+    # Get workflows_dir from app state for suggest_target
+    workflows_dirs = getattr(request.app.state, "workflows_dirs", None) or []
+    workflows_dir: Optional[Path] = workflows_dirs[0] if workflows_dirs else None
+
+    changes = get_changes_helper(workspace_path, workflows_dir)
+    return {"changes": [c.model_dump() for c in changes]}
+
+
+@router.post("/runs/{run_id}/pending-changes/apply")
+async def apply_pending_change(
+    request: Request,
+    run_id: str,
+    body: models.ApplyChangeRequest
+) -> models.ApplyChangeResponse:
+    """Apply or discard a pending workspace change.
+
+    For action="apply":
+    - Modified files: writes workspace content back to source
+    - New files: requires target_path in request body
+
+    For action="discard":
+    - Deletes the workspace file (both modified and new)
+
+    Returns 404 if:
+    - Run not found
+    - No workspace path for run
+    - Requested workspace_path not in current pending changes
+    """
+    from dag_executor import workspaces_diff
+
+    db_path = get_db_path(request)
+
+    # Check if run exists
+    run = get_run(db_path, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    # Get workspace path
+    workspace_path_str = queries.get_workspace_path_for_run(db_path, run_id)
+    if not workspace_path_str:
+        raise HTTPException(status_code=404, detail="No workspace for this run")
+
+    workspace_path = Path(workspace_path_str)
+    if not workspace_path.exists():
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+
+    # Re-run iter_changes to get current state (single source of truth)
+    matching_change = None
+    for change in workspaces_diff.iter_changes(workspace_path):
+        if change.workspace_path == body.workspace_path:
+            matching_change = change
+            break
+
+    if not matching_change:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No pending change found for workspace_path: {body.workspace_path}"
+        )
+
+    if body.action == "discard":
+        # Delete the workspace file
+        workspace_file = workspace_path / matching_change.workspace_path
+        # Compute source_path_str up front so it's bound on both success and failure branches
+        source_path_str = (
+            str(matching_change.source_path)
+            if matching_change.source_path
+            else matching_change.workspace_path
+        )
+        try:
+            if workspace_file.exists():
+                workspace_file.unlink()
+            return models.ApplyChangeResponse(
+                applied=True,
+                source_path=source_path_str
+            )
+        except Exception as e:
+            return models.ApplyChangeResponse(
+                applied=False,
+                source_path=source_path_str,
+                error=str(e)
+            )
+
+    elif body.action == "apply":
+        # Validate target_path for new files
+        if matching_change.kind == "new" and not body.target_path:
+            raise HTTPException(
+                status_code=400,
+                detail="target_path required for new files"
+            )
+
+        # Apply the change
+        target_path_obj = Path(body.target_path) if body.target_path else None
+        try:
+            result = workspaces_diff.apply_change(
+                matching_change,
+                workspace_path,
+                target_path=target_path_obj,
+                commit=False  # Phase 6 will add commit support
+            )
+            return models.ApplyChangeResponse(
+                applied=result.applied,
+                source_path=str(result.source_path),
+                error=result.error
+            )
+        except Exception as e:
+            # Fallback for unexpected errors
+            source_path_str = str(matching_change.source_path) if matching_change.source_path else body.target_path or matching_change.workspace_path
+            return models.ApplyChangeResponse(
+                applied=False,
+                source_path=source_path_str,
+                error=str(e)
+            )
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid action: {body.action}. Must be 'apply' or 'discard'"
+        )
