@@ -14,7 +14,20 @@ import * as path from 'path';
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
-import { gotoRoute } from './helpers';
+// NOTE: Don't use the shared gotoRoute() — it does waitForLoadState('networkidle')
+// which never settles on the run-detail page (3s pollInterval keeps the network
+// busy indefinitely). Two-step hash routing per skills/CLAUDE.md is still
+// followed; we just wait for a concrete locator instead of network idle.
+async function gotoRunDetail(page: Page, runId: string): Promise<void> {
+    if (!page.url().startsWith('http')) {
+        await page.goto('/');
+    }
+    await page.evaluate((h) => {
+        window.location.hash = h;
+    }, `#/workflow/${runId}`);
+    // Wait for the run-detail container to materialize.
+    await page.locator('.run-detail').waitFor({ state: 'attached', timeout: 10_000 });
+}
 
 const WORKFLOW_NAME = 'e2e-pending-changes';
 
@@ -132,7 +145,7 @@ test.describe('Pending workspace changes (GW-5937)', () => {
             expect(pending.changes, 'no mutations -> empty changes').toEqual([]);
 
             await page.goto('/');
-            await gotoRoute(page, `#/workflow/${seed.runId}`);
+            await gotoRunDetail(page, seed.runId);
             const section = page.locator('#pending-workspace-changes');
             await expect(section).toBeAttached();
             await expect(section).toHaveAttribute('hidden', '');
@@ -158,7 +171,7 @@ test.describe('Pending workspace changes (GW-5937)', () => {
             expect(change.diff).toContain('+# pending edit');
 
             await page.goto('/');
-            await gotoRoute(page, `#/workflow/${seed.runId}`);
+            await gotoRunDetail(page, seed.runId);
             const section = page.locator('#pending-workspace-changes');
             await expect(section).toBeAttached();
             // Wait for the first 3s pollInterval refresh to populate the section.
@@ -232,7 +245,7 @@ test.describe('Pending workspace changes (GW-5937)', () => {
         // Cheap shape-only test — no run seeding required. Navigate to a
         // non-existent run; the section is mounted regardless.
         await page.goto('/');
-        await gotoRoute(page, '#/workflow/no-such-run');
+        await gotoRunDetail(page, "no-such-run");
 
         const shape = await page.evaluate(() => ({
             hasPendingChanges: typeof (window as any).PendingChanges === 'object',
