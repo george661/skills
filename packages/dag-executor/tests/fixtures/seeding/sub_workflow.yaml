@@ -1,5 +1,9 @@
 name: Sub-workflow
+config:
+  checkpoint_prefix: test
 nodes:
   - id: task
+    name: Task
     type: bash
+    prompt_file: prompts/sub-prompt.md
     script: echo "sub task"

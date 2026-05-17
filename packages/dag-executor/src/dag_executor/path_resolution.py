@@ -97,3 +97,22 @@ def _find_repo_root(start_path: Optional[Path]) -> Optional[Path]:
         current = current.parent
     
     return None
+
+
+# Maximum recursion depth for sub-workflow execution and seeding
+MAX_RECURSION_DEPTH = 5
+
+
+def _resolve_sub_workflow(reference: str, parent_source: Optional[Path]) -> Optional[Path]:
+    """Resolve a `command:` field to a concrete YAML path.
+
+    Delegates to _resolve_workflow_relative with .yaml/.yml suffixes.
+
+    Args:
+        reference: Command reference string (workflow name or path)
+        parent_source: Path to parent workflow file
+
+    Returns:
+        Path to workflow file, or None if not found
+    """
+    return _resolve_workflow_relative(reference, parent_source, suffixes=[".yaml", ".yml"])

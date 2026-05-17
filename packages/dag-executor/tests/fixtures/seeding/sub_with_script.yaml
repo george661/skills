@@ -1,0 +1,8 @@
+name: Sub with Script
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: run_script
+    name: Run Script
+    type: bash
+    script_path: scripts/lint.sh

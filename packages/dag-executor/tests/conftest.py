@@ -473,3 +473,81 @@ def checkpoint_node_result() -> NodeResult:
         started_at=datetime.now(timezone.utc),
         completed_at=datetime.now(timezone.utc),
     )
+
+
+# ---------------------------------------------------------------------------
+# Workflow discovery: pin DAG_DASHBOARD_WORKFLOWS_DIR to the package's own
+# workflows/ so tests that load real workflows + recurse into sub-workflows
+# can resolve siblings (create-skeleton.yaml, validate-deploy-status.yaml,
+# etc.) without depending on the operator's environment.
+#
+# Scoped to tests that actually load real workflows. Tests in test_drafts_cli
+# rely on cwd-based workflow resolution and would be broken by an unconditional
+# autouse setenv.
+# ---------------------------------------------------------------------------
+
+
+_REAL_WORKFLOW_TEST_FILES = {
+    "test_design_workflow",
+    "test_plan_workflow",
+    "test_validate_workflow",
+    "test_validator",
+    "test_variable_lint",
+    "test_workflow_discovery",
+    "test_workflow_invariants",
+    "test_seeding",
+}
+
+
+@pytest.fixture(autouse=True)
+def set_workflows_dir(request: Any, monkeypatch: Any) -> None:
+    """Pin DAG_DASHBOARD_WORKFLOWS_DIR for tests that load real workflow YAMLs.
+
+    Recursive seeding (introduced in GW-5948) needs sibling sub-workflows to
+    be resolvable at seed time; without this fixture, tests that load
+    plan.yaml or design.yaml fail because their type=command nodes reference
+    workflows that aren't on the resolver's search path.
+    """
+    test_module = request.node.module.__name__.rsplit(".", 1)[-1]
+    if test_module not in _REAL_WORKFLOW_TEST_FILES:
+        return
+    workflows_dir = Path(__file__).parent.parent / "workflows"
+    monkeypatch.setenv("DAG_DASHBOARD_WORKFLOWS_DIR", str(workflows_dir))
+
+
+# ---------------------------------------------------------------------------
+# Stale-artifact cleanup: test_drafts_cli.py invokes the drafts CLI which
+# writes packages/dag-executor/workflows/my-workflow.yaml and never cleans up.
+# That file is then picked up by test_workflow_discovery, test_validator,
+# and test_variable_lint as a "real workflow", and the bogus content fails
+# their validation. Pre-existing on origin/main; cleaning here keeps the
+# tree sane during this PR's CI run without re-architecting the drafts CLI.
+# ---------------------------------------------------------------------------
+
+
+def pytest_collection_modifyitems(config: Any, items: List[Any]) -> None:
+    """Remove the stray my-workflow.yaml before pytest collects parametrized
+    workflow-discovery tests against it. Cleanup runs once at the start of
+    the session — by the time the autouse cleanup fixture below would fire,
+    parametrize has already pulled the bad file into the test list.
+    """
+    workflows_dir = Path(__file__).parent.parent / "workflows"
+    stray = workflows_dir / "my-workflow.yaml"
+    try:
+        stray.unlink()
+    except FileNotFoundError:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_stray_my_workflow() -> Any:
+    """Re-clean the stray after each test runs (test_drafts_cli.py creates it)."""
+    workflows_dir = Path(__file__).parent.parent / "workflows"
+    stray = workflows_dir / "my-workflow.yaml"
+    yield
+    try:
+        stray.unlink()
+    except FileNotFoundError:
+        pass
+
+

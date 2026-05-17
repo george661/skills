@@ -1,0 +1,8 @@
+name: Parent with Unresolvable Sub
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: bad_ref
+    name: Bad Ref
+    type: command
+    command: nonexistent_workflow.yaml

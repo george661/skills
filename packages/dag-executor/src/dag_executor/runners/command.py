@@ -6,24 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Coroutine, Dict, Optional, TypeVar
 
-from dag_executor.path_resolution import _resolve_workflow_relative
+from dag_executor.path_resolution import _resolve_workflow_relative, _resolve_sub_workflow, MAX_RECURSION_DEPTH
 
 _T = TypeVar("_T")
-
-
-def _resolve_sub_workflow(reference: str, parent_source: Optional[Path]) -> Optional[Path]:
-    """Resolve a `command:` field to a concrete YAML path.
-
-    Delegates to _resolve_workflow_relative with .yaml/.yml suffixes.
-
-    Args:
-        reference: Command reference string (workflow name or path)
-        parent_source: Path to parent workflow file
-
-    Returns:
-        Path to workflow file, or None if not found
-    """
-    return _resolve_workflow_relative(reference, parent_source, suffixes=[".yaml", ".yml"])
 
 
 def _run_coroutine_sync(coro: "Coroutine[Any, Any, _T]") -> _T:
@@ -48,9 +33,6 @@ def _run_coroutine_sync(coro: "Coroutine[Any, Any, _T]") -> _T:
 from dag_executor.schema import NodeResult, NodeStatus, WorkflowStatus
 from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 from dag_executor.parser import load_workflow
-
-# Maximum recursion depth for command nodes
-MAX_RECURSION_DEPTH = 5
 
 
 @register_runner("command")

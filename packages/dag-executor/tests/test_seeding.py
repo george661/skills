@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import pytest
+from dag_executor.parser import load_workflow
 from dag_executor.schema import WorkflowDef, NodeDef
 from dag_executor.seeding import seed_workspace, SeedingError
 
@@ -264,3 +265,341 @@ class TestSeedWorkspace:
         script_file.write_text("echo v2")
         seed_workspace(workflow, workspace)
         assert seeded.read_text() == "echo v2"
+
+
+class TestSubWorkflowSeeding:
+    """Tests for recursive sub-workflow seeding (GW-5948)."""
+
+    def test_seed_workspace_subworkflow_basic_recursion(self, tmp_path):
+        """Test that a parent with one type=command node seeds the sub-workflow."""
+        fixtures_dir = Path(__file__).parent / "fixtures" / "seeding"
+        parent_yaml = fixtures_dir / "parent_with_subworkflow.yaml"
+        
+        workflow = load_workflow(str(parent_yaml))
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        
+        seed_workspace(workflow, workspace)
+        
+        # Assert sub-workflow YAML is seeded
+        sub_yaml = workspace / ".workflow" / "sub_workflow" / "workflow.yaml"
+        assert sub_yaml.exists(), f"Expected {sub_yaml} to exist"
+        
+        # Assert sub-workflow's prompt is seeded
+        sub_prompt = workspace / ".workflow" / "sub_workflow" / "prompts" / "sub-prompt.md"
+        assert sub_prompt.exists(), f"Expected {sub_prompt} to exist"
+        
+        # Assert manifest contains sub-workflow entries
+        manifest_path = workspace / ".workflow" / ".manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        
+        workspace_paths = [e["workspace_path"] for e in manifest]
+        assert ".workflow/sub_workflow/workflow.yaml" in workspace_paths
+        assert ".workflow/sub_workflow/prompts/sub-prompt.md" in workspace_paths
+
+    def test_seed_workspace_subworkflow_unresolvable_warns_and_skips(self, tmp_path, caplog):
+        """Test that an unresolvable type=command reference logs a warning and
+        is skipped (rather than raising). Rationale: type=command nodes can
+        reference YAML sub-workflows OR markdown slash-commands; only the
+        former are seedable. A reference that looks like neither is treated as
+        a slash-command and left for the runtime CommandRunner."""
+        import logging
+        fixtures_dir = Path(__file__).parent / "fixtures" / "seeding"
+        parent_yaml = fixtures_dir / "parent_unresolvable.yaml"
+
+        workflow = load_workflow(str(parent_yaml))
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        with caplog.at_level(logging.WARNING, logger="dag_executor.seeding"):
+            # Should NOT raise
+            manifest = seed_workspace(workflow, workspace)
+
+        # Warning logged
+        assert any(
+            "sub-workflow YAML not found" in rec.message
+            for rec in caplog.records
+        ), f"Expected 'sub-workflow YAML not found' warning, got: {[r.message for r in caplog.records]}"
+
+        # Manifest only contains the parent's own entries; no sub-workflow entries
+        sub_entries = [e for e in manifest if "/" in e["workspace_path"].lstrip(".workflow/")]
+        assert sub_entries == [], (
+            f"Unresolvable sub-workflow should not produce manifest entries; got: {sub_entries}"
+        )
+
+    def test_seed_workspace_subworkflow_namespacing_collision_same_source(self, tmp_path):
+        """Test that two command nodes referencing the same sub-workflow seed it once."""
+        fixtures_dir = Path(__file__).parent / "fixtures" / "seeding"
+        parent_yaml = fixtures_dir / "parent_collision.yaml"
+        
+        workflow = load_workflow(str(parent_yaml))
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        
+        # Should succeed (idempotent)
+        seed_workspace(workflow, workspace)
+        
+        # Sub-workflow should be seeded exactly once
+        sub_yaml = workspace / ".workflow" / "sub_workflow" / "workflow.yaml"
+        assert sub_yaml.exists()
+        
+        # Manifest should contain the sub-workflow entries (not duplicated)
+        manifest_path = workspace / ".workflow" / ".manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        
+        sub_yaml_entries = [e for e in manifest if e["workspace_path"] == ".workflow/sub_workflow/workflow.yaml"]
+        # Should have exactly one entry for the sub-workflow YAML
+        assert len(sub_yaml_entries) == 1
+
+    def test_seed_workspace_subworkflow_namespacing_collision_different_sources(self, tmp_path):
+        """Test that namespace collision with different sources raises SeedingError."""
+        # Create two different workflows with the same stem in different directories
+        dir1 = tmp_path / "dir1"
+        dir1.mkdir()
+        sub1 = dir1 / "sub_workflow.yaml"
+        sub1.write_text("""name: Sub V1
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: x
+    name: X
+    type: bash
+    script: echo v1
+""")
+
+        dir2 = tmp_path / "dir2"
+        dir2.mkdir()
+        sub2 = dir2 / "sub_workflow.yaml"
+        sub2.write_text("""name: Sub V2
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: y
+    name: Y
+    type: bash
+    script: echo v2
+""")
+
+        # Create parent that references both using absolute paths
+        parent_yaml = tmp_path / "parent.yaml"
+        parent_yaml.write_text(f"""name: Collision Test
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: first
+    name: First
+    type: command
+    command: {sub1}
+  - id: second
+    name: Second
+    type: command
+    command: {sub2}
+""")
+
+        workflow = load_workflow(str(parent_yaml))
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        with pytest.raises(SeedingError, match="namespace collision"):
+            seed_workspace(workflow, workspace)
+
+    def test_seed_workspace_subworkflow_recursion_depth_limit(self, tmp_path):
+        """Test that recursion depth limit is enforced."""
+        fixtures_dir = Path(__file__).parent / "fixtures" / "seeding"
+
+        # Test that 6-deep chain fails (parent + 5 subs)
+        parent_yaml = fixtures_dir / "parent_deep.yaml"
+        workflow = load_workflow(str(parent_yaml))
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        with pytest.raises(SeedingError, match="recursion depth"):
+            seed_workspace(workflow, workspace)
+
+        # Test that 5-deep chain succeeds (parent + 4 subs)
+        # Create a truncated chain
+        parent_4deep = tmp_path / "parent_4deep.yaml"
+        parent_4deep.write_text("""name: Parent 4Deep
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: c
+    name: C
+    type: command
+    command: child1_short.yaml
+""")
+
+        child1_short = tmp_path / "child1_short.yaml"
+        child1_short.write_text("""name: C1
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: c
+    name: C
+    type: command
+    command: child2_short.yaml
+""")
+
+        child2_short = tmp_path / "child2_short.yaml"
+        child2_short.write_text("""name: C2
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: c
+    name: C
+    type: command
+    command: child3_short.yaml
+""")
+
+        child3_short = tmp_path / "child3_short.yaml"
+        child3_short.write_text("""name: C3
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: c
+    name: C
+    type: bash
+    script: echo done
+""")
+
+        workflow_short = load_workflow(str(parent_4deep))
+        workspace_short = tmp_path / "workspace_short"
+        workspace_short.mkdir()
+
+        # Should succeed
+        seed_workspace(workflow_short, workspace_short)
+        assert (workspace_short / ".workflow" / "child1_short" / "workflow.yaml").exists()
+
+        # Boundary: parent + 4 subs (depth = MAX_RECURSION_DEPTH - 1) must succeed.
+        # If a future off-by-one shrinks the limit, this test catches it before
+        # the 6-deep test's failure-by-design hides the regression.
+        parent_max = tmp_path / "parent_max.yaml"
+        parent_max.write_text("""name: Parent Max
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: c
+    name: C
+    type: command
+    command: max_c1.yaml
+""")
+        for i, next_ref in enumerate(["max_c2.yaml", "max_c3.yaml", "max_c4.yaml"], start=1):
+            (tmp_path / f"max_c{i}.yaml").write_text(f"""name: MaxC{i}
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: c
+    name: C
+    type: command
+    command: {next_ref}
+""")
+        (tmp_path / "max_c4.yaml").write_text("""name: MaxC4
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: c
+    name: C
+    type: bash
+    script: echo done
+""")
+
+        workspace_max = tmp_path / "workspace_max"
+        workspace_max.mkdir()
+        seed_workspace(load_workflow(str(parent_max)), workspace_max)
+        assert (workspace_max / ".workflow" / "max_c1" / "max_c2" / "max_c3" / "max_c4" / "workflow.yaml").exists()
+
+    def test_seed_workspace_subworkflow_namespace_uses_yaml_stem(self, tmp_path):
+        """The namespace key is the source YAML's stem, NOT WorkflowDef.name.
+
+        Real workflows have prose names like "Fix Skeleton Command Sub-DAG"
+        with spaces and colons, which would create fragile filesystem paths.
+        Using the YAML stem (filesystem-safe by virtue of the file existing)
+        keeps the namespace deterministic and stable.
+        """
+        sub_yaml = tmp_path / "fix-skeleton.yaml"
+        sub_yaml.write_text("""name: Fix Skeleton Command Sub-DAG
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: x
+    name: X
+    type: bash
+    script: echo x
+""")
+
+        parent_yaml = tmp_path / "parent.yaml"
+        parent_yaml.write_text(f"""name: Parent
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: r
+    name: R
+    type: command
+    command: {sub_yaml}
+""")
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        seed_workspace(load_workflow(str(parent_yaml)), workspace)
+
+        # Stem-based directory exists
+        assert (workspace / ".workflow" / "fix-skeleton" / "workflow.yaml").exists()
+        # Prose-name directory does NOT exist
+        assert not (workspace / ".workflow" / "Fix Skeleton Command Sub-DAG").exists()
+
+    def test_executor_aborts_workflow_when_subworkflow_seeding_fails(self, tmp_path):
+        """When a sub-workflow's YAML resolves but fails to load (e.g.
+        unparseable YAML), seeding raises SeedingError and the executor
+        propagates that as WorkflowStatus.FAILED before any node runs."""
+        import asyncio
+        from dag_executor.executor import WorkflowExecutor
+        from dag_executor.schema import WorkflowStatus
+
+        # Sub-workflow YAML exists but contains invalid content (non-mapping)
+        bad_sub = tmp_path / "bad_sub.yaml"
+        bad_sub.write_text("- this is a list, not a workflow object\n")
+
+        parent_yaml = tmp_path / "parent.yaml"
+        parent_yaml.write_text(f"""name: Parent
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: r
+    name: R
+    type: command
+    command: {bad_sub}
+""")
+
+        workflow = load_workflow(str(parent_yaml))
+        executor = WorkflowExecutor()
+        result = asyncio.run(executor.execute(
+            workflow_def=workflow,
+            inputs={},
+            workspace_override=tmp_path / "ws",
+        ))
+        assert result.status == WorkflowStatus.FAILED, (
+            f"Expected FAILED, got {result.status}"
+        )
+
+    def test_seed_workspace_real_plan_workflow(self, tmp_path, monkeypatch):
+        """Smoke-test recursive seeding against the real plan.yaml workflow.
+        Uses DAG_DASHBOARD_WORKFLOWS_DIR so seed-time resolution finds the
+        sibling sub-workflows under packages/dag-executor/workflows/."""
+        real_workflows = Path(__file__).parent.parent / "workflows"
+        monkeypatch.setenv("DAG_DASHBOARD_WORKFLOWS_DIR", str(real_workflows))
+
+        plan = real_workflows / "plan.yaml"
+        if not plan.exists():
+            pytest.skip("plan.yaml not present")
+
+        workflow = load_workflow(str(plan))
+        seed_workspace(workflow, tmp_path)
+
+        # plan.yaml has type=command nodes for create-skeleton,
+        # review-skeleton, fix-skeleton, validate-plan (which doesn't exist
+        # as a YAML — soft-fail), and validate. Assert the resolvable ones
+        # were seeded.
+        for stem in ("create-skeleton", "review-skeleton", "fix-skeleton"):
+            assert (tmp_path / ".workflow" / stem / "workflow.yaml").exists(), (
+                f"Expected .workflow/{stem}/workflow.yaml to exist"
+            )
