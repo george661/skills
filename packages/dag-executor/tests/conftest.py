@@ -473,3 +473,10 @@ def checkpoint_node_result() -> NodeResult:
         started_at=datetime.now(timezone.utc),
         completed_at=datetime.now(timezone.utc),
     )
+
+
+@pytest.fixture(autouse=True)
+def set_workflows_dir(monkeypatch):
+    """Set DAG_DASHBOARD_WORKFLOWS_DIR to the package workflows directory for all tests."""
+    workflows_dir = Path(__file__).parent.parent / "workflows"
+    monkeypatch.setenv("DAG_DASHBOARD_WORKFLOWS_DIR", str(workflows_dir))

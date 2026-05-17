@@ -1,0 +1,8 @@
+name: Child5
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: final_task
+    name: Final Task
+    type: bash
+    script: echo "end of chain"

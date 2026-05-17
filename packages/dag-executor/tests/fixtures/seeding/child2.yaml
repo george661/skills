@@ -1,0 +1,8 @@
+name: Child2
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: to_child3
+    name: To Child3
+    type: command
+    command: child3.yaml

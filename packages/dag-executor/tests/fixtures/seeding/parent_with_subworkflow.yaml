@@ -1,5 +1,8 @@
 name: Parent with Sub-workflow
+config:
+  checkpoint_prefix: parent
 nodes:
   - id: run_sub
+    name: Run Sub
     type: command
     command: sub_workflow.yaml

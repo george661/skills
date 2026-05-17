@@ -1,0 +1,8 @@
+name: Parent Deep
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: to_child1
+    name: To Child1
+    type: command
+    command: child1.yaml

@@ -463,7 +463,7 @@ nodes:
   - id: auto_validate
     name: Auto-Validate Plan
     type: command
-    command: validate-plan
+    command: validate
     args:
       - "$epic_key"
     depends_on:

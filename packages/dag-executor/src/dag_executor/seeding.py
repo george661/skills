@@ -3,7 +3,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
-from dag_executor.path_resolution import _resolve_workflow_relative
+from dag_executor.parser import load_workflow
+from dag_executor.path_resolution import _resolve_workflow_relative, _resolve_sub_workflow, MAX_RECURSION_DEPTH
 from dag_executor.schema import WorkflowDef
 
 
@@ -113,33 +114,28 @@ def _resolve_source_path(workflow_yaml_path: Path, ref: str) -> Path:
     return resolved
 
 
-def seed_workspace(workflow_def: WorkflowDef, workspace_path: Path) -> List[ManifestEntry]:
-    """Seed the .workflow/ directory in the workspace.
-
-    Copies:
-    - workflow.yaml to .workflow/workflow.yaml
-    - prompt_file references to .workflow/prompts/<basename>
-    - script_path references to .workflow/scripts/<basename>
-
-    For programmatic workflows (no _source_path), still creates .workflow/
-    directory and writes empty .manifest.json.
+def _seed_one_workflow(
+    workflow_def: WorkflowDef,
+    workflow_dir: Path,
+    namespace: str,
+    visited: Dict[str, Path],
+    depth: int
+) -> List[ManifestEntry]:
+    """Seed a single workflow and recursively seed its sub-workflows.
 
     Args:
-        workflow_def: Parsed workflow definition (may have _source_path set)
-        workspace_path: Path to the workspace directory
+        workflow_def: Workflow definition to seed
+        workflow_dir: Directory to seed into (e.g., <workspace>/.workflow or <workspace>/.workflow/<sub-name>)
+        namespace: Current namespace path (e.g., ".workflow" or ".workflow/sub_name")
+        visited: Dict mapping sub-workflow stems to their resolved paths (for collision detection)
+        depth: Current recursion depth (0 for parent)
 
     Returns:
-        List of manifest entries for all seeded files (empty if no _source_path)
+        List of manifest entries for this workflow and all sub-workflows
 
     Raises:
-        SeedingError: If any referenced file is missing or path validation fails
+        SeedingError: If any file is missing, path validation fails, or recursion limit exceeded
     """
-    # Create .workflow/ directory structure
-    workflow_dir = workspace_path / ".workflow"
-    workflow_dir.mkdir(exist_ok=True)
-    prompts_dir = workflow_dir / "prompts"
-    scripts_dir = workflow_dir / "scripts"
-
     manifest: List[ManifestEntry] = []
 
     # Check if workflow was loaded from a file
@@ -155,15 +151,18 @@ def seed_workspace(workflow_def: WorkflowDef, workspace_path: Path) -> List[Mani
         try:
             workflow_dest.write_text(workflow_yaml_path.read_text())
             manifest.append({
-                "workspace_path": ".workflow/workflow.yaml",
+                "workspace_path": f"{namespace}/workflow.yaml",
                 "source_path": str(workflow_yaml_path),
                 "kind": "workflow_yaml"
             })
         except FileNotFoundError:
             raise SeedingError(f"workflow YAML not found: {workflow_yaml_path}")
 
-    # Process nodes (only if we have a source path)
-    if has_source:
+        # Create subdirectories
+        prompts_dir = workflow_dir / "prompts"
+        scripts_dir = workflow_dir / "scripts"
+
+        # Process nodes
         for node in workflow_def.nodes:
             # Handle prompt_file
             prompt_file_ref = node.prompt_file
@@ -180,7 +179,7 @@ def seed_workspace(workflow_def: WorkflowDef, workspace_path: Path) -> List[Mani
                     dest_path.write_text(source_path.read_text())
 
                     manifest.append({
-                        "workspace_path": f".workflow/prompts/{source_path.name}",
+                        "workspace_path": f"{namespace}/prompts/{source_path.name}",
                         "source_path": str(source_path),
                         "kind": "prompt_file"
                     })
@@ -204,7 +203,7 @@ def seed_workspace(workflow_def: WorkflowDef, workspace_path: Path) -> List[Mani
                     dest_path.write_text(source_path.read_text())
 
                     manifest.append({
-                        "workspace_path": f".workflow/scripts/{source_path.name}",
+                        "workspace_path": f"{namespace}/scripts/{source_path.name}",
                         "source_path": str(source_path),
                         "kind": "bash_script"
                     })
@@ -213,16 +212,107 @@ def seed_workspace(workflow_def: WorkflowDef, workspace_path: Path) -> List[Mani
                 except Exception as e:
                     raise SeedingError(f"failed to seed script_path: {script_path_ref}") from e
 
-            # NOTE: sub-workflow seeding (recursing into .workflow/<sub-name>/
-            # for type=command nodes) is intentionally deferred to a follow-up
-            # ticket. Phase 1 covers schema + per-parent-workflow seeding; the
-            # sub-workflow recursion needs careful design around namespace
-            # collisions and the manifest path scheme, and isn't required for
-            # the boundary enforcement landing in Phase 4 (GW-5936). See the
-            # follow-up ticket linked on the parent epic GW-5928.
+            # Handle sub-workflow recursion for type=command nodes
+            if node.type == "command":
+                command_ref = node.command
+                if command_ref is None:
+                    raise SeedingError(f"command node missing 'command' field: {node.id}")
+
+                # Resolve sub-workflow
+                resolved_path = _resolve_sub_workflow(command_ref, workflow_yaml_path)
+                if resolved_path is None:
+                    raise SeedingError(
+                        f"sub-workflow not resolvable: {command_ref} (node: {node.id})"
+                    )
+
+                # Use YAML stem as namespace key
+                sub_stem = resolved_path.stem
+
+                # Check for namespace collision
+                if sub_stem in visited:
+                    if visited[sub_stem] != resolved_path:
+                        raise SeedingError(
+                            f"namespace collision: stem '{sub_stem}' resolves to both "
+                            f"{visited[sub_stem]} and {resolved_path}"
+                        )
+                    # Same stem, same path — idempotent, skip
+                    continue
+
+                # Check recursion depth limit
+                if depth + 1 >= MAX_RECURSION_DEPTH:
+                    raise SeedingError(
+                        f"maximum sub-workflow recursion depth ({MAX_RECURSION_DEPTH}) exceeded"
+                    )
+
+                # Mark as visited
+                visited[sub_stem] = resolved_path
+
+                # Load sub-workflow
+                try:
+                    sub_workflow = load_workflow(str(resolved_path))
+                except Exception as e:
+                    raise SeedingError(f"failed to load sub-workflow {command_ref}: {e}") from e
+
+                # Create sub-workflow directory
+                sub_workflow_dir = workflow_dir / sub_stem
+                sub_workflow_dir.mkdir(exist_ok=True)
+
+                # Compute sub-namespace
+                sub_namespace = f"{namespace}/{sub_stem}"
+
+                # Recursively seed sub-workflow
+                sub_manifest = _seed_one_workflow(
+                    sub_workflow,
+                    sub_workflow_dir,
+                    sub_namespace,
+                    visited,
+                    depth + 1
+                )
+                manifest.extend(sub_manifest)
+
+    return manifest
+
+
+def seed_workspace(workflow_def: WorkflowDef, workspace_path: Path) -> List[ManifestEntry]:
+    """Seed the .workflow/ directory in the workspace.
+
+    Copies:
+    - workflow.yaml to .workflow/workflow.yaml
+    - prompt_file references to .workflow/prompts/<basename>
+    - script_path references to .workflow/scripts/<basename>
+    - Recursively seeds sub-workflows from type=command nodes
+
+    For programmatic workflows (no _source_path), still creates .workflow/
+    directory and writes empty .manifest.json.
+
+    Args:
+        workflow_def: Parsed workflow definition (may have _source_path set)
+        workspace_path: Path to the workspace directory
+
+    Returns:
+        List of manifest entries for all seeded files (empty if no _source_path)
+
+    Raises:
+        SeedingError: If any referenced file is missing or path validation fails
+    """
+    # Create .workflow/ directory structure
+    workflow_dir = workspace_path / ".workflow"
+    workflow_dir.mkdir(exist_ok=True)
+
+    # Seed parent and all sub-workflows recursively
+    visited: Dict[str, Path] = {}
+    manifest = _seed_one_workflow(
+        workflow_def,
+        workflow_dir,
+        ".workflow",
+        visited,
+        depth=0
+    )
 
     # Write manifest
     manifest_path = workflow_dir / ".manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
+
+    return manifest
 
     return manifest

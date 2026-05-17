@@ -1,0 +1,12 @@
+name: Parent with Collision
+config:
+  checkpoint_prefix: test
+nodes:
+  - id: first_ref
+    name: First Ref
+    type: command
+    command: sub_workflow.yaml
+  - id: second_ref
+    name: Second Ref
+    type: command
+    command: sub_workflow.yaml
