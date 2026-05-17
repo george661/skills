@@ -102,6 +102,9 @@ window.PendingChanges = (function() {
         container.querySelectorAll('.pending-changes-discard-btn').forEach(btn => {
             btn.addEventListener('click', () => handleDiscard(btn.dataset.workspacePath));
         });
+        container.querySelectorAll('.pending-changes-commit-btn').forEach(btn => {
+            btn.addEventListener('click', () => handleApplyCommit(btn.dataset.workspacePath, changes));
+        });
         container.querySelectorAll('[data-action="apply-all"]').forEach(btn => {
             btn.addEventListener('click', () => handleApplyAll(changes));
         });
@@ -134,7 +137,7 @@ window.PendingChanges = (function() {
                     <div class="pending-changes-actions">
                         <button class="pending-changes-discard-btn" data-workspace-path="${escapeHtml(change.workspace_path)}">Discard</button>
                         <button class="pending-changes-apply-btn" data-workspace-path="${escapeHtml(change.workspace_path)}">Apply to source</button>
-                        <button class="pending-changes-commit-btn" disabled title="Phase 6">Apply + commit</button>
+                        <button class="pending-changes-commit-btn" data-workspace-path="${escapeHtml(change.workspace_path)}">Apply + commit</button>
                     </div>
                 </div>
             </details>
@@ -228,6 +231,92 @@ window.PendingChanges = (function() {
         } catch (err) {
             console.error('Apply error:', err);
             showToast('Apply failed: Network error', 'error');
+        }
+    }
+
+    /**
+     * Handle apply + commit action.
+     */
+    async function handleApplyCommit(workspacePath, changes) {
+        const change = changes.find(c => c.workspace_path === workspacePath);
+        if (!change) return;
+
+        let targetPath = null;
+
+        // For new files, prompt for target path
+        if (change.kind === 'new') {
+            const suggested = change.suggested_target_path || '';
+            targetPath = prompt(`Target path for new file "${workspacePath}":`, suggested);
+            if (!targetPath) {
+                return; // Cancelled
+            }
+        }
+
+        // Confirmation modal for large diffs
+        if (change.diff && change.diff.split('\n').length > 50) {
+            const confirmed = window.ConfirmDialog ?
+                await window.ConfirmDialog.confirm({
+                    title: 'Large diff',
+                    message: `This change has ${change.diff.split('\n').length} lines. Apply and commit anyway?`,
+                    confirmLabel: 'Apply + commit',
+                    cancelLabel: 'Cancel'
+                }) :
+                confirm(`This change has ${change.diff.split('\n').length} lines. Apply and commit anyway?`);
+
+            if (!confirmed) return;
+        }
+
+        try {
+            const body = {
+                workspace_path: workspacePath,
+                action: 'apply',
+                commit: true
+            };
+            if (targetPath) {
+                body.target_path = targetPath;
+            }
+
+            const resp = await fetch(`/api/runs/${state.runId}/pending-changes/apply`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body)
+            });
+
+            if (!resp.ok) {
+                const errData = await resp.json();
+                showToast(`Apply + commit failed: ${errData.detail || resp.statusText}`, 'error');
+                return;
+            }
+
+            const result = await resp.json();
+            if (result.applied) {
+                if (result.commit_sha) {
+                    // Success: committed to source
+                    const shortSha = result.commit_sha.substring(0, 7);
+                    showToast(`Committed ${shortSha} to source`, 'success');
+
+                    // Show push-manually message
+                    const sourceDir = result.source_path.split('/').slice(0, -1).join('/');
+                    setTimeout(() => {
+                        showToast(`Now push manually from ${sourceDir}/`, 'info');
+                    }, 2000);
+                } else if (result.error) {
+                    // Partial success: file applied but commit failed
+                    showToast(`Applied to ${result.source_path}; commit failed: ${result.error}`, 'warning');
+                } else {
+                    // Applied but no commit (shouldn't happen with commit=true)
+                    showToast(`Applied to ${result.source_path}`, 'success');
+                }
+                // Trigger refresh
+                if (state.container) {
+                    refresh(state.container);
+                }
+            } else {
+                showToast(`Apply + commit failed: ${result.error || 'Unknown error'}`, 'error');
+            }
+        } catch (err) {
+            console.error('Apply + commit error:', err);
+            showToast('Apply + commit failed: Network error', 'error');
         }
     }
 

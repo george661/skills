@@ -5035,6 +5035,12 @@ select.form-control {
     border: 1px solid #93c5fd;
 }
 
+.pending-changes-toast-warning {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fcd34d;
+}
+
 @keyframes toast-slide-in {
     from {
         transform: translateX(100%);

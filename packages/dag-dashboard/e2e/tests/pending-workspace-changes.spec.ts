@@ -267,4 +267,75 @@ test.describe('Pending workspace changes (GW-5937)', () => {
         // found), or 1 if it did. The important regression is "never > 1".
         expect(shape.sectionCount).toBeLessThanOrEqual(1);
     });
+
+    test('apply + commit endpoint commits to a git source repo', async ({ page }) => {
+        // SCOPE end-to-end: edit prompt → Apply + commit → source repo has new commit → diff disappears
+        const workflowsDir = await resolveWorkflowsDir(page);
+
+        // Initialize the workflows dir as a fresh git repo (clean any state from prior runs/retries)
+        const { execSync } = await import('child_process');
+        await fs.rm(path.join(workflowsDir, '.git'), { recursive: true, force: true });
+        execSync('git init', { cwd: workflowsDir });
+        execSync('git config user.email "test@example.com"', { cwd: workflowsDir });
+        execSync('git config user.name "Test User"', { cwd: workflowsDir });
+
+        const seed = await seedAndTriggerRun(page, workflowsDir);
+        try {
+            // Commit the initial state (source has "hello")
+            execSync('git add .', { cwd: workflowsDir });
+            execSync('git commit -m "initial workflow"', { cwd: workflowsDir });
+
+            const initialSha = execSync('git log -1 --pretty=%H', { cwd: workflowsDir })
+                .toString()
+                .trim();
+
+            // Mutate the WORKSPACE seeded copy so it differs from source — Apply will then
+            // copy workspace ("goodbye") → source, producing a real diff vs HEAD ("hello").
+            // Mutating seed.workflowYamlPath (the source) instead would leave workspace/source
+            // identical, so Apply restores HEAD content and `git commit` finds nothing.
+            const wsYaml = path.join(seed.workspacePath, '.workflow', 'workflow.yaml');
+            const mutated = WORKFLOW_YAML.replace('hello', 'goodbye');
+            await fs.writeFile(wsYaml, mutated, 'utf8');
+
+            await page.goto('/');
+            await gotoRunDetail(page, seed.runId);
+
+            // Wait for pending changes section to populate
+            await page.locator('.pending-changes-row').first().waitFor({ timeout: 5000 });
+
+            // Verify GET shows the pending change
+            const getResp = await fetchJson(page, `/api/runs/${seed.runId}/pending-changes`);
+            expect(getResp.changes.length).toBeGreaterThan(0);
+
+            // POST with commit=true
+            const postResp = await page.request.post(
+                `/api/runs/${seed.runId}/pending-changes/apply`,
+                {
+                    data: {
+                        workspace_path: getResp.changes[0].workspace_path,
+                        action: 'apply',
+                        commit: true,
+                    },
+                }
+            );
+            expect(postResp.ok()).toBeTruthy();
+            const result = await postResp.json();
+            expect(result.applied).toBe(true);
+            expect(result.commit_sha).toBeTruthy();
+            expect(result.commit_sha.length).toBe(40); // Full SHA
+
+            // Verify commit landed in source repo
+            const newSha = execSync('git log -1 --pretty=%H', { cwd: workflowsDir })
+                .toString()
+                .trim();
+            expect(newSha).toBe(result.commit_sha);
+            expect(newSha).not.toBe(initialSha);
+
+            // Verify diff disappeared
+            const getAfter = await fetchJson(page, `/api/runs/${seed.runId}/pending-changes`);
+            expect(getAfter.changes.length).toBe(0);
+        } finally {
+            await cleanupSeed(seed.workflowYamlPath);
+        }
+    });
 });

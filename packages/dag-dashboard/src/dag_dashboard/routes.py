@@ -1283,12 +1283,13 @@ async def apply_pending_change(
                 matching_change,
                 workspace_path,
                 target_path=target_path_obj,
-                commit=False  # Phase 6 will add commit support
+                commit=bool(body.commit)
             )
             return models.ApplyChangeResponse(
                 applied=result.applied,
                 source_path=str(result.source_path),
-                error=result.error
+                error=result.error,
+                commit_sha=result.commit_sha
             )
         except Exception as e:
             # Fallback for unexpected errors
@@ -1296,7 +1297,8 @@ async def apply_pending_change(
             return models.ApplyChangeResponse(
                 applied=False,
                 source_path=source_path_str,
-                error=str(e)
+                error=str(e),
+                commit_sha=None
             )
 
     else:
