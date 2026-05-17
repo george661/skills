@@ -111,3 +111,24 @@ def test_seed_returns_absolute_path(workspace_dir: Path):
     """seed_settings_json should return an absolute path."""
     result = seed_settings_json(workspace_dir)
     assert result.is_absolute()
+
+
+def test_settings_allow_list_includes_phase_6_write_side_git_commands(workspace_dir: Path):
+    """settings.json allow list should include write-side git commands from Phase 6."""
+    settings_path = seed_settings_json(workspace_dir)
+
+    with open(settings_path) as f:
+        settings = json.load(f)
+
+    allow_list = settings["permissions"]["allow"]
+
+    # Phase 6 commands
+    assert "Bash(git add:*)" in allow_list
+    assert "Bash(git commit:*)" in allow_list
+    assert "Bash(git checkout:*)" in allow_list
+
+    # git push should NOT be in allow list (that's GW-5717)
+    assert "Bash(git push:*)" not in allow_list
+
+    # Existing read-side command should still be present
+    assert "Bash(git status:*)" in allow_list

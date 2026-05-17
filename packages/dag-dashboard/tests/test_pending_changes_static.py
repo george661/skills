@@ -70,3 +70,27 @@ def test_pending_changes_css_present(client: TestClient) -> None:
     r = client.get("/css/styles.css")
     assert r.status_code == 200
     assert ".pending-workspace-changes" in r.text, "Must have pending-workspace-changes class"
+
+
+def test_pending_changes_js_wires_apply_commit_button(client: TestClient) -> None:
+    """pending-changes.js wires the Apply + commit button and sends commit: true."""
+    r = client.get("/js/pending-changes.js")
+    assert r.status_code == 200
+    body = r.text
+
+    # Button must be present and enabled (no disabled attribute)
+    assert "pending-changes-commit-btn" in body, "Must have commit button class"
+    # Verify it's not disabled in the rendered HTML
+    assert 'class="pending-changes-commit-btn"' in body or 'pending-changes-commit-btn' in body
+
+    # Verify commit: true is sent in the request body
+    assert "commit: true" in body or '"commit":true' in body or '"commit": true' in body, \
+        "Must send commit: true in request body"
+
+
+def test_pending_changes_css_has_warning_toast_class(client: TestClient) -> None:
+    """styles.css has warning toast class for partial-success states."""
+    r = client.get("/css/styles.css")
+    assert r.status_code == 200
+    body = r.text
+    assert ".pending-changes-toast-warning" in body, "Must have warning toast class"

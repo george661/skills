@@ -528,3 +528,168 @@ def test_apply_discard_returns_structured_error_when_unlink_fails(
     assert body["applied"] is False
     assert body["source_path"] == str(source_file)
     assert "simulated unlink failure" in body["error"]
+
+
+def test_apply_with_commit_true_on_git_source_returns_commit_sha(client) -> None:
+    """Test applying with commit=true on git source returns commit SHA."""
+    import subprocess
+    c, db_path, tmp = client
+
+    # Create a git repo as the source directory
+    source_dir = tmp / "source_repo"
+    source_dir.mkdir()
+    subprocess.run(["git", "init"], cwd=source_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source_dir, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=source_dir, check=True)
+
+    source_file = source_dir / "file.txt"
+    source_file.write_text("original\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=source_dir, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=source_dir, check=True)
+
+    workspace = tmp / "workspace"
+    workspace.mkdir()
+    workflow_dir = workspace / ".workflow"
+    workflow_dir.mkdir()
+
+    manifest = [{"workspace_path": ".workflow/file.txt", "source_path": str(source_file), "kind": "workflow"}]
+    (workflow_dir / ".manifest.json").write_text(json.dumps(manifest))
+    (workflow_dir / "file.txt").write_text("modified\n")
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        "INSERT INTO workflow_runs (id, workflow_name, status, started_at) VALUES (?,?,?,?)",
+        ("run-13", "wf", "running", "2026-05-16T00:00:00Z"),
+    )
+    conn.execute(
+        "INSERT INTO channel_states (run_id, channel_key, channel_type, value_json, updated_at) VALUES (?,?,?,?,?)",
+        ("run-13", "workspace", "value", json.dumps(str(workspace)), "2026-05-16T00:00:01Z"),
+    )
+    conn.commit()
+    conn.close()
+
+    r = c.post(
+        "/api/runs/run-13/pending-changes/apply",
+        json={"workspace_path": ".workflow/file.txt", "action": "apply", "commit": True}
+    )
+    assert r.status_code == 200, f"got {r.status_code}: {r.text}"
+    body = r.json()
+    assert body["applied"] is True
+    assert body["commit_sha"] is not None
+    assert len(body["commit_sha"]) == 40  # Full SHA
+    assert body["error"] is None
+    assert source_file.read_text() == "modified\n"
+
+    # Verify commit is HEAD in source repo
+    result = subprocess.run(
+        ["git", "log", "-1", "--pretty=%H"],
+        cwd=source_dir,
+        capture_output=True,
+        text=True,
+        check=True
+    )
+    assert result.stdout.strip() == body["commit_sha"]
+
+
+def test_apply_with_commit_true_on_non_git_source_copies_file_and_returns_error(client) -> None:
+    """Test applying with commit=true on non-git source copies file but returns error."""
+    c, db_path, tmp = client
+
+    # Create a plain directory (not a git repo)
+    source_dir = tmp / "plain_source"
+    source_dir.mkdir()
+    source_file = source_dir / "file.txt"
+    source_file.write_text("original\n")
+
+    workspace = tmp / "workspace"
+    workspace.mkdir()
+    workflow_dir = workspace / ".workflow"
+    workflow_dir.mkdir()
+
+    manifest = [{"workspace_path": ".workflow/file.txt", "source_path": str(source_file), "kind": "workflow"}]
+    (workflow_dir / ".manifest.json").write_text(json.dumps(manifest))
+    (workflow_dir / "file.txt").write_text("modified\n")
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        "INSERT INTO workflow_runs (id, workflow_name, status, started_at) VALUES (?,?,?,?)",
+        ("run-14", "wf", "running", "2026-05-16T00:00:00Z"),
+    )
+    conn.execute(
+        "INSERT INTO channel_states (run_id, channel_key, channel_type, value_json, updated_at) VALUES (?,?,?,?,?)",
+        ("run-14", "workspace", "value", json.dumps(str(workspace)), "2026-05-16T00:00:01Z"),
+    )
+    conn.commit()
+    conn.close()
+
+    r = c.post(
+        "/api/runs/run-14/pending-changes/apply",
+        json={"workspace_path": ".workflow/file.txt", "action": "apply", "commit": True}
+    )
+    assert r.status_code == 200, f"got {r.status_code}: {r.text}"
+    body = r.json()
+    assert body["applied"] is True
+    assert body["commit_sha"] is None
+    assert body["error"] is not None
+    assert "not a git working tree" in body["error"].lower()
+    assert source_file.read_text() == "modified\n"  # File still copied
+
+
+def test_apply_with_commit_true_when_nothing_to_commit_returns_error_no_sha(client) -> None:
+    """Test applying with commit=true when workspace content already matches HEAD."""
+    import subprocess
+    c, db_path, tmp = client
+
+    # Create a git repo
+    source_dir = tmp / "source_repo"
+    source_dir.mkdir()
+    subprocess.run(["git", "init"], cwd=source_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source_dir, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=source_dir, check=True)
+
+    source_file = source_dir / "file.txt"
+    # Commit the content that workspace will have
+    source_file.write_text("same_content\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=source_dir, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=source_dir, check=True)
+
+    # Now modify source to make it different (so there's a pending change)
+    source_file.write_text("different\n")
+
+    workspace = tmp / "workspace"
+    workspace.mkdir()
+    workflow_dir = workspace / ".workflow"
+    workflow_dir.mkdir()
+
+    manifest = [{"workspace_path": ".workflow/file.txt", "source_path": str(source_file), "kind": "workflow"}]
+    (workflow_dir / ".manifest.json").write_text(json.dumps(manifest))
+    # Workspace has the same content as what's in HEAD (not what's in working tree)
+    (workflow_dir / "file.txt").write_text("same_content\n")
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        "INSERT INTO workflow_runs (id, workflow_name, status, started_at) VALUES (?,?,?,?)",
+        ("run-15", "wf", "running", "2026-05-16T00:00:00Z"),
+    )
+    conn.execute(
+        "INSERT INTO channel_states (run_id, channel_key, channel_type, value_json, updated_at) VALUES (?,?,?,?,?)",
+        ("run-15", "workspace", "value", json.dumps(str(workspace)), "2026-05-16T00:00:01Z"),
+    )
+    conn.commit()
+    conn.close()
+
+    # Apply will copy workspace to source (restoring it to "same_content\n")
+    # Then git commit will find nothing to commit because that's already HEAD
+    r = c.post(
+        "/api/runs/run-15/pending-changes/apply",
+        json={"workspace_path": ".workflow/file.txt", "action": "apply", "commit": True}
+    )
+    assert r.status_code == 200, f"got {r.status_code}: {r.text}"
+    body = r.json()
+    assert body["applied"] is True
+    assert body["commit_sha"] is None
+    assert body["error"] is not None
+    assert "nothing to commit" in body["error"].lower()

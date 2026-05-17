@@ -12,6 +12,8 @@ from dag_dashboard.models import (
     ListParams,
     GateDecision,
     GateDecisionRequest,
+    ApplyChangeRequest,
+    ApplyChangeResponse,
 )
 
 
@@ -250,3 +252,44 @@ def test_gate_decision_request_rejects_long_comment():
     with pytest.raises(ValidationError) as exc_info:
         GateDecisionRequest(**data)
     assert "comment" in str(exc_info.value)
+
+
+def test_apply_change_request_accepts_commit_field():
+    """Test ApplyChangeRequest accepts commit field and defaults to False."""
+    # Test with commit=True
+    request_with_commit = ApplyChangeRequest(
+        workspace_path="/tmp/workspace",
+        action="apply",
+        commit=True
+    )
+    assert request_with_commit.commit is True
+
+    # Test default value (False when omitted)
+    request_without_commit = ApplyChangeRequest(
+        workspace_path="/tmp/workspace",
+        action="apply"
+    )
+    assert request_without_commit.commit is False
+
+
+def test_apply_change_response_carries_commit_sha():
+    """Test ApplyChangeResponse carries commit_sha through serialization."""
+    # Construct with commit_sha
+    response = ApplyChangeResponse(
+        applied=True,
+        source_path="/tmp/source/file.txt",
+        commit_sha="abc123def456789012345678901234567890abcd"
+    )
+    assert response.commit_sha == "abc123def456789012345678901234567890abcd"
+
+    # Round-trip through JSON
+    json_str = response.model_dump_json()
+    deserialized = ApplyChangeResponse.model_validate_json(json_str)
+    assert deserialized.commit_sha == "abc123def456789012345678901234567890abcd"
+
+    # Test None value (default)
+    response_no_sha = ApplyChangeResponse(
+        applied=True,
+        source_path="/tmp/source/file.txt"
+    )
+    assert response_no_sha.commit_sha is None

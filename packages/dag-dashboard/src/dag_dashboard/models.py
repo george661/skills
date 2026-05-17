@@ -391,6 +391,7 @@ class ApplyChangeRequest(BaseModel):
     workspace_path: str
     action: str  # Literal["apply", "discard"]
     target_path: Optional[str] = None
+    commit: Optional[bool] = False
 
 
 class ApplyChangeResponse(BaseModel):
@@ -400,3 +401,4 @@ class ApplyChangeResponse(BaseModel):
     applied: bool
     source_path: str
     error: Optional[str] = None
+    commit_sha: Optional[str] = None
