@@ -1,11 +1,14 @@
 """Workspace seeding logic for .workflow/ directory."""
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
 from dag_executor.parser import load_workflow
 from dag_executor.path_resolution import _resolve_workflow_relative, _resolve_sub_workflow, MAX_RECURSION_DEPTH
 from dag_executor.schema import WorkflowDef
+
+logger = logging.getLogger(__name__)
 
 
 class SeedingError(RuntimeError):
@@ -162,7 +165,13 @@ def _seed_one_workflow(
         prompts_dir = workflow_dir / "prompts"
         scripts_dir = workflow_dir / "scripts"
 
-        # Process nodes
+        # Process nodes. The parent (depth=0) fails loudly on
+        # prompt_file/script_path resolution errors; sub-workflows (depth>0)
+        # log a warning and skip. Sub-workflow paths are typically authored
+        # cwd-relative for runtime resolution and don't necessarily resolve
+        # under seed-time YAML-relative + safe-roots semantics; the runtime
+        # CommandRunner reseeds each sub-workflow in its own workspace, so
+        # the parent's recursive snapshot is best-effort.
         for node in workflow_def.nodes:
             # Handle prompt_file
             prompt_file_ref = node.prompt_file
@@ -184,9 +193,19 @@ def _seed_one_workflow(
                         "kind": "prompt_file"
                     })
                 except SeedingError:
-                    raise
+                    if depth == 0:
+                        raise
+                    logger.warning(
+                        "skipping unresolvable prompt_file in sub-workflow '%s' (node: %s): %s",
+                        namespace, node.id, prompt_file_ref,
+                    )
                 except Exception as e:
-                    raise SeedingError(f"failed to seed prompt_file: {prompt_file_ref}") from e
+                    if depth == 0:
+                        raise SeedingError(f"failed to seed prompt_file: {prompt_file_ref}") from e
+                    logger.warning(
+                        "skipping prompt_file in sub-workflow '%s' (node: %s) due to %s: %s",
+                        namespace, node.id, type(e).__name__, prompt_file_ref,
+                    )
 
             # Handle script_path
             script_path_ref = node.script_path
@@ -208,9 +227,19 @@ def _seed_one_workflow(
                         "kind": "bash_script"
                     })
                 except SeedingError:
-                    raise
+                    if depth == 0:
+                        raise
+                    logger.warning(
+                        "skipping unresolvable script_path in sub-workflow '%s' (node: %s): %s",
+                        namespace, node.id, script_path_ref,
+                    )
                 except Exception as e:
-                    raise SeedingError(f"failed to seed script_path: {script_path_ref}") from e
+                    if depth == 0:
+                        raise SeedingError(f"failed to seed script_path: {script_path_ref}") from e
+                    logger.warning(
+                        "skipping script_path in sub-workflow '%s' (node: %s) due to %s: %s",
+                        namespace, node.id, type(e).__name__, script_path_ref,
+                    )
 
             # Handle sub-workflow recursion for type=command nodes
             if node.type == "command":
@@ -218,12 +247,23 @@ def _seed_one_workflow(
                 if command_ref is None:
                     raise SeedingError(f"command node missing 'command' field: {node.id}")
 
-                # Resolve sub-workflow
+                # Resolve sub-workflow. type=command nodes have two semantics:
+                # (a) reference a YAML sub-workflow (recursable, seedable)
+                # (b) reference a markdown slash-command in commands/ (handled
+                #     by the runtime command runner via a different path)
+                # Seeding can only act on (a). If resolution fails, it's likely
+                # (b) — log and skip. Fail-loudly applies only when a YAML
+                # resolves but fails to load (see load_workflow below).
                 resolved_path = _resolve_sub_workflow(command_ref, workflow_yaml_path)
                 if resolved_path is None:
-                    raise SeedingError(
-                        f"sub-workflow not resolvable: {command_ref} (node: {node.id})"
+                    logger.warning(
+                        "sub-workflow YAML not found for command '%s' (node: %s); "
+                        "skipping recursion. If this should be a YAML sub-workflow, "
+                        "ensure the file exists under the workflow's parent dir, "
+                        "DAG_DASHBOARD_WORKFLOWS_DIR, or ~/.claude/workflows.",
+                        command_ref, node.id,
                     )
+                    continue
 
                 # Use YAML stem as namespace key
                 sub_stem = resolved_path.stem
@@ -312,7 +352,5 @@ def seed_workspace(workflow_def: WorkflowDef, workspace_path: Path) -> List[Mani
     # Write manifest
     manifest_path = workflow_dir / ".manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
-
-    return manifest
 
     return manifest
