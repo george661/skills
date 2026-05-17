@@ -272,15 +272,16 @@ test.describe('Pending workspace changes (GW-5937)', () => {
         // SCOPE end-to-end: edit prompt → Apply + commit → source repo has new commit → diff disappears
         const workflowsDir = await resolveWorkflowsDir(page);
 
-        // Initialize the workflows dir as a git repo
+        // Initialize the workflows dir as a fresh git repo (clean any state from prior runs/retries)
         const { execSync } = await import('child_process');
+        await fs.rm(path.join(workflowsDir, '.git'), { recursive: true, force: true });
         execSync('git init', { cwd: workflowsDir });
         execSync('git config user.email "test@example.com"', { cwd: workflowsDir });
         execSync('git config user.name "Test User"', { cwd: workflowsDir });
 
         const seed = await seedAndTriggerRun(page, workflowsDir);
         try {
-            // Commit the initial state
+            // Commit the initial state (source has "hello")
             execSync('git add .', { cwd: workflowsDir });
             execSync('git commit -m "initial workflow"', { cwd: workflowsDir });
 
@@ -288,9 +289,13 @@ test.describe('Pending workspace changes (GW-5937)', () => {
                 .toString()
                 .trim();
 
-            // Mutate workspace to create a pending change
+            // Mutate the WORKSPACE seeded copy so it differs from source — Apply will then
+            // copy workspace ("goodbye") → source, producing a real diff vs HEAD ("hello").
+            // Mutating seed.workflowYamlPath (the source) instead would leave workspace/source
+            // identical, so Apply restores HEAD content and `git commit` finds nothing.
+            const wsYaml = path.join(seed.workspacePath, '.workflow', 'workflow.yaml');
             const mutated = WORKFLOW_YAML.replace('hello', 'goodbye');
-            await fs.writeFile(seed.workflowYamlPath, mutated, 'utf8');
+            await fs.writeFile(wsYaml, mutated, 'utf8');
 
             await page.goto('/');
             await gotoRunDetail(page, seed.runId);
