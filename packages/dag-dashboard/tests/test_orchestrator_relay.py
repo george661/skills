@@ -405,13 +405,26 @@ def test_claude_argv_includes_required_flags_for_stream_json(mock_popen, tmp_pat
     relay.stop()
 
     argv = mock_popen.call_args.args[0]
-    for flag in ("--print", "--verbose", "--bare",
+    for flag in ("--print", "--verbose",
                  "--input-format", "stream-json",
                  "--output-format", "stream-json",
                  "--permission-mode", "dontAsk",
                  "--include-partial-messages",
                  "--replay-user-messages"):
         assert flag in argv, f"missing {flag!r} in argv: {argv}"
+
+    # GW-6012: --bare must NOT be present. --bare unconditionally skips
+    # PreToolUse hooks (per `claude --help`), which silently neuters the
+    # GW-5928 Phase 4 enforcement layer. The relay now uses
+    # --setting-sources project + --settings <ws>/.claude/settings.json
+    # instead, which enforces the boundary while still suppressing user
+    # ~/.claude/settings.json leakage into the orchestrator.
+    assert "--bare" not in argv, f"--bare must not be present: {argv}"
+    assert "--setting-sources" in argv, f"missing --setting-sources in argv: {argv}"
+    sources_idx = argv.index("--setting-sources")
+    assert argv[sources_idx + 1] == "project", (
+        f"--setting-sources must be 'project', got {argv[sources_idx + 1]!r}"
+    )
 
     loop.close()
 
@@ -1227,5 +1240,126 @@ def test_settings_json_seeded_when_workspace_exists(mock_popen, tmp_path: Path):
         settings = json.load(f)
     assert "permissions" in settings
     assert "hooks" in settings
+
+    loop.close()
+
+
+@patch('subprocess.Popen')
+def test_claude_argv_passes_workspace_settings_when_workspace_exists(
+    mock_popen, tmp_path: Path
+):
+    """GW-6012: when a workspace exists, the spawn cmd MUST pass
+    --settings <ws>/.claude/settings.json so the seeded PreToolUse hook
+    actually loads. Without this flag the workspace settings.json is
+    written but ignored, and the boundary is never enforced.
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    from dag_dashboard.queries import insert_run, get_connection
+    insert_run(
+        db_path=db_path,
+        run_id="run-456",
+        workflow_name="test-workflow",
+        status="running",
+        started_at="2026-05-18T12:00:00Z",
+    )
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO channel_states (run_id, channel_key, channel_type, value_json, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ("run-456", "workspace", "default", json.dumps(str(workspace)), "2026-05-18T12:01:00Z")
+    )
+    conn.commit()
+    conn.close()
+
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO('')
+    mock_process.stderr = io.BytesIO(b"")
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="conv-456",
+        run_id="run-456",
+        db_path=db_path,
+        broadcaster=Mock(),
+        model=None,
+        event_loop=loop,
+        dashboard_port=8080,
+    )
+    relay.start()
+    relay.stop()
+
+    argv = mock_popen.call_args.args[0]
+
+    expected_settings = str(workspace / ".claude" / "settings.json")
+    assert "--settings" in argv, f"missing --settings flag in argv: {argv}"
+    settings_idx = argv.index("--settings")
+    assert argv[settings_idx + 1] == expected_settings, (
+        f"--settings argument must be {expected_settings!r}, "
+        f"got {argv[settings_idx + 1]!r}"
+    )
+
+    loop.close()
+
+
+@patch('subprocess.Popen')
+def test_claude_argv_omits_settings_flag_when_no_workspace(
+    mock_popen, tmp_path: Path
+):
+    """GW-6012: without a workspace, --settings must be omitted entirely.
+
+    Passing --settings <nonexistent> would cause claude to error out, and
+    there is no settings.json to load anyway. The boundary is not enforced
+    in this branch (logged as a warning by the relay).
+    """
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+
+    from dag_dashboard.queries import insert_run
+    insert_run(
+        db_path=db_path,
+        run_id="run-789",
+        workflow_name="test-workflow",
+        status="running",
+        started_at="2026-05-18T12:00:00Z",
+    )
+    # Note: no channel_states row, so _get_workspace_cwd() returns None.
+
+    mock_process = MagicMock()
+    mock_process.stdin = io.BytesIO()
+    mock_process.stdout = io.StringIO('')
+    mock_process.stderr = io.BytesIO(b"")
+    mock_process.poll.return_value = None
+    mock_popen.return_value = mock_process
+
+    loop = asyncio.new_event_loop()
+    relay = OrchestratorRelay(
+        conversation_id="conv-789",
+        run_id="run-789",
+        db_path=db_path,
+        broadcaster=Mock(),
+        model=None,
+        event_loop=loop,
+        dashboard_port=8080,
+    )
+    relay.start()
+    relay.stop()
+
+    argv = mock_popen.call_args.args[0]
+    assert "--settings" not in argv, (
+        f"--settings must NOT be present without workspace: {argv}"
+    )
+    # --setting-sources project still applies regardless of workspace, so
+    # user ~/.claude/settings.json never leaks even when no workspace exists.
+    assert "--setting-sources" in argv
+    sources_idx = argv.index("--setting-sources")
+    assert argv[sources_idx + 1] == "project"
 
     loop.close()
