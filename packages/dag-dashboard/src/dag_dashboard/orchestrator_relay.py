@@ -425,9 +425,32 @@ class OrchestratorRelay:
             else "Bash,Read,Grep,Glob"
         )
 
+        # Query workspace channel BEFORE building cmd — settings.json path
+        # is part of the spawn command for hook enforcement.
+        workspace_cwd = self._get_workspace_cwd()
+
+        # Seed settings.json and set env var if workspace exists
+        env = None
+        settings_path: Optional[Path] = None
+        if workspace_cwd:
+            from .orchestrator_hooks.settings_template import seed_settings_json
+            settings_path = seed_settings_json(Path(workspace_cwd))
+            logger.info(f"Seeded settings.json at {settings_path}")
+
+            # Set workspace env var for the hook
+            env = {**os.environ, "DAG_ORCHESTRATOR_WORKSPACE": workspace_cwd}
+        else:
+            logger.warning("Orchestrator running without sandbox boundary (no workspace)")
+
         cmd = [
             "claude",
-            "--bare",
+            # Boundary enforcement: load ONLY the workspace settings.json (not
+            # user ~/.claude/settings.json), so the PreToolUse hook seeded by
+            # seed_settings_json fires and the user's global hooks/permissions
+            # don't leak into the orchestrator. --bare was the prior approach
+            # but it unconditionally skips hooks (per `claude --help`), which
+            # silently neutered GW-5928 Phase 4 enforcement.
+            "--setting-sources", "project",
             "--print",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
@@ -439,6 +462,9 @@ class OrchestratorRelay:
             "--allowedTools", allowed_tools,
         ]
 
+        if settings_path is not None:
+            cmd.extend(["--settings", str(settings_path)])
+
         if self.model:
             cmd.extend(["--model", self.model])
 
@@ -449,23 +475,8 @@ class OrchestratorRelay:
             import uuid
             self.session_uuid = str(uuid.uuid4())
             cmd.extend(["--session-id", self.session_uuid])
-        
+
         logger.info(f"Spawning orchestrator for {self.conversation_id}: {' '.join(cmd)}")
-
-        # Query workspace channel to set cwd if available
-        workspace_cwd = self._get_workspace_cwd()
-
-        # Seed settings.json and set env var if workspace exists
-        env = None
-        if workspace_cwd:
-            from .orchestrator_hooks.settings_template import seed_settings_json
-            settings_path = seed_settings_json(Path(workspace_cwd))
-            logger.info(f"Seeded settings.json at {settings_path}")
-
-            # Set workspace env var for the hook
-            env = {**os.environ, "DAG_ORCHESTRATOR_WORKSPACE": workspace_cwd}
-        else:
-            logger.warning("Orchestrator running without sandbox boundary (no workspace)")
 
         # Spawn subprocess
         self.process = subprocess.Popen(
