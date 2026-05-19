@@ -55,7 +55,11 @@ async function resolveWorkflowsDir(page: Page): Promise<string> {
     const data = await fetchJson(page, '/api/settings');
     const entry = data?.settings?.workflows_dir;
     expect(entry?.value, '/api/settings must expose workflows_dir').toBeTruthy();
-    return String(entry.value);
+    // Canonicalize so the test path matches what the dashboard's API returns.
+    // On macOS the harness's TMPDIR is /var/folders/... but fs.realpath/getcwd
+    // resolve through the /var -> /private/var symlink, so a string-equal
+    // comparison fails (caught locally; CI Linux has no such symlink).
+    return await fs.realpath(String(entry.value));
 }
 
 async function enableTrigger(page: Page): Promise<void> {
