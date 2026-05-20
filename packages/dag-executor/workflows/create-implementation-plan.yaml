@@ -102,6 +102,11 @@ nodes:
   # ──────────────────────────────────────────────────────────
   # Phase 0.7: File Discovery
   # ──────────────────────────────────────────────────────────
+  # GW-6062: tightened prompt + bounded timeout to prevent the failure
+  # mode seen on 2026-05-20 run 120bc119: vague prompt + no JSON
+  # discipline + no timeout caused the model to bail in 250ms with
+  # "(no output)", halting the entire /work pipeline at Phase 0.7.
+  # Same pattern as GW-6043 fix — see PR #210 for the rationale.
   - id: file_discovery
     name: File Discovery and Feasibility Scan
     type: prompt
@@ -113,12 +118,44 @@ nodes:
     writes:
       - feasibility
     prompt: |
-      Analyze issue $issue_key to identify files that need to be created or modified.
-      Search the codebase for relevant modules, patterns, and extension points.
-      Output: {"feasibility": {"files_to_change": [...], "complexity": "low|medium|high"}}
+      Identify the files this issue is most likely to touch.
+
+      The issue contents are already on the `issue_data` channel — read it
+      with: `npx tsx ~/.claude/skills/jira/get_issue.ts '{"issue_key":"$issue_key","fields":"summary,description,labels"}'`
+      (the upstream `fetch_issue` node already cached this; running the
+      command again is fine and keeps the prompt self-contained).
+
+      For locating files use `grep -rl` or `find` SCOPED to the current
+      project root only — do NOT walk $HOME or /. If the issue mentions
+      a specific file or module name, that's the strongest signal; jump
+      straight to it.
+
+      DO NOT read every file you find. List paths and a one-line reason
+      per file. Aim for 3-8 candidate paths; if you can't find any with
+      ~5 grep calls, return the empty list with complexity "unknown".
+
+      Output a SINGLE JSON object (no prose, no markdown, no code fences):
+      {
+        "feasibility": {
+          "files_to_change": [
+            {"path": "<repo-relative path>", "reason": "<one line>"}
+          ],
+          "complexity": "low|medium|high|unknown",
+          "notes": "<one short sentence on confidence or caveats>"
+        }
+      }
+
+      If the issue is too vague to identify any file, default to:
+      {"feasibility": {"files_to_change": [], "complexity": "unknown", "notes": "issue did not identify concrete files"}}
     model: opus
     dispatch: inline
+    # GW-6062: fresh context — without this the planning sub-workflow
+    # inherits the parent's session and Claude treats this prompt as a
+    # continuation of `prior_work_assessment` (which already produced a
+    # final answer in that session), exits in <300ms with "(no output)".
+    context: fresh
     output_format: json
+    timeout: 180  # 3 min — same budget as prior_work_assessment
     checkpoint: true
 
   # ──────────────────────────────────────────────────────────
@@ -133,12 +170,31 @@ nodes:
       - issue_data
       - feasibility
     prompt: |
-      Review issue $issue_key and feasibility analysis to determine if this
-      feature is already implemented. Check for existing code that matches
-      the requirements. Output: {"already_implemented": true/false, "evidence": "..."}
+      Determine whether issue $issue_key is already implemented.
+
+      Read the issue with:
+        npx tsx ~/.claude/skills/jira/get_issue.ts \
+          '{"issue_key":"$issue_key","fields":"summary,description"}'
+
+      Then check the candidate files from the upstream feasibility analysis.
+      Look for: function/class names that match the issue's requirement,
+      tests covering the requirement, or recent commits referencing
+      $issue_key. ~5 grep/Read calls max — do NOT walk the codebase.
+
+      Output a SINGLE JSON object (no prose, no markdown, no code fences):
+      {
+        "already_implemented": true|false,
+        "evidence": "<one line: file path + symbol if true, or absence reason if false>"
+      }
+
+      If you cannot determine in ~5 calls, default to:
+      {"already_implemented": false, "evidence": "could not confirm in budget; assume not implemented"}
     model: opus
     dispatch: inline
+    # GW-6062: fresh context — see file_discovery comment above.
+    context: fresh
     output_format: json
+    timeout: 180
 
   - id: already_impl_gate
     name: Already Implemented Gate
@@ -174,12 +230,38 @@ nodes:
     writes:
       - issue_type
     prompt: |
-      Classify issue $issue_key based on its requirements and affected files.
-      Types: BACKEND_LOGIC, API_ENDPOINT, UI_COMPONENT, DATABASE_MIGRATION, etc.
-      Output: {"issue_type": "<TYPE>"}
+      Classify issue $issue_key into one of the implementation categories
+      below, based on its description and the upstream feasibility analysis
+      (paths the issue touches).
+
+      Categories — pick exactly one:
+      - BACKEND_LOGIC      — Python/Go/server-side modules, no API surface change
+      - API_ENDPOINT       — new or modified HTTP route, schema, contract
+      - UI_COMPONENT       — frontend (React, JS, CSS, HTML, static assets)
+      - DATABASE_MIGRATION — schema/DDL change, data backfill
+      - INFRA              — Terraform, CI, deploy configs
+      - TEST_ONLY          — test file changes only
+      - DOCS_ONLY          — docs/markdown only
+      - REFACTOR           — pure restructuring, no behavior change
+      - OTHER              — none of the above (provide a one-word tag in evidence)
+
+      DO NOT walk the filesystem — the upstream feasibility node already
+      identified the candidate paths.
+
+      Output a SINGLE JSON object (no prose, no markdown, no code fences):
+      {
+        "issue_type": "<one of the categories above>",
+        "evidence": "<one line citing the paths or prose that drove the choice>"
+      }
+
+      If ambiguous, default to:
+      {"issue_type": "OTHER", "evidence": "could not classify confidently"}
     model: opus
     dispatch: inline
+    # GW-6062: fresh context.
+    context: fresh
     output_format: json
+    timeout: 180
 
   # ──────────────────────────────────────────────────────────
   # Phase 1.3: Multi-Repo Check
@@ -236,17 +318,42 @@ nodes:
       - plan
       - validation_criteria
     prompt: |
-      Create a detailed TDD implementation plan for issue $issue_key.
-      Include:
-      - Files to change (exact paths)
-      - Tests to write (with RED-GREEN-REFACTOR approach)
-      - Validation criteria
-      - Acceptance criteria mapping
-      
-      Output: {"plan": {...}, "validation_criteria": {...}}
+      Write a TDD implementation plan for issue $issue_key.
+
+      Read the issue with:
+        npx tsx ~/.claude/skills/jira/get_issue.ts \
+          '{"issue_key":"$issue_key","fields":"summary,description,labels"}'
+
+      Use the upstream `feasibility` and `issue_type` channels to scope the
+      plan — do NOT re-discover files. ~10 tool calls max.
+
+      Output a SINGLE JSON object (no prose, no markdown, no code fences):
+      {
+        "plan": {
+          "summary": "<one paragraph: what + why>",
+          "files_to_change": [
+            {"path": "<repo-relative>", "change": "<one line: what changes>"}
+          ],
+          "tests_to_write": [
+            {"path": "<test path>", "case": "<one line: what it asserts>"}
+          ],
+          "approach": "<RED-GREEN-REFACTOR or other; one line>"
+        },
+        "validation_criteria": {
+          "acceptance_criteria": ["<AC bullet>", "..."],
+          "validation_commands": ["<command line to run pre-merge>"]
+        }
+      }
+
+      If the issue is too vague, default to:
+      {"plan": {"summary": "issue too vague to plan; needs grooming", "files_to_change": [], "tests_to_write": [], "approach": "blocked"},
+       "validation_criteria": {"acceptance_criteria": [], "validation_commands": []}}
     model: opus
     dispatch: inline
+    # GW-6062: fresh context.
+    context: fresh
     output_format: json
+    timeout: 300  # plan is the heaviest prompt; give 5 min
     checkpoint: true
 
   # ──────────────────────────────────────────────────────────

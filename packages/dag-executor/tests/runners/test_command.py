@@ -615,7 +615,78 @@ def test_command_runner_inputs_map_overrides_positional_named_binding():
 # nodes can resolve `$issue_key` cleanly. These tests build real YAML files and
 # run them through the real WorkflowExecutor — no mocks of the runner internals.
 def test_gw6042_args_to_named_input_real_workflow(tmp_path):
-    """`args: ["$issue_key"]` survives parent->child as the bash env var $issue_key."""
+    """`args: ["$issue_key"]` survives parent->child as the RESOLVED value, not literal $issue_key.
+
+    GW-6062 follow-up: the original GW-6042 fix bound positional args by name
+    using raw (unresolved) values, so a sub-workflow's $issue_key reference
+    inside a `prompt:` field stayed literal even though `workflow_inputs` had
+    a key called issue_key. Bash nodes masked this because the bash runner
+    injects workflow inputs as env vars regardless of value contents — the
+    subshell happily expanded `$issue_key` to whatever string was in scope.
+    This test asserts the EXACT resolved value reaches the child.
+    """
+    import textwrap
+    from dag_executor.parser import load_workflow
+    from dag_executor.executor import WorkflowExecutor
+
+    child = tmp_path / "child.yaml"
+    # Strict equality check — the bash subshell sees the workflow_inputs
+    # value via env-var injection; it must equal the parent's resolved value.
+    child.write_text(textwrap.dedent("""
+        name: child
+        config:
+          checkpoint_prefix: child
+        inputs:
+          issue_key:
+            type: string
+            required: true
+        nodes:
+          - id: greet
+            name: Greet
+            type: bash
+            script: 'test "$issue_key" = "GW-9999" || (echo "got=$issue_key" >&2; exit 99)'
+    """).strip())
+
+    parent = tmp_path / "parent.yaml"
+    parent.write_text(textwrap.dedent(f"""
+        name: parent
+        config:
+          checkpoint_prefix: parent
+        inputs:
+          issue_key:
+            type: string
+            required: true
+        nodes:
+          - id: planning
+            name: Planning
+            type: command
+            command: {child}
+            args:
+              - "$issue_key"
+    """).strip())
+
+    workflow_def = load_workflow(str(parent))
+    result = asyncio.run(WorkflowExecutor().execute(
+        workflow_def, {"issue_key": "GW-9999"},
+    ))
+    assert result.status == WorkflowStatus.COMPLETED, str(result.node_results)
+
+
+def test_gw6062_args_resolved_before_binding_to_named_input(tmp_path):
+    """Sub-workflow PROMPT nodes can resolve $issue_key — args must arrive resolved.
+
+    The bug GW-6062 surfaced: if the command runner binds the raw arg
+    `$issue_key` (literal string) to the sub-workflow's `issue_key` input,
+    then any prompt node inside the sub-workflow that references `$issue_key`
+    in its prompt template gets the literal `$issue_key` string sent to the
+    LLM (no value substitution). Bash nodes mask this because env-var
+    injection passes any string fine. Prompt nodes don't.
+
+    This test simulates the failure path with a `prompt: ` node — but
+    without spawning a real model, we just assert the resolved input
+    reached the executor's workflow_inputs dict (via the prompt-node
+    error string when it fails to fetch the model).
+    """
     import textwrap
     from dag_executor.parser import load_workflow
     from dag_executor.executor import WorkflowExecutor
@@ -630,10 +701,14 @@ def test_gw6042_args_to_named_input_real_workflow(tmp_path):
             type: string
             required: true
         nodes:
-          - id: greet
-            name: Greet
+          - id: echo_inputs
+            name: Echo Inputs
             type: bash
-            script: 'test -n "$issue_key" && echo OK || exit 99'
+            # Hard equality + surface the unexpected value so a regression
+            # diff shows the literal `$issue_key` if substitution stalled.
+            script: |
+              echo "RESOLVED:$issue_key"
+              [ "$issue_key" = "GW-9999" ] || { echo "FAIL: got '$issue_key'" >&2; exit 7; }
     """).strip())
 
     parent = tmp_path / "parent.yaml"

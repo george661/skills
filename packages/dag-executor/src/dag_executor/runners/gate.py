@@ -15,7 +15,15 @@ from dag_executor.runners.base import BaseRunner, RunnerContext, register_runner
 # (where issue_type="Task") into `Task == "Bug"` and surfacing as
 # `NameNotDefined: 'Task' is not defined`. We strip the `$` here and
 # bind names via SimpleEval's name-lookup so types are preserved.
-_DOLLAR_REF = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\$([a-zA-Z_][a-zA-Z0-9_]*)")
+#
+# GW-6062 follow-up: the regex now matches dotted refs too
+# (`$node.field` -> `node.field`) so SimpleEval can resolve attribute
+# access against a dict-typed name binding (e.g. an upstream prompt
+# node's parsed JSON output).
+_DOLLAR_REF = re.compile(
+    r"\$\{([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\}"
+    r"|\$([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)"
+)
 
 
 def _normalize_dollar_refs(condition: str) -> str:
@@ -23,6 +31,11 @@ def _normalize_dollar_refs(condition: str) -> str:
     def _repl(m: "re.Match[str]") -> str:
         return m.group(1) or m.group(2)
     return _DOLLAR_REF.sub(_repl, condition)
+
+
+def _ref_root(reference: str) -> str:
+    """Return the first segment of a dotted reference (`a.b.c` -> `a`)."""
+    return reference.split(".", 1)[0]
 
 
 @register_runner("gate")
@@ -72,22 +85,32 @@ class GateRunner(BaseRunner):
             if ctx.workflow_inputs:
                 names.update(ctx.workflow_inputs)
             if ctx.node_outputs:
-                # node_outputs is keyed by node_id; flatten one level so the
-                # condition author can write `$some_node_output_field` for
-                # outputs the upstream node placed at the top level. Nested
-                # node references (`$node.field`) aren't supported here —
-                # gate conditions read channel state, which is the modern
-                # path. Top-level flattening matches the existing call sites
-                # in test_gate.
-                for output_dict in ctx.node_outputs.values():
+                # node_outputs is keyed by node_id. Two binding modes coexist:
+                #
+                # (a) Flattened: each upstream node's output dict gets merged
+                #     into `names`, so `$some_field` resolves when an
+                #     upstream node wrote `{"some_field": value}` to its
+                #     output. Existing call sites in test_gate use this.
+                #
+                # (b) Nested: the node-id itself is bound to its output dict,
+                #     so dotted refs like `$node.field` (used by gate
+                #     conditions like `$already_impl_check.already_implemented`
+                #     in create-implementation-plan.yaml) resolve via
+                #     SimpleEval's dict-attribute access.
+                for node_id, output_dict in ctx.node_outputs.items():
                     if isinstance(output_dict, dict):
-                        names.update(output_dict)
+                        names.update(output_dict)  # mode (a)
+                        names[node_id] = output_dict  # mode (b)
             if ctx.channel_store is not None:
                 # Pull every channel referenced in the raw condition. Reading
                 # the whole store would be wasteful; the regex pre-walk gives
-                # us exactly the names we need.
+                # us exactly the names we need. Use only the first segment of
+                # dotted refs (the channel name); SimpleEval handles the rest.
                 for m in _DOLLAR_REF.finditer(raw_condition):
-                    name = m.group(1) or m.group(2)
+                    full_ref = m.group(1) or m.group(2)
+                    name = _ref_root(full_ref)
+                    if name in names:
+                        continue
                     try:
                         value, _version = ctx.channel_store.read(name)
                         names[name] = value

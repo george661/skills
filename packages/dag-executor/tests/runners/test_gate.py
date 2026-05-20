@@ -256,3 +256,66 @@ def test_gate_dollar_ref_undefined_surfaces_clean_error():
     result = GateRunner().run(ctx)
     assert result.status == NodeStatus.FAILED
     assert "undefined" in (result.error or "").lower(), result.error
+
+
+# GW-6062: dotted node-output references (`$node_id.field`) resolve via
+# SimpleEval's dict-attribute access. The gate runner now binds each
+# upstream node's output dict under both its node-id and its flat keys.
+def test_gate_dollar_ref_dotted_node_output():
+    """`$node.field == false` resolves via the node's output dict."""
+    node = NodeDef(
+        id="g1",
+        name="Gate",
+        type="gate",
+        condition='$already_impl_check.already_implemented == false',
+    )
+    ctx = RunnerContext(
+        node_def=node,
+        node_outputs={
+            "already_impl_check": {"already_implemented": False, "evidence": "not yet"}
+        },
+    )
+    result = GateRunner().run(ctx)
+    assert result.status == NodeStatus.COMPLETED, result.error
+
+
+def test_gate_dollar_ref_dotted_node_output_truthy_path():
+    """Same shape, but the field is True so the gate condition fails-clean."""
+    node = NodeDef(
+        id="g1",
+        name="Gate",
+        type="gate",
+        condition='$already_impl_check.already_implemented == false',
+    )
+    ctx = RunnerContext(
+        node_def=node,
+        node_outputs={
+            "already_impl_check": {"already_implemented": True, "evidence": "found at lib.py:42"}
+        },
+    )
+    result = GateRunner().run(ctx)
+    assert result.status == NodeStatus.FAILED
+    assert "evaluated to false" in (result.error or "").lower(), result.error
+
+
+def test_gate_dollar_ref_dotted_keeps_flat_binding_compat():
+    """Flat top-level field bindings still work alongside nested-dict bindings.
+
+    Backward compat: existing workflows that wrote `condition: "$some_field == X"`
+    expecting flat-key access still resolve, even when the same field
+    appears inside an upstream node's output dict.
+    """
+    node = NodeDef(
+        id="g1",
+        name="Gate",
+        type="gate",
+        condition='$flat_field == "ok"',
+    )
+    ctx = RunnerContext(
+        node_def=node,
+        node_outputs={
+            "upstream": {"flat_field": "ok"}
+        },
+    )
+    result = GateRunner().run(ctx)
+    assert result.status == NodeStatus.COMPLETED, result.error
