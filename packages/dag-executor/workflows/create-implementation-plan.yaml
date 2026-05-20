@@ -212,9 +212,23 @@ nodes:
     type: bash
     depends_on:
       - already_impl_gate
+    # GW-6106: look up the transition ID at runtime — transition IDs vary
+    # by Jira project, and the skill's `transition_id` parameter expects
+    # the integer string (e.g. "21"), not the workflow status name.
+    # Idempotent: if the issue is already In Progress (or no such transition
+    # is available from the current status), $in_progress_id is empty and
+    # the transition call is skipped without erroring.
     script: |
-      npx tsx ~/.claude/skills/jira/transition_issue.ts \
-        '{"issue_key": "$issue_key", "transition": "In Progress"}'
+      transitions=$(npx tsx ~/.claude/skills/jira/list_transitions.ts \
+        "{\"issue_key\": \"$issue_key\"}")
+      in_progress_id=$(echo "$transitions" | jq -r \
+        '.transitions[] | select(.name == "In Progress") | .id')
+      if [ -n "$in_progress_id" ]; then
+        npx tsx ~/.claude/skills/jira/transition_issue.ts \
+          "{\"issue_key\": \"$issue_key\", \"transition_id\": \"$in_progress_id\", \"notify_users\": false}"
+      else
+        echo "Issue $issue_key already In Progress (or transition unavailable); skipping."
+      fi
 
   # ──────────────────────────────────────────────────────────
   # Phase 1.2: Classify Issue Type
@@ -290,15 +304,43 @@ nodes:
       - worktree_info
     checkpoint: true
     script: |
-      # Create git worktree for the issue
-      repo_name=$(basename $PWD)
-      branch="$issue_key/$(echo $issue_key | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')"
+      # Create git worktree for the issue. GW-6106: must `cd $PROJECT_ROOT`
+      # (the source repo) before `git worktree add`; the bash runner's
+      # default CWD isn't guaranteed to be inside the repo. Use `set -e`
+      # so a failed `git worktree add` propagates instead of silently
+      # producing a worktree_info that points at a non-existent path
+      # (downstream write_agent_context then fails with "No such file").
+      set -e
+      cd "${PROJECT_ROOT}"
+      repo_name=$(basename "$(pwd)")
+      branch_slug=$(echo "$issue_key" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+      branch="$issue_key/$branch_slug"
       worktree_dir="${PROJECT_ROOT}/../${repo_name}-worktrees/$issue_key"
-      
-      mkdir -p "$(dirname $worktree_dir)"
-      git worktree add "$worktree_dir" -b "$branch" origin/main
-      
-      echo "{\"worktree_info\": {\"worktree_path\": \"$worktree_dir\", \"branch\": \"$branch\", \"repo\": \"$repo_name\"}, \"worktree_path\": \"$worktree_dir\", \"branch\": \"$branch\", \"repo\": \"$repo_name\"}"
+
+      mkdir -p "$(dirname "$worktree_dir")"
+      # Re-use an existing worktree if a prior run already created one
+      # for this issue (e.g. /work re-trigger after a downstream failure).
+      # Redirect git's stdout to stderr so only our JSON ends up on
+      # stdout — the executor parses stdout for `output_format: json`
+      # channel writes, and git's "branch X set up to track..." line
+      # would otherwise prefix the JSON and break json.loads.
+      if [ ! -d "$worktree_dir" ]; then
+        git worktree add "$worktree_dir" -b "$branch" origin/main >&2
+      else
+        echo "Reusing existing worktree at $worktree_dir" >&2
+      fi
+
+      # Canonicalize the worktree path so downstream nodes (write_agent_context,
+      # implement, etc.) get a path without `..` segments — those segments
+      # work for `cd` but break path-joins that don't normalize.
+      worktree_dir=$(cd "$worktree_dir" && pwd)
+
+      jq -nc \
+        --arg worktree_path "$worktree_dir" \
+        --arg branch "$branch" \
+        --arg repo "$repo_name" \
+        '{worktree_info: {worktree_path: $worktree_path, branch: $branch, repo: $repo},
+          worktree_path: $worktree_path, branch: $branch, repo: $repo}'
     output_format: json
 
   # ──────────────────────────────────────────────────────────
@@ -367,10 +409,17 @@ nodes:
     reads:
       - plan
     script: |
-      # Post implementation plan as Jira comment
-      plan_text=$(echo "$plan" | jq -r '.plan_markdown // .markdown // "Plan created"')
-      npx tsx ~/.claude/skills/jira/add_comment.ts \
-        "{\"issue_key\": \"$issue_key\", \"body\": \"## Implementation Plan\\n\\n$plan_text\"}"
+      # Post implementation plan as Jira comment. GW-6106: build with jq
+      # so the plan body's quotes/newlines/special chars don't break the
+      # outer JSON.
+      set -e
+      plan_text=$(echo "${plan:-{\}}" | jq -r '.plan_markdown // .summary // "Plan created"')
+      body_text=$(printf '## Implementation Plan\n\n%s' "$plan_text")
+      payload=$(jq -nc \
+        --arg issue_key "$issue_key" \
+        --arg body "$body_text" \
+        '{issue_key: $issue_key, body: $body}')
+      npx tsx ~/.claude/skills/jira/add_comment.ts "$payload"
 
   # ──────────────────────────────────────────────────────────
   # Phase 3.4: Store Validation Criteria in AgentDB
@@ -384,9 +433,19 @@ nodes:
       - plan
       - validation_criteria
     script: |
-      # Store validation criteria in AgentDB
-      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts \
-        "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"validation-$issue_key\", \"input\": $validation_criteria, \"output\": \"stored\", \"reward\": 0.5, \"success\": true}"
+      # Store validation criteria in AgentDB. GW-6106: build the JSON
+      # payload with jq so the channel-injected JSON value is embedded
+      # without breaking the outer string's quoting. The previous
+      # in-line `"input": $validation_criteria` substitution produced
+      # nested unescaped double quotes that bash mis-parsed, leaving
+      # the skill with no input at all ("Required fields: session_id,
+      # task, reward, success").
+      payload=$(jq -n \
+        --arg session_id "${TENANT_NAMESPACE:-default}" \
+        --arg task "validation-$issue_key" \
+        --argjson input "${validation_criteria:-{\}}" \
+        '{session_id: $session_id, task: $task, input: $input, output: "stored", reward: 0.5, success: true}')
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "$payload"
 
   # ──────────────────────────────────────────────────────────
   # Phase 3.5: Store Implementation Context in AgentDB
@@ -400,9 +459,29 @@ nodes:
       - plan
       - worktree_info
     script: |
-      # Store full implementation plan in AgentDB
-      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts \
-        "{\"session_id\": \"${TENANT_NAMESPACE}\", \"task\": \"impl-plan-$issue_key\", \"input\": {\"issue_key\": \"$issue_key\", \"worktree_path\": \"${worktree_info.worktree_path}\", \"branch\": \"${worktree_info.branch}\"}, \"output\": $plan, \"reward\": 0.8, \"success\": true}"
+      # Store full implementation plan in AgentDB. GW-6106: build via jq
+      # for the same reason as store_validation — channel values that are
+      # JSON dicts can't be safely interpolated into a manually-quoted
+      # string. The dotted refs (worktree_info.worktree_path) work
+      # because the executor pre-substitutes them; channel JSON values
+      # come through as env vars so jq with --argjson is the safe
+      # transport.
+      payload=$(jq -n \
+        --arg session_id "${TENANT_NAMESPACE:-default}" \
+        --arg task "impl-plan-$issue_key" \
+        --arg issue_key "$issue_key" \
+        --arg worktree_path "${worktree_info.worktree_path}" \
+        --arg branch "${worktree_info.branch}" \
+        --argjson plan "${plan:-{\}}" \
+        '{
+          session_id: $session_id,
+          task: $task,
+          input: {issue_key: $issue_key, worktree_path: $worktree_path, branch: $branch},
+          output: ($plan | tostring),
+          reward: 0.8,
+          success: true
+        }')
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "$payload"
 
   # ──────────────────────────────────────────────────────────
   # Phase 3.6: Write Agent Context File
@@ -416,9 +495,20 @@ nodes:
       - worktree_info
       - issue_type
     script: |
-      # Write .agent-context.json to worktree
-      worktree_path="${worktree_info.worktree_path}"
-      echo "{\"issue_key\": \"$issue_key\", \"issue_type\": \"${issue_type}\", \"worktree_path\": \"$worktree_path\", \"branch\": \"${worktree_info.branch}\"}" > "$worktree_path/.agent-context.json"
+      # Write .agent-context.json to worktree. GW-6106: build via jq
+      # for safe quoting; pull the path out of the channel JSON in bash
+      # so it works whether the executor's dotted-ref substitution
+      # ($worktree_info.worktree_path) does the right thing or not.
+      set -e
+      worktree_path=$(echo "${worktree_info}" | jq -r '.worktree_path')
+      branch=$(echo "${worktree_info}" | jq -r '.branch')
+      jq -n \
+        --arg issue_key "$issue_key" \
+        --arg issue_type "${issue_type:-Task}" \
+        --arg worktree_path "$worktree_path" \
+        --arg branch "$branch" \
+        '{issue_key: $issue_key, issue_type: $issue_type, worktree_path: $worktree_path, branch: $branch}' \
+        > "$worktree_path/.agent-context.json"
 
   # ──────────────────────────────────────────────────────────
   # Phase 3.7: Add Outcome Label
@@ -429,9 +519,20 @@ nodes:
     depends_on:
       - write_agent_context
     script: |
-      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts '{"issue_key": "$issue_key", "fields": "labels"}')
-      labels=$(echo "$issue" | jq -r '.fields.labels // [] | map(select(startswith("outcome:") | not)) + ["outcome:success-plan-created"] | @json')
-      npx tsx ~/.claude/skills/jira/update_issue.ts "{\"issue_key\": \"$issue_key\", \"labels\": $labels, \"notify_users\": false}"
+      # GW-6106: build args with jq + --arg so quoting/escaping is safe
+      # and `$issue_key` is bash-expanded (the previous single-quoted
+      # form `'{"issue_key": "$issue_key"...}'` left $issue_key literal,
+      # which 404'd at the Jira API).
+      set -e
+      get_payload=$(jq -nc --arg issue_key "$issue_key" \
+        '{issue_key: $issue_key, fields: "labels"}')
+      issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts "$get_payload")
+      labels=$(echo "$issue" | jq -c '.fields.labels // [] | map(select(startswith("outcome:") | not)) + ["outcome:success-plan-created"]')
+      update_payload=$(jq -nc \
+        --arg issue_key "$issue_key" \
+        --argjson labels "$labels" \
+        '{issue_key: $issue_key, labels: $labels, notify_users: false}')
+      npx tsx ~/.claude/skills/jira/update_issue.ts "$update_payload"
 
 outputs:
   worktree_path:
