@@ -105,8 +105,14 @@ nodes:
     writes:
       - issue_type
     prompt: |
-      Read Jira issue $issue_key (use the jira/get_issue.ts skill, ONE call).
-      Look at: status, labels, recent comments, linked PRs.
+      Read Jira issue $issue_key. Run EXACTLY this command and parse the
+      JSON it returns:
+
+        npx tsx ~/.claude/skills/jira/get_issue.ts \
+          '{"issue_key": "$issue_key", "fields": "summary,status,labels,issuetype,comment,issuelinks"}'
+
+      From that response, look at: issue type, status, labels, recent
+      comments, linked PRs.
 
       Decide ONE of these resume paths:
       - "fresh"       — no prior work; start from spec
@@ -116,16 +122,16 @@ nodes:
       - "ship"        — work complete; just needs validation
 
       DO NOT search the filesystem. DO NOT run find/grep/ls broadly.
-      Only the one Jira read is required.
+      The skill path above is the ONLY tool call you need.
 
       Output a SINGLE JSON object (no prose, no markdown, no code fences):
       {
-        "issue_type": "Bug|Story|Task|Epic",   // from Jira issue type
+        "issue_type": "Bug|Story|Task|Epic",   // from .fields.issuetype.name
         "resume_path": "fresh|resume_plan|rework|review_pr|ship",
         "reason": "one-sentence why"
       }
 
-      If anything is ambiguous, default to:
+      If the skill call fails or anything is ambiguous, default to:
       {"issue_type": "Task", "resume_path": "fresh", "reason": "ambiguous; defaulting"}
     model: opus
     dispatch: inline
