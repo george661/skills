@@ -88,6 +88,15 @@ nodes:
     output_format: json
 
   # Phase 0.5: Prior Work Assessment
+  #
+  # GW-6043: tightened prompt + bounded timeout to prevent the failure
+  # modes seen on 5/18 and 5/19 runs:
+  #   - markdown-instead-of-JSON (~2/3 of runs)
+  #   - unbounded global find walks across the user's home dir
+  # The prompt now enumerates the JSON schema explicitly, tells the
+  # model to skip filesystem exploration unless absolutely necessary,
+  # and gives a concrete fallback for ambiguous cases. The 180s
+  # timeout is enforced at the runner layer.
   - id: prior_work_assessment
     name: Prior Work Assessment
     type: prompt
@@ -96,13 +105,32 @@ nodes:
     writes:
       - issue_type
     prompt: |
-      Assess prior work for issue $issue_key.
-      Read Jira labels and status, detect prior work signals
-      (PR exists, validation failed, rework needed, plan created).
-      Route to the correct resume path.
+      Read Jira issue $issue_key (use the jira/get_issue.ts skill, ONE call).
+      Look at: status, labels, recent comments, linked PRs.
+
+      Decide ONE of these resume paths:
+      - "fresh"       — no prior work; start from spec
+      - "resume_plan" — plan exists in Jira comments; continue from there
+      - "rework"      — failed validation; address the failure
+      - "review_pr"   — PR open and ready for review
+      - "ship"        — work complete; just needs validation
+
+      DO NOT search the filesystem. DO NOT run find/grep/ls broadly.
+      Only the one Jira read is required.
+
+      Output a SINGLE JSON object (no prose, no markdown, no code fences):
+      {
+        "issue_type": "Bug|Story|Task|Epic",   // from Jira issue type
+        "resume_path": "fresh|resume_plan|rework|review_pr|ship",
+        "reason": "one-sentence why"
+      }
+
+      If anything is ambiguous, default to:
+      {"issue_type": "Task", "resume_path": "fresh", "reason": "ambiguous; defaulting"}
     model: opus
     dispatch: inline
     output_format: json
+    timeout: 180  # 3 minutes; one Jira call + a JSON reply should be ~30s
 
   # Phase 0.7: Bug Test Verification Gate
   # on_failure: continue means the gate failure does NOT propagate to
