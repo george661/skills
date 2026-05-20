@@ -42,6 +42,7 @@ nodes:
     type: bash
     writes:
       - plan_found
+    output_format: json
     script: |
       # Fetch Jira issue with comments
       issue=$(npx tsx ~/.claude/skills/jira/get_issue.ts \
@@ -56,11 +57,16 @@ nodes:
         select(.body.content[]?.content[]?.text? | ascii_upcase | contains("IMPLEMENTATION PLAN")) |
         .body.content[]?.content[]?.text' | head -1)
 
-      # Check if plan was found and output boolean
+      # Check if plan was found and output boolean. `output_format: json`
+      # tells the executor to parse stdout as JSON and populate channel
+      # writes from the keys; without it, this stdout is a string and the
+      # `plan_found` channel never gets written, so validate_plan_exists
+      # downstream sees no value (gate condition evaluates against unbound
+      # name and fails).
       if [ -n "$plan" ]; then
-        echo "{\"plan_found\": true}"
+        echo '{"plan_found": true}'
       else
-        echo "{\"plan_found\": false}"
+        echo '{"plan_found": false}'
       fi
 
   # Phase 2: Validate plan exists
