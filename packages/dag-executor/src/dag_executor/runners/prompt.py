@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -479,11 +480,21 @@ class PromptRunner(BaseRunner):
                 process.stdin.write(invocation.stdin_text)
                 process.stdin.close()
 
-            # Stream output line by line
+            # Stream output line by line. GW-6043: enforce the wall-clock
+            # timeout DURING streaming, not just at process.wait() — without
+            # this a model that emits an unbounded stream of tool-call
+            # tokens (the GW-6043 hang) keeps the for-loop alive past any
+            # deadline, since the loop only exits when stdout closes.
+            timeout = ctx.node_def.timeout or 600  # Default 10 min timeout for LLM
+            deadline = time.monotonic() + timeout
             output_lines = []
             log_seq = 0
+            stream_timed_out = False
             if process.stdout:
                 for line in process.stdout:
+                    if time.monotonic() > deadline:
+                        stream_timed_out = True
+                        break
                     output_lines.append(line)
                     rstripped = line.rstrip('\n')
                     # Emit stream token event if emitter is available (drives
@@ -513,13 +524,27 @@ class PromptRunner(BaseRunner):
                         ))
                         log_seq += 1
 
+            if stream_timed_out:
+                # Kill the subprocess and surface a timeout failure. We
+                # already drained whatever streamed before the deadline; that
+                # output is in `output_lines` for the eventual error report
+                # but we don't try to JSON-parse it here since by definition
+                # the model didn't get to emit a complete response.
+                process.kill()
+                process.wait()
+                return NodeResult(
+                    status=NodeStatus.FAILED,
+                    error=(
+                        f"Prompt streaming exceeded timeout of {timeout} seconds; "
+                        f"subprocess killed mid-stream. "
+                        f"Drained {len(output_lines)} lines before the deadline."
+                    ),
+                )
+
             # Wait for process completion with timeout
-            # NOTE: Timeout only applies after stdout draining completes. If the process generates
-            # more output than the pipe buffer can hold without being consumed, the timeout countdown
-            # does not begin until the for-loop above finishes reading all output.
-            timeout = ctx.node_def.timeout or 600  # Default 10 min timeout for LLM
             try:
-                returncode = process.wait(timeout=timeout)
+                remaining = max(1.0, deadline - time.monotonic())
+                returncode = process.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
                 # Kill process on timeout
                 process.kill()

@@ -1149,3 +1149,82 @@ def test_prompt_file_parse_error_fails_node(tmp_path):
 
     assert result.status == NodeStatus.FAILED
     assert "parse" in result.error.lower()
+
+
+# GW-6043: streaming-phase timeout. Pre-fix the prompt runner only enforced
+# `node.timeout` at `process.wait()`, so a model emitting an unbounded stream
+# of tool-call tokens kept the for-loop alive indefinitely. The fix tracks
+# wall-clock time during the stream-line loop and breaks/kills mid-stream.
+def test_prompt_streaming_timeout_kills_on_long_stream():
+    """A streaming process that exceeds node.timeout is killed mid-stream."""
+    import time as time_module
+
+    node = NodeDef(
+        id="prompt1",
+        name="Slow Stream",
+        type="prompt",
+        prompt="Reason at length.",
+        model=ModelTier.SONNET,
+        timeout=1,  # 1 second
+    )
+    ctx = RunnerContext(node_def=node)
+
+    class SlowStdout:
+        """Yields one line then sleeps past the deadline."""
+        def __init__(self):
+            self._yielded = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if not self._yielded:
+                self._yielded = True
+                return "first line\n"
+            # Sleep longer than timeout, simulating a model still emitting.
+            time_module.sleep(2.0)
+            return "second line (after timeout)\n"
+
+    mock_process = MagicMock()
+    mock_process.stdout = SlowStdout()
+    mock_process.stderr = MagicMock()
+    mock_process.stderr.read.return_value = ""
+    mock_process.stdin = MagicMock()
+    mock_process.wait.return_value = 0
+    mock_process.kill = MagicMock()
+
+    with patch("subprocess.Popen", return_value=mock_process):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+    assert result.status == NodeStatus.FAILED
+    assert "timeout" in (result.error or "").lower()
+    # The runner must have killed the subprocess.
+    mock_process.kill.assert_called()
+
+
+def test_prompt_streaming_completes_within_timeout():
+    """Fast streams complete normally — the timeout doesn't false-positive."""
+    node = NodeDef(
+        id="prompt1",
+        name="Fast Stream",
+        type="prompt",
+        prompt="Reason briefly.",
+        model=ModelTier.SONNET,
+        timeout=10,
+    )
+    ctx = RunnerContext(node_def=node)
+
+    mock_process = MagicMock()
+    mock_process.stdout = io.StringIO("line one\nline two\nline three\n")
+    mock_process.stderr = MagicMock()
+    mock_process.stderr.read.return_value = ""
+    mock_process.stdin = MagicMock()
+    mock_process.wait.return_value = 0
+
+    with patch("subprocess.Popen", return_value=mock_process):
+        runner = PromptRunner()
+        result = runner.run(ctx)
+
+    assert result.status == NodeStatus.COMPLETED
+    assert "line one" in result.output["response"]
