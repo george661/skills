@@ -1395,3 +1395,74 @@ class TestVersionAwareTriggering:
             assert result.status == WorkflowStatus.COMPLETED
             # Final value should be from layer2_node (last write wins)
             assert result.outputs["counter"] == "layer2_node"
+
+
+# GW-6041: end-to-end gate condition resolution. Mirrors the work.yaml shape:
+# an upstream node writes `issue_type` to a state channel, then a gate node
+# reads it via `$issue_type == "Bug"`. Pre-fix the executor pre-interpolated
+# the channel value into the condition string, turning a string value into a
+# bare identifier that SimpleEval rejected.
+def test_gate_condition_dollar_ref_resolves_via_channel_store():
+    from dag_executor.runners.gate import GateRunner
+    from dag_executor.runners.base import register_runner
+    from dag_executor.channels import ChannelStore
+
+    write_node = NodeDef(
+        id="write_type",
+        name="Write Issue Type",
+        type="bash",
+        script="echo writing",
+        writes=["issue_type"],
+    )
+    gate_node = NodeDef(
+        id="gate_is_bug",
+        name="Bug Gate",
+        type="gate",
+        depends_on=["write_type"],
+        reads=["issue_type"],
+        condition='$issue_type == "Bug"',
+        on_failure=OnFailure.CONTINUE,
+    )
+    workflow_def = WorkflowDef(
+        name="test-gate-dollar-ref",
+        config=WorkflowConfig(checkpoint_prefix="gate-dollar-ref"),
+        state={"issue_type": {"type": "string", "reducer": "overwrite"}},
+        nodes=[write_node, gate_node],
+    )
+
+    class WriteRunner(BaseRunner):
+        def run(self, ctx: RunnerContext) -> NodeResult:
+            return NodeResult(
+                status=NodeStatus.COMPLETED,
+                output={"issue_type": "Task"},
+            )
+
+    def runner_for(node_type: str):
+        if node_type == "bash":
+            return WriteRunner
+        if node_type == "gate":
+            return GateRunner
+        raise RuntimeError(f"unexpected type {node_type}")
+
+    channel_store = ChannelStore.from_workflow_def(workflow_def)
+    with patch("dag_executor.executor.get_runner", side_effect=runner_for):
+        executor = WorkflowExecutor()
+        result = asyncio.run(executor.execute(
+            workflow_def, {}, channel_store=channel_store,
+        ))
+
+    # Gate's `$issue_type == "Bug"` evaluates against issue_type="Task" -> False.
+    # Pre-fix this surfaced as `NameNotDefined: 'Task' is not defined` in the
+    # error message; the failure mode is the regression. We assert on the
+    # gate node's error string rather than workflow status because workflow
+    # status reflects any-FAILED-node regardless of on_failure semantics.
+    assert "gate_is_bug" in result.node_results
+    gate_state = result.node_results["gate_is_bug"]
+    assert gate_state.status == NodeStatus.FAILED
+    assert "evaluated to false" in (gate_state.error or "").lower(), gate_state.error
+    assert "not defined" not in (gate_state.error or "").lower(), gate_state.error
+    assert "dict is not available" not in (gate_state.error or "").lower(), gate_state.error
+    # The condition string the gate evaluated should be the normalized form
+    # (no `$` prefix), confirming the runner's $-stripping path fired.
+    assert gate_state.output is not None
+    assert gate_state.output["condition"] == 'issue_type == "Bug"'

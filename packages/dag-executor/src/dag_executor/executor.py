@@ -1699,7 +1699,13 @@ class WorkflowExecutor:
             inputs_to_resolve["params"] = node_def.params
         if node_def.prompt:
             inputs_to_resolve["prompt"] = node_def.prompt
-        if node_def.condition:
+        if node_def.condition and node_def.type != "gate":
+            # GW-6041: gate conditions reference channel/input names with `$`
+            # prefixes that SimpleEval should resolve via name-binding, not
+            # via string interpolation. Letting resolve_variables substitute
+            # them turns string values into bare SimpleEval identifiers
+            # (`Task == "Bug"` -> NameNotDefined). The gate runner reads the
+            # raw `node_def.condition` and walks $-refs itself.
             inputs_to_resolve["condition"] = node_def.condition
         if node_def.prompt_inputs:
             inputs_to_resolve["prompt_inputs"] = node_def.prompt_inputs
