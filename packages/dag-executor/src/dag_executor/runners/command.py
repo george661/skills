@@ -62,7 +62,19 @@ class CommandRunner(BaseRunner):
         command = ctx.node_def.command
         if command is None:
             raise ValueError("command field is required for type=command")
-        args = ctx.node_def.args or []
+        # GW-6062 follow-up to GW-6042: prefer the executor's already-resolved
+        # args (where each `$ref` has been substituted). Falling back to the
+        # raw `node_def.args` would propagate literal `$issue_key` into the
+        # sub-workflow's input scope, which then surfaces as unsubstituted
+        # `$issue_key` in any sub-workflow prompt — only HOME and other
+        # whitelisted env vars would resolve, masking the real input.
+        resolved_args_value = (
+            ctx.resolved_inputs.get("args") if ctx.resolved_inputs else None
+        )
+        if isinstance(resolved_args_value, list):
+            args = resolved_args_value
+        else:
+            args = ctx.node_def.args or []
         inputs_map = ctx.node_def.inputs_map or {}
 
         # Try loading the reference as-is first. This preserves the existing
