@@ -106,11 +106,32 @@ class CommandRunner(BaseRunner):
         
         # Build inputs for sub-workflow from args and resolved inputs
         sub_workflow_inputs = {}
-        
-        # Add args as positional inputs
+
+        # Add args as positional inputs (back-compat: existing sub-workflows
+        # reference these as $arg0, $arg1, ...).
         for i, arg in enumerate(args):
             sub_workflow_inputs[f"arg{i}"] = arg
-        
+
+        # GW-6042: also bind positional args to the sub-workflow's declared
+        # input names in declaration order. The common idiom in work.yaml
+        # and other commands is `args: ["$issue_key"]` against a
+        # sub-workflow that declares `inputs: {issue_key: ...}`. Without
+        # this name binding, downstream `$issue_key` references inside the
+        # sub-workflow fail to resolve and surface as
+        # "Cannot resolve variable reference: $issue_key" with
+        # "Available inputs: arg0, command, args".
+        # getattr guard mirrors the schema-defaults block below — test
+        # scaffolding may pass Mock(spec=WorkflowDef) without `inputs`.
+        declared_inputs = getattr(workflow_def, "inputs", None)
+        if isinstance(declared_inputs, dict) and args:
+            for i, (input_name, _input_def) in enumerate(declared_inputs.items()):
+                if i >= len(args):
+                    break
+                # Don't overwrite an explicit positional `arg{i}` collision —
+                # but only the named binding is conditional; arg{i} is
+                # already populated above for back-compat.
+                sub_workflow_inputs.setdefault(input_name, args[i])
+
         # Add resolved inputs
         sub_workflow_inputs.update(ctx.resolved_inputs)
         

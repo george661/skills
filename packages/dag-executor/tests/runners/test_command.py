@@ -460,3 +460,273 @@ async def test_command_runner_emits_workflow_started_with_parent_run_id():
         f"found {len(started)}. All STARTED events: "
         f"{[e.metadata for e in emitter.events if e.event_type == EventType.WORKFLOW_STARTED]}"
     )
+
+
+# GW-6042: positional args are also bound to the sub-workflow's declared
+# input names, in declaration order. This bridges the common idiom
+# `args: ["$issue_key"]` against a sub-workflow that declares
+# `inputs: {issue_key: ...}` — without it, the sub-workflow only sees
+# `arg0` and any `$issue_key` reference inside it fails to resolve.
+def test_command_runner_positional_args_bound_to_named_inputs():
+    """Positional args[i] also populate the i-th declared input by name."""
+    from dag_executor.schema import InputDef
+    node = NodeDef(
+        id="cmd1",
+        name="Command",
+        type="command",
+        command="planning-workflow",
+        args=["GW-6042"],
+    )
+    ctx = RunnerContext(node_def=node)
+
+    mock_workflow_def = Mock(spec=WorkflowDef)
+    mock_workflow_def.name = "planning-workflow"
+    mock_workflow_def.inputs = {
+        "issue_key": InputDef(type="string", required=True),
+    }
+    mock_workflow_result = WorkflowResult(status=WorkflowStatus.COMPLETED, node_results={}, outputs={})
+
+    with patch("dag_executor.runners.command.load_workflow", return_value=mock_workflow_def):
+        with patch("dag_executor.executor.WorkflowExecutor") as MockExecutor:
+            mock_executor_instance = MockExecutor.return_value
+            mock_executor_instance.execute = AsyncMock(return_value=mock_workflow_result)
+
+            runner = CommandRunner()
+            runner.run(ctx)
+
+            inputs = mock_executor_instance.execute.call_args.kwargs.get("inputs", {})
+            # Both the positional and the named binding land — back-compat for
+            # existing $arg0 consumers, forward-compat for $issue_key.
+            assert inputs.get("arg0") == "GW-6042"
+            assert inputs.get("issue_key") == "GW-6042"
+
+
+def test_command_runner_named_inputs_in_declaration_order():
+    """When sub-workflow declares multiple inputs, args map by declaration order."""
+    from dag_executor.schema import InputDef
+    node = NodeDef(
+        id="cmd1",
+        name="Command",
+        type="command",
+        command="multi-input-workflow",
+        args=["alpha", "beta", "gamma"],
+    )
+    ctx = RunnerContext(node_def=node)
+
+    mock_workflow_def = Mock(spec=WorkflowDef)
+    mock_workflow_def.name = "multi-input-workflow"
+    # Use a real dict — sub-workflows declare inputs as a dict literal in YAML
+    # which Pydantic preserves as insertion-ordered.
+    mock_workflow_def.inputs = {
+        "first": InputDef(type="string", required=False),
+        "second": InputDef(type="string", required=False),
+        "third": InputDef(type="string", required=False),
+    }
+    mock_workflow_result = WorkflowResult(status=WorkflowStatus.COMPLETED, node_results={}, outputs={})
+
+    with patch("dag_executor.runners.command.load_workflow", return_value=mock_workflow_def):
+        with patch("dag_executor.executor.WorkflowExecutor") as MockExecutor:
+            mock_executor_instance = MockExecutor.return_value
+            mock_executor_instance.execute = AsyncMock(return_value=mock_workflow_result)
+
+            runner = CommandRunner()
+            runner.run(ctx)
+
+            inputs = mock_executor_instance.execute.call_args.kwargs.get("inputs", {})
+            assert inputs.get("first") == "alpha"
+            assert inputs.get("second") == "beta"
+            assert inputs.get("third") == "gamma"
+            # Positional fallbacks still present
+            assert inputs.get("arg0") == "alpha"
+            assert inputs.get("arg2") == "gamma"
+
+
+def test_command_runner_more_args_than_declared_inputs():
+    """Extra positional args still produce arg{N} entries even past declared inputs.
+
+    Edge case: a sub-workflow with one declared input but the parent passes
+    three positional args. The first arg binds to the declared input; the
+    remaining two are accessible only as $arg1, $arg2.
+    """
+    from dag_executor.schema import InputDef
+    node = NodeDef(
+        id="cmd1",
+        name="Command",
+        type="command",
+        command="single-input-workflow",
+        args=["a", "b", "c"],
+    )
+    ctx = RunnerContext(node_def=node)
+
+    mock_workflow_def = Mock(spec=WorkflowDef)
+    mock_workflow_def.inputs = {"target": InputDef(type="string", required=False)}
+    mock_workflow_result = WorkflowResult(status=WorkflowStatus.COMPLETED, node_results={}, outputs={})
+
+    with patch("dag_executor.runners.command.load_workflow", return_value=mock_workflow_def):
+        with patch("dag_executor.executor.WorkflowExecutor") as MockExecutor:
+            mock_executor_instance = MockExecutor.return_value
+            mock_executor_instance.execute = AsyncMock(return_value=mock_workflow_result)
+
+            runner = CommandRunner()
+            runner.run(ctx)
+
+            inputs = mock_executor_instance.execute.call_args.kwargs.get("inputs", {})
+            assert inputs.get("target") == "a"
+            assert inputs.get("arg0") == "a"
+            assert inputs.get("arg1") == "b"
+            assert inputs.get("arg2") == "c"
+
+
+def test_command_runner_inputs_map_overrides_positional_named_binding():
+    """inputs_map wins over positional name binding (kwargs-overrides-args)."""
+    from dag_executor.schema import InputDef
+    node = NodeDef(
+        id="cmd1",
+        name="Command",
+        type="command",
+        command="planning-workflow",
+        args=["GW-FROM-ARGS"],
+        inputs_map={"issue_key": "GW-FROM-MAP"},
+    )
+    ctx = RunnerContext(node_def=node)
+
+    mock_workflow_def = Mock(spec=WorkflowDef)
+    mock_workflow_def.inputs = {"issue_key": InputDef(type="string", required=True)}
+    mock_workflow_result = WorkflowResult(status=WorkflowStatus.COMPLETED, node_results={}, outputs={})
+
+    with patch("dag_executor.runners.command.load_workflow", return_value=mock_workflow_def):
+        with patch("dag_executor.executor.WorkflowExecutor") as MockExecutor:
+            with patch("dag_executor.variables.resolve_variables") as mock_resolve:
+                mock_resolve.return_value = "GW-FROM-MAP"
+                mock_executor_instance = MockExecutor.return_value
+                mock_executor_instance.execute = AsyncMock(return_value=mock_workflow_result)
+
+                runner = CommandRunner()
+                runner.run(ctx)
+
+                inputs = mock_executor_instance.execute.call_args.kwargs.get("inputs", {})
+                assert inputs.get("issue_key") == "GW-FROM-MAP"
+                # Positional fallback unchanged
+                assert inputs.get("arg0") == "GW-FROM-ARGS"
+
+
+# GW-6042 end-to-end: parent passes `args: ["$issue_key"]` against a sub-workflow
+# that declares `inputs: {issue_key: ...}`. The sub-workflow's bash and command
+# nodes can resolve `$issue_key` cleanly. These tests build real YAML files and
+# run them through the real WorkflowExecutor — no mocks of the runner internals.
+def test_gw6042_args_to_named_input_real_workflow(tmp_path):
+    """`args: ["$issue_key"]` survives parent->child as the bash env var $issue_key."""
+    import textwrap
+    from dag_executor.parser import load_workflow
+    from dag_executor.executor import WorkflowExecutor
+
+    child = tmp_path / "child.yaml"
+    child.write_text(textwrap.dedent("""
+        name: child
+        config:
+          checkpoint_prefix: child
+        inputs:
+          issue_key:
+            type: string
+            required: true
+        nodes:
+          - id: greet
+            name: Greet
+            type: bash
+            script: 'test -n "$issue_key" && echo OK || exit 99'
+    """).strip())
+
+    parent = tmp_path / "parent.yaml"
+    parent.write_text(textwrap.dedent(f"""
+        name: parent
+        config:
+          checkpoint_prefix: parent
+        inputs:
+          issue_key:
+            type: string
+            required: true
+        nodes:
+          - id: planning
+            name: Planning
+            type: command
+            command: {child}
+            args:
+              - "$issue_key"
+    """).strip())
+
+    workflow_def = load_workflow(str(parent))
+    result = asyncio.run(WorkflowExecutor().execute(
+        workflow_def, {"issue_key": "GW-9999"},
+    ))
+    assert result.status == WorkflowStatus.COMPLETED, str(result.node_results)
+
+
+def test_gw6042_nested_command_propagates_named_input(tmp_path):
+    """Two-level: parent -> child (type=command) -> grandchild (type=command).
+
+    The middle layer's `args: ["$issue_key"]` against grandchild must resolve
+    via the child's named `issue_key` input — not just `$arg0`. Pre-fix this
+    raised "Cannot resolve variable reference: $issue_key. Available inputs:
+    arg0, command, args" — the literal error from yesterday's /work failures.
+    """
+    import textwrap
+    from dag_executor.parser import load_workflow
+    from dag_executor.executor import WorkflowExecutor
+
+    grandchild = tmp_path / "grandchild.yaml"
+    grandchild.write_text(textwrap.dedent("""
+        name: grandchild
+        config:
+          checkpoint_prefix: grandchild
+        inputs:
+          target:
+            type: string
+            required: true
+        nodes:
+          - id: noop
+            name: Noop
+            type: bash
+            script: 'echo "target=$target"'
+    """).strip())
+
+    child = tmp_path / "child.yaml"
+    child.write_text(textwrap.dedent(f"""
+        name: child
+        config:
+          checkpoint_prefix: child
+        inputs:
+          issue_key:
+            type: string
+            required: true
+        nodes:
+          - id: nested_call
+            name: Nested
+            type: command
+            command: {grandchild}
+            args:
+              - "$issue_key"
+    """).strip())
+
+    parent = tmp_path / "parent.yaml"
+    parent.write_text(textwrap.dedent(f"""
+        name: parent
+        config:
+          checkpoint_prefix: parent
+        inputs:
+          issue_key:
+            type: string
+            required: true
+        nodes:
+          - id: planning
+            name: Planning
+            type: command
+            command: {child}
+            args:
+              - "$issue_key"
+    """).strip())
+
+    workflow_def = load_workflow(str(parent))
+    result = asyncio.run(WorkflowExecutor().execute(
+        workflow_def, {"issue_key": "GW-9999"},
+    ))
+    assert result.status == WorkflowStatus.COMPLETED, str(result.node_results)
