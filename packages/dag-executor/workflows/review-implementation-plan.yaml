@@ -178,17 +178,22 @@ nodes:
       - verdict
       - findings
     script: |
-      # Build comment body with verdict and findings
-      body="## Implementation Plan Review: ${issue_key}\n\n"
-      body="${body}### Verdict: ${verdict}\n\n"
-      
-      if [ -n "${findings}" ]; then
-        body="${body}### Findings\n${findings}\n\n"
+      # GW-6106 follow-up: build the comment body and JSON payload via
+      # printf + jq so backslash-n sequences in `verdict`/`findings` get
+      # rendered as real newlines (printf %b) and the outer JSON quoting
+      # stays valid (jq --arg).
+      set -e
+      body=$(printf '## Implementation Plan Review: %s\n\n### Verdict: %s\n\n' \
+        "$issue_key" "${verdict:-unknown}")
+      if [ -n "${findings:-}" ] && [ "${findings}" != "[]" ]; then
+        findings_text=$(echo "${findings}" | jq -r '. | tojson')
+        body="${body}### Findings"$'\n'"${findings_text}"$'\n\n'
       fi
-      
-      # Post to Jira
-      npx tsx ~/.claude/skills/jira/add_comment.ts \
-        "{\"issue_key\": \"${issue_key}\", \"body\": \"$body\"}"
+      payload=$(jq -nc \
+        --arg issue_key "$issue_key" \
+        --arg body "$body" \
+        '{issue_key: $issue_key, body: $body}')
+      npx tsx ~/.claude/skills/jira/add_comment.ts "$payload"
 
   # Phase 8: Store reflexion episode
   - id: store_episode
@@ -199,20 +204,28 @@ nodes:
     reads:
       - verdict
     script: |
-      # Store reflexion episode
-      success="false"
+      # GW-6106 follow-up: build payload via jq.
+      set -e
+      success_bool=false
       reward=0.0
       if [ "${verdict}" = "APPROVED" ]; then
-        success="true"
+        success_bool=true
         reward=1.0
       fi
-      
-      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "{
-        \"session_id\": \"${TENANT_NAMESPACE}\",
-        \"task\": \"plan-review-${issue_key}\",
-        \"input\": {\"issue_key\": \"${issue_key}\"},
-        \"output\": \"${verdict}\",
-        \"reward\": $reward,
-        \"success\": $success,
-        \"critique\": \"Plan review completed with verdict: ${verdict}\"
-      }"
+      payload=$(jq -nc \
+        --arg session_id "${TENANT_NAMESPACE:-default}" \
+        --arg task "plan-review-${issue_key}" \
+        --arg issue_key "${issue_key}" \
+        --arg verdict "${verdict:-unknown}" \
+        --argjson reward "$reward" \
+        --argjson success "$success_bool" \
+        '{
+          session_id: $session_id,
+          task: $task,
+          input: {issue_key: $issue_key},
+          output: $verdict,
+          reward: $reward,
+          success: $success,
+          critique: ("Plan review completed with verdict: " + $verdict)
+        }')
+      npx tsx ~/.claude/skills/agentdb/reflexion_store_episode.ts "$payload"
